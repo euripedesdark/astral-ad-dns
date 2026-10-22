@@ -1,0 +1,12 @@
+# Funding
+#
+# O bloco `custom` do GitHub aceita SOMENTE URLs. Nao aceita `pix:` nem nenhum
+# outro esquema: o GitHub renderiza cada item como um link, e `pix:...` nao e
+# uma URL, entao aparecia como texto quebrado no botao Sponsor.
+#
+# Por isso os dados ficam no DONATE.md, que e o que o link abaixo abre. O
+# arquivo tem PIX e os dados da Wise em portugues, ingles, espanhol e frances.
+
+github: euripedesdark
+custom:
+  - "https://github.com/euripedesdark/astral-ad-dns/blob/main/DONATE.md"
