@@ -1,0 +1,35 @@
+# Credentials and sensitive environment files
+auth.env
+*.env
+*.env.*
+!*.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Certificates and keys
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# System and logs
+*.log
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
