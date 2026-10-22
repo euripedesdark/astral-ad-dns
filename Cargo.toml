@@ -1,0 +1,12 @@
+[package]
+name = "astral-ad-dns"
+version = "1.4.0"
+edition = "2021"
+
+[[bin]]
+name = "provisioner"
+path = "samba-ad-dc/provisioner.rs"
+
+[[bin]]
+name = "dns_manager"
+path = "dns/dns_manager.rs"

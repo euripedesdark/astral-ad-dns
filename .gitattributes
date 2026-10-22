@@ -1,0 +1,4 @@
+# Linguist configuration
+*.csv linguist-vendored
+*.sh linguist-vendored
+docs/* linguist-documentation
