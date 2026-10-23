@@ -15,6 +15,8 @@ pub struct UserItem {
     pub is_admin: bool,
     pub is_disabled: bool,
     pub groups: Vec<String>,
+    #[serde(default)]
+    pub has_wheel: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -78,6 +80,23 @@ pub async fn list_users(State(config): State<Arc<AppConfig>>) -> Json<ApiRespons
         .filter(|s| !s.is_empty())
         .collect();
 
+    let wheel_res = run_cmd_dry("getent group wheel", sudo, false);
+    let wheel_set: HashSet<String> = if wheel_res.success {
+        wheel_res
+            .stdout
+            .split(':')
+            .nth(3)
+            .map(|s| {
+                s.split(',')
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+
     let mut users = Vec::new();
     for line in res.stdout.lines() {
         let username = line.trim().to_string();
@@ -88,11 +107,13 @@ pub async fn list_users(State(config): State<Arc<AppConfig>>) -> Json<ApiRespons
         let is_admin = admin_set.contains(&username) || username.eq_ignore_ascii_case("Administrator");
         let is_disabled = username.eq_ignore_ascii_case("Guest") || username.eq_ignore_ascii_case("krbtgt");
 
+        let has_wheel = wheel_set.contains(&username);
         users.push(UserItem {
             username,
             is_admin,
             is_disabled,
             groups: Vec::new(),
+            has_wheel,
         });
     }
 
