@@ -69,6 +69,7 @@ pub struct ProvisionNewDcRequest {
     pub workgroup: String,
     pub hostname_fqdn: String,
     pub admin_password: String,
+    pub dns_backend: Option<String>,
     pub dns_forwarder: Option<String>,
     pub setup_bind_hybrid: Option<bool>,
     pub upstream_forwarders: Option<Vec<String>>,
@@ -85,6 +86,9 @@ pub struct JoinDomainRequest {
     pub admin_username: String,
     pub admin_password: String,
     pub netbios_name: Option<String>,
+    pub domain_role: Option<String>, // "DC", "RODC", "MEMBER" (default: "DC")
+    pub dns_backend: Option<String>, // "SAMBA_INTERNAL", "BIND9_DLZ", "NONE" (default: "SAMBA_INTERNAL")
+    pub setup_bind_hybrid: Option<bool>,
     #[serde(default = "default_true")]
     pub clean_existing: bool,
     #[serde(default)]
@@ -319,18 +323,26 @@ pub async fn provision_new_dc(
     }
 
     // 4. Comando de provisionamento do Samba
+    let dns_backend = payload.dns_backend.as_deref().unwrap_or("SAMBA_INTERNAL").trim().to_uppercase();
+    let selected_dns_backend = match dns_backend.as_str() {
+        "BIND9_DLZ" => "BIND9_DLZ",
+        _ => "SAMBA_INTERNAL",
+    };
+
     let prov_cmd = format!(
-        "samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass='{}'",
+        "samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend={} --adminpass='{}'",
         payload.realm.to_uppercase(),
         payload.workgroup.to_uppercase(),
+        selected_dns_backend,
         sanitize_arg(&payload.admin_password)
     );
 
     if d {
         steps.push(format!(
-            "[SIMULAÇÃO] Execução prevista: samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass=********",
+            "[SIMULAÇÃO] Execução prevista: samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend={} --adminpass=********",
             payload.realm.to_uppercase(),
-            payload.workgroup.to_uppercase()
+            payload.workgroup.to_uppercase(),
+            selected_dns_backend
         ));
         steps.push("[SIMULAÇÃO] Ajuste de parâmetros no smb.conf: ad dc functional level = 2016 e dns forwarder = 127.0.0.1:5353".to_string());
         steps.push("[SIMULAÇÃO] Vinculação de /etc/krb5.conf e inicialização do serviço systemctl enable --now samba".to_string());
@@ -549,27 +561,49 @@ pub async fn join_domain(
         steps.push(format!("Aviso: O registro SRV do AD ainda não resolveu diretamente. Tentando prosseguir com --server={}.", target_dc_ip));
     }
 
+    let raw_role = payload.domain_role.as_deref().unwrap_or("DC").trim().to_uppercase();
+    let domain_role = match raw_role.as_str() {
+        "RODC" => "RODC",
+        "MEMBER" => "MEMBER",
+        _ => "DC",
+    };
+
+    let raw_backend = payload.dns_backend.as_deref().unwrap_or("SAMBA_INTERNAL").trim().to_uppercase();
+    let dns_backend = match raw_backend.as_str() {
+        "BIND9_DLZ" => "BIND9_DLZ",
+        "NONE" => "NONE",
+        _ => "SAMBA_INTERNAL",
+    };
+
     if d {
         steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", target_dc_ip));
-        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend=SAMBA_INTERNAL", realm, payload.admin_username, target_dc_ip, dc_netbios));
-        steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
-        steps.push("[SIMULAÇÃO] Inicialização da replicação inicial DRS e sincronismo SYSVOL".to_string());
+        if domain_role == "MEMBER" {
+            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} MEMBER -U'{}' --password=******** --server={} --netbios-name={}", realm, payload.admin_username, target_dc_ip, dc_netbios));
+            steps.push("[SIMULAÇÃO] Configuração de smb.conf para Servidor Membro (security = ADS), ativação de winbind e smbd".to_string());
+        } else if domain_role == "RODC" {
+            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} RODC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend={}", realm, payload.admin_username, target_dc_ip, dc_netbios, dns_backend));
+            steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) no AD e inicialização da replicação unidirecional RODC", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
+        } else {
+            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend={}", realm, payload.admin_username, target_dc_ip, dc_netbios, dns_backend));
+            steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
+            steps.push("[SIMULAÇÃO] Inicialização da replicação DRS e sincronismo de diretório".to_string());
+        }
 
         let evt_id = config.audit.record(
             "admin",
             None,
             "JOIN_SIMULATION",
-            &format!("domain:{}", realm),
+            &format!("domain:{}:role:{}", realm, domain_role),
             true,
             true,
-            &format!("Simulação de ingresso no domínio {}", realm),
+            &format!("Simulação de ingresso no domínio {} como {}", realm, domain_role),
         );
 
         return (
             StatusCode::OK,
             Json(ApiResponse {
                 success: true,
-                message: "[SIMULAÇÃO] Plano de ingresso ao domínio gerado com sucesso.".to_string(),
+                message: format!("[SIMULAÇÃO] Plano de ingresso ao domínio ({}) gerado com sucesso.", domain_role),
                 data: Some(ProvisionResult {
                     steps_completed: steps,
                     error: None,
@@ -581,18 +615,33 @@ pub async fn join_domain(
         );
     }
 
-    // 4. Execução real do join no domínio apontando diretamente para o servidor e com SAMBA_INTERNAL
+    // 4. Execução real do join no domínio
     let workgroup = realm.split('.').next().unwrap_or("SRVCLOUD");
-    let join_cmd = format!(
-        "samba-tool domain join '{}' DC -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend=SAMBA_INTERNAL",
-        realm,
-        sanitize_arg(&payload.admin_username),
-        sanitize_arg(&payload.admin_password),
-        target_dc_ip,
-        dc_netbios,
-        realm,
-        workgroup
-    );
+    let join_cmd = if domain_role == "MEMBER" {
+        format!(
+            "samba-tool domain join '{}' MEMBER -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}'",
+            realm,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password),
+            target_dc_ip,
+            dc_netbios,
+            realm,
+            workgroup
+        )
+    } else {
+        format!(
+            "samba-tool domain join '{}' {} -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend={}",
+            realm,
+            domain_role,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password),
+            target_dc_ip,
+            dc_netbios,
+            realm,
+            workgroup,
+            dns_backend
+        )
+    };
 
     let res = run_cmd_dry(&join_cmd, sudo, false);
     if !res.success {
@@ -600,7 +649,7 @@ pub async fn join_domain(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: format!("Falha ao ingressar no domínio: {}", res.stderr),
+                message: format!("Falha ao ingressar no domínio como {}: {}", domain_role, res.stderr),
                 data: Some(ProvisionResult {
                     steps_completed: steps,
                     error: Some(res.stderr),
@@ -612,60 +661,144 @@ pub async fn join_domain(
         );
     }
 
-    steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio réplica ({}).", realm, dc_netbios));
+    // 5. Ajustes e serviços pós-join por papel
+    if domain_role == "MEMBER" {
+        steps.push(format!("Ingressou com sucesso no domínio '{}' como Servidor Membro (MEMBER / Bind: {}).", realm, dc_netbios));
 
-    // 5. Ajustes essenciais pós-join (Tranquil IT guidelines)
-    // 5.1 Adiciona functional level 2016 e forwarder no smb.conf para evitar incompatibilidade
-    let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
-    steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
+        if Path::new("/var/lib/samba/private/krb5.conf").exists() {
+            let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
+            steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
+        }
 
-    // 5.2 Copia /var/lib/samba/private/krb5.conf para /etc/krb5.conf (MIT KDC requirement)
-    let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
-    steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
+        let add_a_cmd = format!(
+            "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
+            target_dc_ip,
+            realm.to_lowercase(),
+            dc_netbios.to_lowercase(),
+            my_ip,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password)
+        );
+        let _ = run_cmd_dry(&add_a_cmd, sudo, false);
+        steps.push(format!("Registro DNS A de {} ({}.{} -> {}) garantido no AD.", dc_netbios, dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
 
-    // 6. Verificação e adição do registro DNS do DC réplica no AD
-    let add_a_cmd = format!(
-        "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
-        target_dc_ip,
-        realm.to_lowercase(),
-        dc_netbios.to_lowercase(),
-        my_ip,
-        sanitize_arg(&payload.admin_username),
-        sanitize_arg(&payload.admin_password)
-    );
-    let _ = run_cmd_dry(&add_a_cmd, sudo, false);
-    steps.push(format!("Registro DNS A de {} ({}.{} -> {}) garantido no AD.", dc_netbios, dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
+        crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
+        steps.push(format!("Resolver DNS local protegido apontando para o DC parceiro ({}).", target_dc_ip));
 
-    let add_ns_cmd = format!(
-        "samba-tool dns add '{}' '{}' @ NS '{}.{}' -U'{}%{}'",
-        target_dc_ip,
-        realm.to_lowercase(),
-        dc_netbios.to_lowercase(),
-        realm.to_lowercase(),
-        sanitize_arg(&payload.admin_username),
-        sanitize_arg(&payload.admin_password)
-    );
-    let _ = run_cmd_dry(&add_ns_cmd, sudo, false);
-    steps.push(format!("Registro DNS NS ({}.{}) registrado como autoritativo na zona {}.", dc_netbios.to_lowercase(), realm.to_lowercase(), realm.to_lowercase()));
+        let _ = run_cmd_dry("systemctl stop samba 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl mask samba 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl unmask smbd winbind 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl enable --now smbd winbind", sudo, false);
+        steps.push("Serviços de Servidor Membro (smbd, winbind) habilitados e iniciados; daemon AD DC mascarado.".to_string());
+    } else if domain_role == "RODC" {
+        steps.push(format!("Ingressou com sucesso no domínio '{}' como Read-Only Domain Controller (RODC: {}).", realm, dc_netbios));
 
-    // 7. Configuração definitiva do /etc/resolv.conf local: 127.0.0.1 em primeiro, e parceiro como redundância
-    crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
-    steps.push("Resolver DNS local protegido com chattr +i apontando para 127.0.0.1 e parceiro.".to_string());
+        let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
+        steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
 
-    // 8. Máscara de serviços conflitantes, liberação da porta 53 e ativação do Samba AD DC
-    let _ = run_cmd_dry("systemctl mask smbd nmbd winbind systemd-resolved 2>/dev/null || true", sudo, false);
-    let _ = run_cmd_dry("systemctl stop named 2>/dev/null || true", sudo, false);
-    let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
-    let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
-    steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
+        let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
+        steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
 
-    // 9. Abertura do firewall e verificação da replicação DRS
-    let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
-    steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
+        let add_a_cmd = format!(
+            "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
+            target_dc_ip,
+            realm.to_lowercase(),
+            dc_netbios.to_lowercase(),
+            my_ip,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password)
+        );
+        let _ = run_cmd_dry(&add_a_cmd, sudo, false);
+        steps.push(format!("Registro DNS A do RODC ({}.{} -> {}) garantido no AD.", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
 
-    let repl_res = run_cmd_dry("samba-tool drs showrepl 2>&1", sudo, false);
-    if repl_res.success {
-        steps.push("Replicação Active Directory DRS testada e operacional.".to_string());
+        crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
+        steps.push("Resolver DNS local protegido com chattr +i apontando para 127.0.0.1 e parceiro.".to_string());
+
+        let _ = run_cmd_dry("systemctl mask smbd nmbd winbind systemd-resolved 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl stop named 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
+        steps.push("Serviço Samba Active Directory DC (RODC) inicializado e habilitado no systemd.".to_string());
+
+        if payload.setup_bind_hybrid.unwrap_or(false) && dns_backend == "SAMBA_INTERNAL" {
+            let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
+            let temp_named = "/tmp/named.conf.gen";
+            let _ = fs::write(temp_named, named_conf);
+            let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
+            let _ = fs::remove_file(temp_named);
+            let _ = run_cmd_dry("systemctl enable --now named || true", sudo, false);
+            let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
+            steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
+        }
+
+        let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
+        steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente.", fw_rep.total_ports));
+
+        let repl_res = run_cmd_dry("samba-tool drs showrepl 2>&1", sudo, false);
+        if repl_res.success {
+            steps.push("Replicação Active Directory DRS unidirecional do RODC testada e operacional.".to_string());
+        }
+    } else {
+        // DC (Read-Write réplica)
+        steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio réplica ({}).", realm, dc_netbios));
+
+        let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
+        steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
+
+        let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
+        steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
+
+        let add_a_cmd = format!(
+            "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
+            target_dc_ip,
+            realm.to_lowercase(),
+            dc_netbios.to_lowercase(),
+            my_ip,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password)
+        );
+        let _ = run_cmd_dry(&add_a_cmd, sudo, false);
+        steps.push(format!("Registro DNS A de {} ({}.{} -> {}) garantido no AD.", dc_netbios, dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
+
+        let add_ns_cmd = format!(
+            "samba-tool dns add '{}' '{}' @ NS '{}.{}' -U'{}%{}'",
+            target_dc_ip,
+            realm.to_lowercase(),
+            dc_netbios.to_lowercase(),
+            realm.to_lowercase(),
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password)
+        );
+        let _ = run_cmd_dry(&add_ns_cmd, sudo, false);
+        steps.push(format!("Registro DNS NS ({}.{}) registrado como autoritativo na zona {}.", dc_netbios.to_lowercase(), realm.to_lowercase(), realm.to_lowercase()));
+
+        crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
+        steps.push("Resolver DNS local protegido com chattr +i apontando para 127.0.0.1 e parceiro.".to_string());
+
+        let _ = run_cmd_dry("systemctl mask smbd nmbd winbind systemd-resolved 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl stop named 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
+        steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
+
+        if payload.setup_bind_hybrid.unwrap_or(false) && dns_backend == "SAMBA_INTERNAL" {
+            let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
+            let temp_named = "/tmp/named.conf.gen";
+            let _ = fs::write(temp_named, named_conf);
+            let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
+            let _ = fs::remove_file(temp_named);
+            let _ = run_cmd_dry("systemctl enable --now named || true", sudo, false);
+            let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
+            steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
+        }
+
+        let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
+        steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
+
+        let repl_res = run_cmd_dry("samba-tool drs showrepl 2>&1", sudo, false);
+        if repl_res.success {
+            steps.push("Replicação Active Directory DRS testada e operacional.".to_string());
+        }
     }
 
     let evt_id = config.audit.record(
@@ -1186,6 +1319,7 @@ mod tests {
             workgroup: "SRVCLOUD".to_string(),
             hostname_fqdn: "dc1.srvcloud.cloud".to_string(),
             admin_password: "ComplexPassword123!".to_string(),
+            dns_backend: None,
             dns_forwarder: None,
             setup_bind_hybrid: None,
             upstream_forwarders: None,

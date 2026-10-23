@@ -3472,7 +3472,8 @@ function WizardModal({ onClose, t, showToast }) {
   const [step, setStep] = useState(1);
   const [preflight, setPreflight] = useState(null);
   const [loadingPreflight, setLoadingPreflight] = useState(true);
-  const [mode, setMode] = useState('new'); // 'new' | 'join'
+  const [mode, setMode] = useState('join_dc'); // 'new' | 'join_dc' | 'join_rodc' | 'join_member'
+  const [dnsBackend, setDnsBackend] = useState('SAMBA_INTERNAL'); // 'SAMBA_INTERNAL' | 'BIND9_DLZ'
 
   // Form
   const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
@@ -3591,11 +3592,13 @@ function WizardModal({ onClose, t, showToast }) {
 
     try {
       const endpoint = mode === 'new' ? '/api/provision/new-dc' : '/api/provision/join-dc';
+      const domainRole = mode === 'join_rodc' ? 'RODC' : mode === 'join_member' ? 'MEMBER' : 'DC';
       const payload = mode === 'new' ? {
         realm,
         workgroup,
         hostname_fqdn: preflight?.fqdn || 'dc1.srvcloud.cloud',
         admin_password: adminPassword,
+        dns_backend: dnsBackend,
         dns_forwarder: setupBind ? '127.0.0.1:5353' : '8.8.8.8',
         setup_bind_hybrid: setupBind,
       } : {
@@ -3604,6 +3607,9 @@ function WizardModal({ onClose, t, showToast }) {
         admin_username: targetAdmin,
         admin_password: adminPassword,
         netbios_name: dcNetbiosName,
+        domain_role: domainRole,
+        dns_backend: mode === 'join_member' ? 'NONE' : dnsBackend,
+        setup_bind_hybrid: setupBind,
         clean_existing: cleanExisting,
       };
 
@@ -3759,22 +3765,52 @@ function WizardModal({ onClose, t, showToast }) {
               >
                 <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
                   <input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} />
+                  <Server className="w-4 h-4 text-indigo-400" />
                   <span>{t.provisionNewDc}</span>
                 </div>
-                <p className="text-slate-400 text-xs mt-1 pl-5">{t.provisionNewDcDesc}</p>
+                <p className="text-slate-400 text-xs mt-1 pl-6">{t.provisionNewDcDesc}</p>
               </label>
 
               <label 
-                onClick={() => setMode('join')}
+                onClick={() => setMode('join_dc')}
                 className={`block p-4 rounded-xl border cursor-pointer transition ${
-                  mode === 'join' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
+                  mode === 'join_dc' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
                 }`}
               >
                 <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
-                  <input type="radio" checked={mode === 'join'} onChange={() => setMode('join')} />
+                  <input type="radio" checked={mode === 'join_dc'} onChange={() => setMode('join_dc')} />
+                  <Layers className="w-4 h-4 text-cyan-400" />
                   <span>{t.joinExistingDc}</span>
                 </div>
-                <p className="text-slate-400 text-xs mt-1 pl-5">{t.joinExistingDcDesc}</p>
+                <p className="text-slate-400 text-xs mt-1 pl-6">{t.joinExistingDcDesc}</p>
+              </label>
+
+              <label 
+                onClick={() => setMode('join_rodc')}
+                className={`block p-4 rounded-xl border cursor-pointer transition ${
+                  mode === 'join_rodc' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
+                  <input type="radio" checked={mode === 'join_rodc'} onChange={() => setMode('join_rodc')} />
+                  <Lock className="w-4 h-4 text-amber-400" />
+                  <span>{t.joinRodc}</span>
+                </div>
+                <p className="text-slate-400 text-xs mt-1 pl-6">{t.joinRodcDesc}</p>
+              </label>
+
+              <label 
+                onClick={() => setMode('join_member')}
+                className={`block p-4 rounded-xl border cursor-pointer transition ${
+                  mode === 'join_member' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
+                  <input type="radio" checked={mode === 'join_member'} onChange={() => setMode('join_member')} />
+                  <HardDrive className="w-4 h-4 text-emerald-400" />
+                  <span>{t.joinMember}</span>
+                </div>
+                <p className="text-slate-400 text-xs mt-1 pl-6">{t.joinMemberDesc}</p>
               </label>
             </div>
           )}
@@ -3804,10 +3840,12 @@ function WizardModal({ onClose, t, showToast }) {
                 </div>
               )}
 
-              {mode === 'join' && (
+              {mode !== 'new' && (
                 <div className="space-y-2">
                   <div>
-                    <label className="block text-slate-300 font-medium mb-1">Nome NetBIOS do DC Réplica (Hostname do DC) *</label>
+                    <label className="block text-slate-300 font-medium mb-1">
+                      {mode === 'join_member' ? 'Nome NetBIOS da Máquina (Hostname) *' : mode === 'join_rodc' ? 'Nome NetBIOS do RODC *' : 'Nome NetBIOS do DC Réplica (Hostname do DC) *'}
+                    </label>
                     <input 
                       type="text" 
                       value={dcNetbiosName} 
@@ -3830,38 +3868,69 @@ function WizardModal({ onClose, t, showToast }) {
                     />
                   </div>
 
-                  <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-300 font-semibold flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>DNS do AD no DC2:</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleSyncDns}
-                        disabled={syncingDns}
-                        className="px-2 py-0.5 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded text-[10px] transition flex items-center gap-1"
-                      >
-                        {syncingDns ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <RefreshCw className="w-2.5 h-2.5" />}
-                        Sincronizar DNS
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        dnsCheck?.ad_srv_resolves ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
-                      }`}>
-                        SRV AD: {dnsCheck?.ad_srv_resolves ? 'Resolvendo' : 'Pendente'}
-                      </span>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        dnsCheck?.dc2_a_record_in_ad ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
-                      }`}>
-                        Registro A DC2: {dnsCheck?.dc2_a_record_in_ad ? 'Registrado' : 'Pendente'}
-                      </span>
-                    </div>
-                    <p className="text-slate-400 text-[10px]">
-                      Configura o /etc/resolv.conf exclusivamente com o DNS do AD ({targetDcIp}) e 127.0.0.1 (sem DNS externo; encaminhado via BIND/Samba).
-                    </p>
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Usuário Administrador do Domínio *</label>
+                    <input 
+                      type="text" 
+                      value={targetAdmin} 
+                      onChange={(e) => setTargetAdmin(e.target.value)} 
+                      placeholder="administrator"
+                      className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                    />
                   </div>
+
+                  {mode === 'join_member' && (
+                    <div className="bg-emerald-950/40 border border-emerald-800/60 p-3 rounded-lg text-emerald-300 text-xs flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold">Modo Servidor Membro (Bind):</span> A máquina será associada ao domínio Active Directory para compartilhamento e serviços autenticados via Winbind / PAM. O daemon de AD DC fica mascarado e não replica a base NTDS.
+                      </div>
+                    </div>
+                  )}
+
+                  {mode === 'join_rodc' && (
+                    <div className="bg-amber-950/40 border border-amber-800/60 p-3 rounded-lg text-amber-300 text-xs flex items-start gap-2">
+                      <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="font-bold">Modo RODC (Read-Only DC):</span> O controlador receberá réplica unidirecional somente leitura. Senhas de usuários e contas administrativas permanecem seguras fora deste host.
+                      </div>
+                    </div>
+                  )}
+
+                  {(mode === 'join_dc' || mode === 'join_rodc') && (
+                    <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-300 font-semibold flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                          <span>DNS do AD no Host:</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleSyncDns}
+                          disabled={syncingDns}
+                          className="px-2 py-0.5 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded text-[10px] transition flex items-center gap-1"
+                        >
+                          {syncingDns ? <RefreshCw className="w-2.5 h-2.5 animate-spin" /> : <RefreshCw className="w-2.5 h-2.5" />}
+                          Sincronizar DNS
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          dnsCheck?.ad_srv_resolves ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
+                        }`}>
+                          SRV AD: {dnsCheck?.ad_srv_resolves ? 'Resolvendo' : 'Pendente'}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          dnsCheck?.dc2_a_record_in_ad ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
+                        }`}>
+                          Registro A: {dnsCheck?.dc2_a_record_in_ad ? 'Registrado' : 'Pendente'}
+                        </span>
+                      </div>
+                      <p className="text-slate-400 text-[10px]">
+                        Configura o /etc/resolv.conf exclusivamente com o DNS do AD ({targetDcIp}) e 127.0.0.1 (sem DNS externo; encaminhado via BIND/Samba).
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3874,6 +3943,51 @@ function WizardModal({ onClose, t, showToast }) {
                   className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
               </div>
+
+              {/* Seleção do Backend DNS (para New DC, Join DC e Join RODC) */}
+              {mode !== 'join_member' && (
+                <div className="pt-2 border-t border-slate-800 space-y-2">
+                  <label className="block text-slate-300 font-medium">{t.dnsBackendLabel || "Backend DNS"}</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className={`p-2.5 rounded-lg border cursor-pointer flex flex-col gap-0.5 transition ${
+                      dnsBackend === 'SAMBA_INTERNAL' ? 'bg-indigo-950/60 border-indigo-500' : 'bg-slate-950 border-slate-800'
+                    }`}>
+                      <div className="flex items-center gap-2 font-bold text-slate-100 text-xs">
+                        <input type="radio" checked={dnsBackend === 'SAMBA_INTERNAL'} onChange={() => setDnsBackend('SAMBA_INTERNAL')} />
+                        <span>SAMBA_INTERNAL</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 pl-5">{t.dnsBackendInternalDesc || "Recomendado Tranquil IT + BIND Híbrido"}</span>
+                    </label>
+
+                    <label className={`p-2.5 rounded-lg border cursor-pointer flex flex-col gap-0.5 transition ${
+                      dnsBackend === 'BIND9_DLZ' ? 'bg-indigo-950/60 border-indigo-500' : 'bg-slate-950 border-slate-800'
+                    }`}>
+                      <div className="flex items-center gap-2 font-bold text-slate-100 text-xs">
+                        <input type="radio" checked={dnsBackend === 'BIND9_DLZ'} onChange={() => setDnsBackend('BIND9_DLZ')} />
+                        <span>BIND9_DLZ</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 pl-5">{t.dnsBackendBindDlzDesc || "Módulo Dinâmico BIND 9"}</span>
+                    </label>
+                  </div>
+
+                  {dnsBackend === 'SAMBA_INTERNAL' && (
+                    <div className="space-y-1 pt-1">
+                      <label className="flex items-center gap-2 cursor-pointer text-slate-200">
+                        <input 
+                          type="checkbox" 
+                          checked={setupBind} 
+                          onChange={(e) => setSetupBind(e.target.checked)} 
+                          className="rounded bg-slate-950 border-slate-700 text-indigo-600"
+                        />
+                        <span>{t.bindHybridOption}</span>
+                      </label>
+                      <span className="text-[10px] text-slate-400 block pl-6">
+                        Samba gerencia a porta 53 para o domínio AD e encaminha recursão externa para o BIND 9 na porta 5353.
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Opções de Limpeza de Estado Anterior */}
               <div className="pt-2 border-t border-slate-800 space-y-2">
@@ -3903,15 +4017,6 @@ function WizardModal({ onClose, t, showToast }) {
 
               {mode === 'new' && (
                 <div className="space-y-2 pt-2">
-                  <label className="flex items-center gap-2 cursor-pointer text-slate-200">
-                    <input 
-                      type="checkbox" 
-                      checked={setupBind} 
-                      onChange={(e) => setSetupBind(e.target.checked)} 
-                      className="rounded bg-slate-950 border-slate-700 text-indigo-600"
-                    />
-                    <span>{t.bindHybridOption}</span>
-                  </label>
                   <label className="flex items-center gap-2 cursor-pointer text-slate-200">
                     <input type="checkbox" checked={true} readOnly className="rounded bg-slate-950 border-slate-700 text-indigo-600" />
                     <span>{t.chronySignedOption}</span>
