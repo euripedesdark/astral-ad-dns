@@ -250,13 +250,17 @@ pub fn required_ports_for_services(services: &EnabledServices) -> Vec<PortRule> 
         ports.push(r("tcp", "636", "LDAPS (SSL)"));
         ports.push(r("tcp", "3268", "Global Catalog"));
         ports.push(r("tcp", "3269", "Global Catalog SSL"));
-        ports.push(r("tcp", "49152:65535", "RPC Dinâmico (High Ports)"));
+        ports.push(r("tcp", "49152:65535", "RPC Dinâmico TCP (High Ports)"));
+        ports.push(r("udp", "49152:65535", "RPC Dinâmico UDP (High Ports)"));
+        ports.push(r("tcp", "8443", "Smallstep Step-CA PKI (TCP)"));
     }
 
     // Portas de DNS (se Samba AD ou BIND 9 estiverem ativos)
     if services.samba_ad || services.bind {
         ports.push(r("tcp", "53", "DNS Server (TCP)"));
         ports.push(r("udp", "53", "DNS Server (UDP)"));
+        ports.push(r("tcp", "5353", "BIND Hybrid Recursivo (TCP)"));
+        ports.push(r("udp", "5353", "BIND Hybrid Recursivo (UDP)"));
     }
     if services.bind {
         ports.push(r("tcp", "953", "BIND RNDC Control"));
@@ -422,6 +426,17 @@ pub fn ensure_firewall_port_open(port: u16, proto: &str, sudo_pass: Option<&str>
 pub fn check_service_active(service: &str, sudo_pass: Option<&str>) -> bool {
     let res = run_safe_cmd(&format!("systemctl is-active {}", service), sudo_pass);
     res.stdout.trim() == "active"
+}
+
+/// Desativa o systemd-resolved (libera porta 53) e protege /etc/resolv.conf com chattr +i
+pub fn disable_systemd_resolved_and_protect_dns(realm: &str, sudo_pass: Option<&str>) -> CommandResult {
+    let _ = run_cmd_dry("systemctl stop systemd-resolved", sudo_pass, false);
+    let _ = run_cmd_dry("systemctl disable systemd-resolved", sudo_pass, false);
+    let _ = run_cmd_dry("chattr -i /etc/resolv.conf 2>/dev/null || true", sudo_pass, false);
+    let _ = run_cmd_dry("rm -f /etc/resolv.conf", sudo_pass, false);
+    let conf = format!("search {}\\nnameserver 127.0.0.1\\n", realm.to_lowercase());
+    let write_cmd = format!("sh -c 'printf \"{}\" > /etc/resolv.conf && chattr +i /etc/resolv.conf'", conf);
+    run_cmd_dry(&write_cmd, sudo_pass, false)
 }
 
 #[cfg(test)]
