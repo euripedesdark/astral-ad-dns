@@ -19,9 +19,20 @@ use crate::config::AppConfig;
 use crate::api::create_api_router;
 
 async fn spa_fallback_handler(uri: Uri, dist_path: String) -> Response {
-    let path = uri.path().trim_start_matches('/');
+    let raw_path = uri.path();
+    let mut path = raw_path.trim_start_matches('/');
+    if path.starts_with("ad/") {
+        path = &path[3..];
+    } else if path == "ad" {
+        path = "";
+    } else if path.starts_with("dns/") {
+        path = &path[4..];
+    } else if path == "dns" {
+        path = "";
+    }
+
     let target = Path::new(&dist_path).join(path);
-    if target.is_file() {
+    if !path.is_empty() && target.is_file() {
         if let Ok(content) = tokio::fs::read(&target).await {
             let mime = mime_guess::from_path(&target).first_or_octet_stream();
             return (
@@ -70,7 +81,9 @@ async fn main() {
     let api_router = create_api_router(config.clone());
 
     let app = Router::new()
-        .merge(api_router)
+        .merge(api_router.clone())
+        .nest("/ad", api_router.clone())
+        .nest("/dns", api_router)
         .fallback(move |uri| spa_fallback_handler(uri, dist_for_fallback.clone()))
         .layer(cors)
         .layer(TraceLayer::new_for_http());

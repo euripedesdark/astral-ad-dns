@@ -7,6 +7,18 @@ import {
   ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle
 } from 'lucide-react';
 
+
+const API_BASE = typeof window !== "undefined" && window.location.pathname.startsWith("/ad")
+  ? "/ad/api"
+  : (typeof window !== "undefined" && window.location.pathname.startsWith("/dns") ? "/dns/api" : "/api");
+
+const customFetch = (url, opts) => {
+  const finalUrl = (typeof url === "string" && url.startsWith("/api"))
+    ? (API_BASE + url.slice(4))
+    : url;
+  return fetch(finalUrl, opts);
+};
+
 export default function App() {
   const [lang, setLang] = useState('pt');
   const t = translations[lang] || translations.pt;
@@ -24,7 +36,7 @@ export default function App() {
   const fetchStatus = async () => {
     try {
       setLoadingStatus(true);
-      const res = await fetch('/api/status');
+      const res = await customFetch('/api/status');
       if (res.ok) {
         const data = await res.json();
         setStatus(data);
@@ -208,7 +220,7 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
     if (!testDomain.trim()) return;
     try {
       setBenchmarking(true);
-      const res = await fetch('/api/bind/test', {
+      const res = await customFetch('/api/bind/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ domain: testDomain, record_type: 'A' })
@@ -452,7 +464,7 @@ function UsersTab({ t, showToast }) {
   const fetchUsers = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/users');
+      const res = await customFetch('/api/users');
       if (res.ok) {
         const json = await res.json();
         setUsers(json.data || []);
@@ -473,7 +485,7 @@ function UsersTab({ t, showToast }) {
     if (!newUsername.trim() || !newPassword.trim()) return;
 
     try {
-      const res = await fetch('/api/users', {
+      const res = await customFetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -509,7 +521,7 @@ function UsersTab({ t, showToast }) {
     if (!resetPwd.trim() || !showPasswordModal) return;
 
     try {
-      const res = await fetch(`/api/users/${showPasswordModal}/password`, {
+      const res = await customFetch(`/api/users/${showPasswordModal}/password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: resetPwd })
@@ -530,7 +542,7 @@ function UsersTab({ t, showToast }) {
   const handleToggleEnable = async (user) => {
     const action = user.is_disabled ? 'enable' : 'disable';
     try {
-      const res = await fetch(`/api/users/${user.username}/${action}`, { method: 'POST' });
+      const res = await customFetch(`/api/users/${user.username}/${action}`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -546,7 +558,7 @@ function UsersTab({ t, showToast }) {
   const handleDeleteUser = async (username) => {
     if (!window.confirm(`Tem certeza que deseja excluir o usuário ${username}?`)) return;
     try {
-      const res = await fetch(`/api/users/${username}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/users/${username}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -563,7 +575,7 @@ function UsersTab({ t, showToast }) {
     setUserGroupsModal(username);
     setGroupsList([]);
     try {
-      const res = await fetch(`/api/users/${username}/groups`);
+      const res = await customFetch(`/api/users/${username}/groups`);
       if (res.ok) {
         const data = await res.json();
         setGroupsList(data.data || []);
@@ -867,7 +879,7 @@ function GroupsTab({ t, showToast }) {
   const fetchGroups = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/groups');
+      const res = await customFetch('/api/groups');
       if (res.ok) {
         const json = await res.json();
         setGroups(json.data || []);
@@ -887,7 +899,7 @@ function GroupsTab({ t, showToast }) {
     setSelectedGroup(groupname);
     setMembers([]);
     try {
-      const res = await fetch(`/api/groups/${groupname}/members`);
+      const res = await customFetch(`/api/groups/${groupname}/members`);
       if (res.ok) {
         const json = await res.json();
         setMembers(json.data || []);
@@ -902,7 +914,7 @@ function GroupsTab({ t, showToast }) {
     if (!newMemberUsername.trim() || !selectedGroup) return;
 
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/members`, {
+      const res = await customFetch(`/api/groups/${selectedGroup}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: newMemberUsername })
@@ -923,7 +935,7 @@ function GroupsTab({ t, showToast }) {
   const handleRemoveMember = async (username) => {
     if (!window.confirm(`Remover ${username} do grupo ${selectedGroup}?`)) return;
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/members/${username}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/groups/${selectedGroup}/members/${username}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -941,7 +953,7 @@ function GroupsTab({ t, showToast }) {
     if (!newGroupName.trim()) return;
 
     try {
-      const res = await fetch('/api/groups', {
+      const res = await customFetch('/api/groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ groupname: newGroupName, description: newGroupDesc || undefined })
@@ -964,7 +976,7 @@ function GroupsTab({ t, showToast }) {
   const handleDeleteGroup = async (groupname) => {
     if (!window.confirm(`Excluir o grupo ${groupname}?`)) return;
     try {
-      const res = await fetch(`/api/groups/${groupname}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/groups/${groupname}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1165,7 +1177,7 @@ function ComputersTab({ t, showToast }) {
   const fetchComputers = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/computers');
+      const res = await customFetch('/api/computers');
       if (res.ok) {
         const json = await res.json();
         setComputers(json.data || []);
@@ -1186,7 +1198,7 @@ function ComputersTab({ t, showToast }) {
     if (!newComputerName.trim()) return;
 
     try {
-      const res = await fetch('/api/computers', {
+      const res = await customFetch('/api/computers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ computername: newComputerName })
@@ -1208,7 +1220,7 @@ function ComputersTab({ t, showToast }) {
   const handleDeleteComputer = async (name) => {
     if (!window.confirm(`Excluir conta de computador ${name}?`)) return;
     try {
-      const res = await fetch(`/api/computers/${name}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/computers/${name}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1350,7 +1362,7 @@ function DnsTab({ t, showToast }) {
   const fetchZones = async () => {
     try {
       setLoadingZones(true);
-      const res = await fetch('/api/dns/zones');
+      const res = await customFetch('/api/dns/zones');
       if (res.ok) {
         const json = await res.json();
         const zlist = json.data || [];
@@ -1370,7 +1382,7 @@ function DnsTab({ t, showToast }) {
     if (!zoneName) return;
     try {
       setLoadingRecords(true);
-      const res = await fetch(`/api/dns/zones/${zoneName}/records`);
+      const res = await customFetch(`/api/dns/zones/${zoneName}/records`);
       if (res.ok) {
         const json = await res.json();
         setRecords(json.data || []);
@@ -1397,7 +1409,7 @@ function DnsTab({ t, showToast }) {
     if (!newZoneName.trim()) return;
 
     try {
-      const res = await fetch('/api/dns/zones', {
+      const res = await customFetch('/api/dns/zones', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ zone_name: newZoneName })
@@ -1419,7 +1431,7 @@ function DnsTab({ t, showToast }) {
   const handleDeleteZone = async (zoneName) => {
     if (!window.confirm(`Excluir permanentemente a zona DNS ${zoneName}?`)) return;
     try {
-      const res = await fetch(`/api/dns/zones/${zoneName}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/dns/zones/${zoneName}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1437,7 +1449,7 @@ function DnsTab({ t, showToast }) {
     if (!recData.trim() || !selectedZone) return;
 
     try {
-      const res = await fetch(`/api/dns/zones/${selectedZone}/records`, {
+      const res = await customFetch(`/api/dns/zones/${selectedZone}/records`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1466,7 +1478,7 @@ function DnsTab({ t, showToast }) {
   const handleDeleteRecord = async (rec) => {
     if (!window.confirm(`Excluir o registro ${rec.record_type}: ${rec.name} -> ${rec.data}?`)) return;
     try {
-      const res = await fetch(`/api/dns/zones/${selectedZone}/records`, {
+      const res = await customFetch(`/api/dns/zones/${selectedZone}/records`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1762,13 +1774,13 @@ function BindTab({ t, showToast }) {
   const fetchBind = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/bind/status');
+      const res = await customFetch('/api/bind/status');
       if (res.ok) {
         const data = await res.json();
         setBindStatus(data);
         setForwarders(data.forwarders || []);
       }
-      const lres = await fetch('/api/bind/logs');
+      const lres = await customFetch('/api/bind/logs');
       if (lres.ok) {
         const ldata = await lres.json();
         setLogs(ldata.data || []);
@@ -1799,7 +1811,7 @@ function BindTab({ t, showToast }) {
   const handleSaveForwarders = async () => {
     try {
       setSaving(true);
-      const res = await fetch('/api/bind/forwarders', {
+      const res = await customFetch('/api/bind/forwarders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ forwarders })
@@ -1820,7 +1832,7 @@ function BindTab({ t, showToast }) {
 
   const handleServiceAction = async (action) => {
     try {
-      const res = await fetch(`/api/bind/service/${action}`, { method: 'POST' });
+      const res = await customFetch(`/api/bind/service/${action}`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1976,7 +1988,7 @@ function HealthTab({ t, showToast }) {
   const fetchDrs = async () => {
     try {
       setLoadingDrs(true);
-      const res = await fetch('/api/health/drs');
+      const res = await customFetch('/api/health/drs');
       if (res.ok) {
         const json = await res.json();
         setDrs(json.data);
@@ -1990,7 +2002,7 @@ function HealthTab({ t, showToast }) {
 
   const fetchScript = async () => {
     try {
-      const res = await fetch('/api/health/sysvol-script');
+      const res = await customFetch('/api/health/sysvol-script');
       if (res.ok) {
         const json = await res.json();
         setPsScript(json.data || '');
@@ -2008,7 +2020,7 @@ function HealthTab({ t, showToast }) {
   const handleDbCheck = async () => {
     try {
       setDbChecking(true);
-      const res = await fetch('/api/health/dbcheck', {
+      const res = await customFetch('/api/health/dbcheck', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fix: fixDb })
@@ -2026,7 +2038,7 @@ function HealthTab({ t, showToast }) {
   const handleSysvolCheck = async () => {
     try {
       setCheckingSysvol(true);
-      const res = await fetch('/api/health/sysvolcheck', { method: 'POST' });
+      const res = await customFetch('/api/health/sysvolcheck', { method: 'POST' });
       const json = await res.json();
       setSysvolResult(json.data);
       showToast(json.message, json.success ? 'success' : 'error');
@@ -2041,7 +2053,7 @@ function HealthTab({ t, showToast }) {
     if (!window.confirm('Deseja realmente restaurar as permissões e ACLs padrão do SYSVOL?')) return;
     try {
       setCheckingSysvol(true);
-      const res = await fetch('/api/health/sysvolreset', { method: 'POST' });
+      const res = await customFetch('/api/health/sysvolreset', { method: 'POST' });
       const json = await res.json();
       setSysvolResult(json.data);
       showToast(json.message, json.success ? 'success' : 'error');
@@ -2204,7 +2216,7 @@ function BackupsTab({ t, showToast }) {
   const fetchBackups = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/backups');
+      const res = await customFetch('/api/backups');
       if (res.ok) {
         const json = await res.json();
         setBackups(json.data || []);
@@ -2223,7 +2235,7 @@ function BackupsTab({ t, showToast }) {
   const handleCreateBackup = async () => {
     try {
       setCreating(true);
-      const res = await fetch('/api/backups', { method: 'POST' });
+      const res = await customFetch('/api/backups', { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -2317,7 +2329,7 @@ function WizardModal({ onClose, t, showToast }) {
     async function loadPreflight() {
       try {
         setLoadingPreflight(true);
-        const res = await fetch('/api/provision/preflight');
+        const res = await customFetch('/api/provision/preflight');
         if (res.ok) {
           const data = await res.json();
           setPreflight(data);
@@ -2353,7 +2365,7 @@ function WizardModal({ onClose, t, showToast }) {
         admin_password: adminPassword,
       };
 
-      const res = await fetch(endpoint, {
+      const res = await customFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
