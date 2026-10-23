@@ -17,6 +17,7 @@ name = "dns_manager"
 path = "dns/dns_manager.rs"
 
 [dependencies]
+jsonwebtoken = { version = "11.1", features = ["rust_crypto"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }

@@ -20,6 +20,12 @@ use crate::config::AppConfig;
 
 pub fn create_api_router(config: Arc<AppConfig>) -> Router {
     Router::new()
+        // Autenticação Unificada (OAuth2 / Samba AD / Linux Sudo / Postgres Superuser)
+        .route("/api/auth/login", post(crate::auth::login_handler))
+        .route("/api/auth/me", get(crate::auth::me_handler))
+        .route("/api/auth/logout", post(crate::auth::logout_handler))
+        .route("/api/auth/providers", get(crate::auth::providers_handler))
+
         // Status & Overview
         .route("/api/status", get(status::get_status))
         .route("/api/checks", get(status::run_quick_checks))

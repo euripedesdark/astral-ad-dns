@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub admin_password: Option<String>,
     pub web_dist_path: String,
     pub audit: Arc<AuditTrail>,
+    pub auth_secret: String,
 }
 
 impl AppConfig {
@@ -24,6 +25,7 @@ impl AppConfig {
             .or_else(|| Some("Copa@@2026".to_string()));
         let web_dist_path = env::var("ASTRAL_WEB_DIST").unwrap_or_else(|_| "./web/dist".to_string());
         let audit = Arc::new(AuditTrail::new(500));
+        let auth_secret = crate::auth::get_auth_secret();
 
         Self {
             bind_addr,
@@ -31,6 +33,7 @@ impl AppConfig {
             admin_password,
             web_dist_path,
             audit,
+            auth_secret,
         }
     }
 }
