@@ -20,7 +20,19 @@ const customFetch = (url, opts) => {
 };
 
 export default function App() {
-  const [lang, setLang] = useState('pt');
+  const [lang, setLang] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("astral_lang");
+      if (saved && ["pt", "en", "es", "fr"].includes(saved)) return saved;
+    }
+    return "pt";
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("astral_lang", lang);
+    }
+  }, [lang]);
   const t = translations[lang] || translations.pt;
   const [activeTab, setActiveTab] = useState('dashboard');
   const [status, setStatus] = useState(null);
@@ -132,36 +144,20 @@ export default function App() {
             <span>{t.wizard}</span>
           </button>
 
-          {/* Language Switcher */}
-          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs font-medium">
-            <button 
-              onClick={() => setLang('pt')} 
-              className={`px-2 py-1 rounded transition ${lang === 'pt' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
-              title="Português (Brasil)"
+          {/* Language Selector Dropdown (Caixa de Seleção) */}
+          <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700/80 hover:border-indigo-500/60 transition rounded-lg px-2.5 py-1.5 text-xs shadow-inner">
+            <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              className="bg-transparent text-slate-200 text-xs font-semibold focus:outline-none cursor-pointer pr-2"
+              aria-label={t.selectLanguage || "Selecionar Idioma"}
             >
-              🇧🇷 PT
-            </button>
-            <button 
-              onClick={() => setLang('en')} 
-              className={`px-2 py-1 rounded transition ${lang === 'en' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
-              title="English (US)"
-            >
-              🇺🇸 EN
-            </button>
-            <button 
-              onClick={() => setLang('es')} 
-              className={`px-2 py-1 rounded transition ${lang === 'es' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
-              title="Español"
-            >
-              🇪🇸 ES
-            </button>
-            <button 
-              onClick={() => setLang('fr')} 
-              className={`px-2 py-1 rounded transition ${lang === 'fr' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
-              title="Français"
-            >
-              🇫🇷 FR
-            </button>
+              <option value="pt" className="bg-slate-900 text-slate-100 font-medium">🇧🇷 Português (Brasil)</option>
+              <option value="en" className="bg-slate-900 text-slate-100 font-medium">🇺🇸 English (US)</option>
+              <option value="es" className="bg-slate-900 text-slate-100 font-medium">🇪🇸 Español (España)</option>
+              <option value="fr" className="bg-slate-900 text-slate-100 font-medium">🇫🇷 Français (France)</option>
+            </select>
           </div>
         </div>
       </header>
@@ -353,20 +349,20 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           </div>
           <div className="space-y-2 text-xs">
             <div className="flex justify-between py-1 border-b border-slate-800/40">
-              <span className="text-slate-400">Escuta Recurso:</span>
+              <span className="text-slate-400">{t.listenResource}:</span>
               <span className="font-mono text-slate-200">127.0.0.1:5353</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">Modo:</span>
-              <span className="text-slate-300">Apenas Recursivo (Não-autoritativo)</span>
+              <span className="text-slate-300">{t.bindRecursiveOnly}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
-              <span className="text-slate-400">Configuração:</span>
+              <span className="text-slate-400">{t.bindConfigFile}:</span>
               <span className="font-mono text-slate-300">/etc/named.conf</span>
             </div>
             <div className="flex justify-between py-1">
-              <span className="text-slate-400">Cache DNS:</span>
-              <span className="font-mono text-emerald-400">Habilitado (64M)</span>
+              <span className="text-slate-400">{t.dnsCache}:</span>
+              <span className="font-mono text-emerald-400">{t.dnsCacheEnabled}</span>
             </div>
           </div>
         </div>
@@ -386,7 +382,7 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           </div>
           <div className="space-y-2 text-xs">
             <div className="flex justify-between py-1 border-b border-slate-800/40">
-              <span className="text-slate-400">Fonte de Referência:</span>
+              <span className="text-slate-400">{t.refSource}:</span>
               <span className="font-mono text-slate-200">{status?.ntp?.reference_id || 'gps.nu.ntp.br'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
@@ -394,11 +390,11 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
               <span className="font-mono text-slate-200">{status?.ntp?.stratum || 2}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
-              <span className="text-slate-400">Desvio (Offset):</span>
+              <span className="text-slate-400">{t.offset}:</span>
               <span className="font-mono text-emerald-400">{status?.ntp?.offset || '< 0.2ms'}</span>
             </div>
             <div className="flex justify-between py-1">
-              <span className="text-slate-400">Socket Kerberos:</span>
+              <span className="text-slate-400">{t.kerberosSocket}:</span>
               <span className="font-mono text-slate-300">/var/lib/samba/ntp_signd</span>
             </div>
           </div>
@@ -485,7 +481,7 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
         {checklistResults && (
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs text-slate-400 pb-1">
-              <span>Status da Bateria:</span>
+              <span>{t.batteryStatus}:</span>
               <span className="font-mono text-emerald-400 font-semibold">
                 {checklistResults.filter(c => c.ok).length} / {checklistResults.length} {t.checkSuccess}
               </span>
@@ -652,7 +648,7 @@ function UsersTab({ t, showToast }) {
   };
 
   const handleDeleteUser = async (username) => {
-    if (!window.confirm(`Tem certeza que deseja excluir o usuário ${username}?`)) return;
+    if (!window.confirm(`${t.confirmDeleteUser} '${username}'?`)) return;
     try {
       const res = await customFetch(`/api/users/${username}`, { method: 'DELETE' });
       const data = await res.json();
@@ -948,7 +944,7 @@ function UsersTab({ t, showToast }) {
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
-                <span>Grupos de {userGroupsModal}</span>
+                <span>{t.userGroupsOf} {userGroupsModal}</span>
               </h3>
               <button onClick={() => setUserGroupsModal(null)} className="text-slate-400 hover:text-white">&times;</button>
             </div>
@@ -961,7 +957,7 @@ function UsersTab({ t, showToast }) {
                 </div>
               ))}
               {groupsList.length === 0 && (
-                <div className="text-slate-500 text-center py-4 font-sans">Carregando grupos...</div>
+                <div className="text-slate-500 text-center py-4 font-sans">{t.loadingGroups}</div>
               )}
             </div>
           </div>
@@ -2400,7 +2396,7 @@ function BackupsTab({ t, showToast }) {
               {backups.length === 0 && (
                 <tr>
                   <td colSpan={3} className="py-6 text-center text-slate-500 font-sans">
-                    Nenhum backup em /var/backups/samba. Clique em "Criar Backup Online Agora" para gerar um.
+                    {t.noBackupsNotice}
                   </td>
                 </tr>
               )}
@@ -2534,7 +2530,7 @@ function DiagnosticsTab({ t, showToast }) {
             <Shield className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-[11px] text-slate-400 uppercase font-semibold">Firewall AD</div>
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">{t.firewallAdCounter}</div>
             <div className="text-xl font-bold text-white font-mono">
               {firewallData ? `${firewallData.open_count}/${firewallData.total_ports}` : '-'}
             </div>
@@ -2629,7 +2625,7 @@ function DiagnosticsTab({ t, showToast }) {
         <div className="bg-indigo-950/40 border border-indigo-800/60 rounded-lg p-3 text-xs text-indigo-300 flex items-start gap-2.5">
           <Shield className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
           <span>
-            <strong>Garantia Estrita de Não Destruição:</strong> O backend do Astral AD valida todas as regras com tokens estritos e rejeita qualquer comando com <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-F</code>, <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">--flush</code>, <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-X</code> ou <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-D</code>. As portas necessárias são verificadas com <code className="bg-slate-950 px-1 py-0.5 rounded text-sky-300">iptables -C INPUT</code> e adicionadas exclusivamente com <code className="bg-slate-950 px-1 py-0.5 rounded text-emerald-300">iptables -I INPUT 1</code>.
+            <strong>{t.strictSafetyNotice}:</strong> {t.strictSafetyNoticeDesc}
           </span>
         </div>
 
@@ -2701,7 +2697,7 @@ function AuditTab({ t, showToast }) {
   }, []);
 
   const handleClear = async () => {
-    if (!window.confirm('Deseja limpar todos os registros de auditoria em memória?')) return;
+    if (!window.confirm(t.confirmClearAudit)) return;
     try {
       setClearing(true);
       const res = await customFetch('/api/audit/clear', { method: 'POST' });
@@ -2790,7 +2786,7 @@ function AuditTab({ t, showToast }) {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filtrar por ação, alvo, ID..."
+            placeholder={t.filterSearchPlaceholder}
             className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
           />
         </div>
@@ -2969,10 +2965,10 @@ function WizardModal({ onClose, t, showToast }) {
 
         {/* Step Indicator */}
         <div className="bg-slate-900/60 px-6 py-3 border-b border-slate-800/80 grid grid-cols-4 gap-2 text-center text-xs">
-          <span className={`py-1 rounded font-medium ${step === 1 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>1. Checagem</span>
-          <span className={`py-1 rounded font-medium ${step === 2 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>2. Topologia</span>
-          <span className={`py-1 rounded font-medium ${step === 3 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>3. Parâmetros</span>
-          <span className={`py-1 rounded font-medium ${step === 4 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>4. Execução</span>
+          <span className={`py-1 rounded font-medium ${step === 1 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>{t.wizardStep1Title}</span>
+          <span className={`py-1 rounded font-medium ${step === 2 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>{t.wizardStep2Title}</span>
+          <span className={`py-1 rounded font-medium ${step === 3 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>{t.wizardStep3Title}</span>
+          <span className={`py-1 rounded font-medium ${step === 4 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>{t.wizardStep4Title}</span>
         </div>
 
         {/* Modal Body */}
@@ -3006,7 +3002,7 @@ function WizardModal({ onClose, t, showToast }) {
                   </div>
 
                   <div className="space-y-1.5">
-                    <span className="font-bold text-slate-200">Portas de Firewall do Active Directory:</span>
+                    <span className="font-bold text-slate-200">{t.adFirewallPortsLabel}:</span>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                       {preflight.ports_open.map((p, idx) => (
                         <div key={idx} className="bg-slate-950 border border-slate-800/80 px-2.5 py-1.5 rounded flex items-center justify-between text-[11px]">
@@ -3014,7 +3010,7 @@ function WizardModal({ onClose, t, showToast }) {
                           <span className={`px-1.5 py-0.2 rounded font-sans text-[10px] ${
                             p.open ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
                           }`}>
-                            {p.open ? 'Aberta' : 'Será Adicionada'}
+                            {p.open ? t.portOpen : t.willBeAdded}
                           </span>
                         </div>
                       ))}
@@ -3131,7 +3127,7 @@ function WizardModal({ onClose, t, showToast }) {
                 {!executing && !errorMsg && <CheckCircle className="w-5 h-5 text-emerald-400" />}
                 {!executing && errorMsg && <AlertTriangle className="w-5 h-5 text-rose-400" />}
                 <h4 className="font-bold text-sm text-slate-100">
-                  {executing ? t.provisioningInProgress : errorMsg ? 'Erro no Provisionamento' : 'Provisionamento Concluído com Sucesso!'}
+                  {executing ? t.provisioningInProgress : errorMsg ? t.provisionErrorTitle : t.provisionSuccessTitle}
                 </h4>
               </div>
 
@@ -3170,7 +3166,7 @@ function WizardModal({ onClose, t, showToast }) {
               onClick={onClose}
               className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
             >
-              {step === 4 ? 'Fechar' : t.cancel}
+              {step === 4 ? t.stepClose : t.cancel}
             </button>
             {step < 3 && (
               <button 
