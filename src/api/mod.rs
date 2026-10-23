@@ -1,3 +1,4 @@
+pub mod terminal;
 pub mod status;
 pub mod users;
 pub mod groups;
@@ -25,6 +26,11 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         .route("/api/auth/me", get(crate::auth::me_handler))
         .route("/api/auth/logout", post(crate::auth::logout_handler))
         .route("/api/auth/providers", get(crate::auth::providers_handler))
+
+        
+        // Terminal Operacional para Intervenções Pontuais (Restrito a AD e Linux Sudo)
+        .route("/api/terminal/status", get(terminal::get_terminal_status))
+        .route("/api/terminal/exec", post(terminal::exec_terminal_cmd))
 
         // Status & Overview
         .route("/api/status", get(status::get_status))

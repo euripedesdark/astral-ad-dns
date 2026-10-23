@@ -1,5 +1,11 @@
 export const translations = {
   pt: {
+    terminal: "Terminal do Sistema",
+    terminalDesc: "Console operacional para intervenções pontuais na infraestrutura.",
+    terminalDenied: "Acesso Negado: O terminal do sistema é restrito a administradores do Samba AD ou Linux Sudo. Superusuários PostgreSQL não possuem acesso ao terminal.",
+    terminalPrompt: "Digite um comando...",
+    clearTerminal: "Limpar Terminal",
+
     loginTitle: "Acesso Unificado Astral",
     loginSubtitle: "Autenticação centralizada para infraestrutura e serviços Astral",
     loginProvider: "Método de Autenticação",
@@ -270,6 +276,12 @@ export const translations = {
   },
   
   en: {
+    terminal: "System Terminal",
+    terminalDesc: "Operational console for punctual infrastructure interventions.",
+    terminalDenied: "Access Denied: The system terminal is restricted to Samba AD or Linux Sudo administrators. PostgreSQL superusers do not have terminal access.",
+    terminalPrompt: "Enter command...",
+    clearTerminal: "Clear Terminal",
+
     loginTitle: "Astral Unified Access",
     loginSubtitle: "Centralized authentication for Astral infrastructure & services",
     loginProvider: "Authentication Method",
@@ -529,6 +541,12 @@ export const translations = {
   },
 
   es: {
+    terminal: "Terminal del Sistema",
+    terminalDesc: "Consola operacional para intervenciones puntuales en la infraestructura.",
+    terminalDenied: "Acceso Denegado: La terminal del sistema está restringida a administradores de Samba AD o Linux Sudo. Los superusuarios de PostgreSQL no tienen acceso a la terminal.",
+    terminalPrompt: "Ingrese comando...",
+    clearTerminal: "Limpiar Terminal",
+
     loginTitle: "Acceso Unificado Astral",
     loginSubtitle: "Autenticación centralizada para infraestructura y servicios Astral",
     loginProvider: "Método de Autenticación",
@@ -788,6 +806,12 @@ export const translations = {
   },
 
   fr: {
+    terminal: "Terminal Système",
+    terminalDesc: "Console opérationnelle pour interventions ponctuelles sur l'infrastructure.",
+    terminalDenied: "Accès Refusé : Le terminal système est réservé aux administrateurs Samba AD ou Linux Sudo. Les superutilisateurs PostgreSQL n'y ont pas accès.",
+    terminalPrompt: "Entrez une commande...",
+    clearTerminal: "Effacer le Terminal",
+
     loginTitle: "Accès Unifié Astral",
     loginSubtitle: "Authentification centralisée pour l'infrastructure et services Astral",
     loginProvider: "Méthode d'Authentification",

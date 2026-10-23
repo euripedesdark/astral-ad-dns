@@ -1,0 +1,57 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-ad-dns-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-rust:
+    name: Backend - Rust Test & Build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        run: cargo check --all-targets
+
+      - name: Run Cargo tests
+        run: cargo test --verbose
+
+      - name: Build release binary
+        run: cargo build --release --bin astral-ad-dns
+
+  frontend-react:
+    name: Frontend - React / Vite Build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies & build web dist
+        run: |
+          cd web
+          npm install
+          npm run build
