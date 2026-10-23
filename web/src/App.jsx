@@ -18,6 +18,12 @@ const customFetch = (url, opts = {}) => {
     : url;
   const headers = { ...(opts.headers || {}) };
   if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search);
+    const qToken = params.get("token");
+    if (qToken) {
+      localStorage.setItem("astral_token", qToken);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
     const token = localStorage.getItem("astral_token");
     if (token && !headers["Authorization"]) {
       headers["Authorization"] = `Bearer ${token}`;
@@ -467,6 +473,7 @@ export default function App() {
           <NavItem active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} icon={<Activity className="w-4 h-4 text-emerald-400" />} label={t.diagnostics} />
           <NavItem active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<Terminal className="w-4 h-4 text-indigo-400" />} label={t.audit} />
           <NavItem active={activeTab === 'backups'} onClick={() => setActiveTab('backups')} icon={<HardDrive className="w-4 h-4" />} label={t.backups} />
+          <NavItem active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')} icon={<Terminal className="w-4 h-4 text-emerald-400" />} label={t.terminal || "Terminal"} />
         </aside>
 
         {/* Tab Content */}
@@ -481,6 +488,7 @@ export default function App() {
           {activeTab === 'diagnostics' && <DiagnosticsTab t={t} showToast={showToast} />}
           {activeTab === 'audit' && <AuditTab t={t} showToast={showToast} />}
           {activeTab === 'backups' && <BackupsTab t={t} showToast={showToast} />}
+          {activeTab === 'terminal' && <TerminalTab t={t} operator={operator} showToast={showToast} customFetch={customFetch} />}
         </main>
       </div>
 
@@ -3477,6 +3485,148 @@ function WizardModal({ onClose, t, showToast }) {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+
+function TerminalTab({ t, operator, showToast, customFetch }) {
+  const isDenied = operator?.provider === 'Postgres';
+  const [lines, setLines] = useState([
+    { output: 'Astral AD & Hybrid DNS Management Console [Terminal]' },
+    { output: 'Ambiente autorizado para intervenções pontuais do Active Directory, BIND 9 e SO.' }
+  ]);
+  const [cmd, setCmd] = useState('');
+  const [loading, setLoading] = useState(false);
+  const endRef = React.useRef(null);
+
+  React.useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [lines]);
+
+  const handleExec = async (e) => {
+    if (e) e.preventDefault();
+    const trimmed = cmd.trim();
+    if (!trimmed || loading) return;
+
+    if (trimmed === 'clear') {
+      setLines([]);
+      setCmd('');
+      return;
+    }
+
+    const current = trimmed;
+    setCmd('');
+    setLoading(true);
+    setLines(prev => [...prev, { cmd: current }]);
+
+    try {
+      const res = await customFetch('/api/terminal/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: current })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        const out = (data.stdout || '') + (data.stderr ? ((data.stdout ? '\n' : '') + data.stderr) : '');
+        setLines(prev => [...prev, { output: out || '(Sem saída)' }]);
+      } else {
+        setLines(prev => [...prev, { output: data.error || 'Erro na execução', isError: true }]);
+        showToast(data.error || 'Erro ao executar comando', 'error');
+      }
+    } catch (err) {
+      setLines(prev => [...prev, { output: err.message || 'Erro de rede', isError: true }]);
+      showToast('Erro de rede', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (isDenied) {
+    return (
+      <div className="p-8 max-w-2xl mx-auto">
+        <div className="bg-rose-950/40 border border-rose-800/80 rounded-2xl p-6 text-rose-200">
+          <div className="flex items-center gap-3 mb-3">
+            <AlertTriangle className="w-8 h-8 text-rose-400" />
+            <h3 className="text-lg font-bold text-rose-100">Acesso ao Terminal Negado</h3>
+          </div>
+          <p className="text-sm leading-relaxed mb-4">
+            {t.terminalDenied || "O terminal do sistema operacional é restrito exclusivamente a administradores do Samba Active Directory ou operadores Linux (sudo/root)."}
+          </p>
+          <div className="bg-slate-950/70 border border-slate-800 rounded-lg p-3 text-xs font-mono text-slate-400">
+            Operador atual: <strong>{operator?.username}</strong> &bull; Provedor: <strong>{operator?.provider}</strong> (Permissão restrita a operações de banco de dados).
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 sm:p-6 flex flex-col h-[calc(100vh-140px)]">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+            <Terminal className="w-5 h-5 text-emerald-400" />
+            {t.terminal || 'Terminal do Sistema'}
+          </h2>
+          <p className="text-xs text-slate-400">{t.terminalDesc || 'Console operacional para intervenções pontuais na infraestrutura.'}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs px-2.5 py-1 rounded bg-slate-900 border border-slate-800 text-slate-400 font-mono">
+            {operator?.username} ({operator?.provider})
+          </span>
+          <button
+            onClick={() => setLines([])}
+            className="text-xs px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 transition cursor-pointer"
+          >
+            {t.clearTerminal || 'Limpar'}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-y-auto font-mono text-sm flex flex-col justify-between shadow-inner">
+        <div className="space-y-2">
+          {lines.map((l, idx) => (
+            <div key={idx}>
+              {l.cmd && (
+                <div className="text-sky-400 font-semibold flex items-center gap-1.5">
+                  <span className="text-emerald-400">[{operator?.username}@dc-erp ~]$</span>
+                  <span className="text-slate-100">{l.cmd}</span>
+                </div>
+              )}
+              {l.output && (
+                <pre className={`text-xs whitespace-pre-wrap break-all ${l.isError ? 'text-rose-400' : 'text-slate-300'}`}>
+                  {l.output}
+                </pre>
+              )}
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+
+        <form onSubmit={handleExec} className="mt-4 pt-3 border-t border-slate-800/80 flex items-center gap-2">
+          <span className="text-emerald-400 font-semibold text-xs whitespace-nowrap">
+            [{operator?.username}@dc-erp ~]$
+          </span>
+          <input
+            type="text"
+            value={cmd}
+            onChange={(e) => setCmd(e.target.value)}
+            disabled={loading}
+            placeholder={t.terminalPrompt || 'Digite um comando...'}
+            className="flex-1 bg-slate-900 border border-slate-800 focus:border-emerald-500 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none"
+            autoFocus
+          />
+          <button
+            type="submit"
+            disabled={loading || !cmd.trim()}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold disabled:opacity-50 transition cursor-pointer flex items-center gap-1"
+          >
+            {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ArrowRight className="w-3.5 h-3.5" />}
+            <span>Executar</span>
+          </button>
+        </form>
       </div>
     </div>
   );
