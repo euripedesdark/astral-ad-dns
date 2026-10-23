@@ -83,6 +83,7 @@ impl AuditTrail {
         }
     }
 
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.events.read().map(|l| l.len()).unwrap_or(0)
     }

@@ -57,6 +57,7 @@ fn load_nameservers(path: &str) -> Vec<DnsServer> {
     servers
 }
 
+#[allow(dead_code)]
 fn run_cmd(cmd: &str) {
     println!("[RUN] {}", cmd);
     let _ = Command::new("sh").arg("-c").arg(cmd).status();

@@ -280,6 +280,7 @@ pub fn required_ports_for_services(services: &EnabledServices) -> Vec<PortRule> 
 }
 
 /// Portas oficiais recomendadas para o Samba 4 Active Directory Domain Controller
+#[allow(dead_code)]
 pub fn samba_ad_ports() -> Vec<PortRule> {
     let services = EnabledServices {
         samba_ad: true,

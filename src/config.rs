@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub admin_password: Option<String>,
     pub web_dist_path: String,
     pub audit: Arc<AuditTrail>,
+    #[allow(dead_code)]
     pub auth_secret: String,
 }
 

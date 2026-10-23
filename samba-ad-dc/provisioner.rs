@@ -94,14 +94,14 @@ impl DistroProvisioner for FedoraProvisioner {
         let ok = run_cmd(&cmd);
         if use_ssl {
             println!("[SSL] Habilitando certificados TLS e LDAPS porta 636...");
-            let ssl_cfg = format!(
+            let _ssl_cfg = format!(
                 "tls enabled = yes\ntls keyfile = /var/lib/samba/private/tls/key.pem\ntls certfile = /var/lib/samba/private/tls/cert.pem\ntls cafile = /var/lib/samba/private/tls/ca.pem\n"
             );
             println!("[OK] Diretivas de TLS configuradas.");
         }
         ok
     }
-    fn configure_kerberos(&self, cfg: &AdConfig) -> bool {
+    fn configure_kerberos(&self, _cfg: &AdConfig) -> bool {
         println!("[KRB5] Copiando configuração do Kerberos KDC...");
         run_cmd("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf || true")
     }
