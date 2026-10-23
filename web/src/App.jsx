@@ -4,8 +4,9 @@ import {
   Server, Shield, Globe, Users, Network, Activity, 
   Database, RefreshCw, Key, CheckCircle, XCircle, AlertTriangle, 
   Search, Plus, Trash2, Edit3, ArrowRight, Copy, Terminal, 
-  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle, User, LogOut
+  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle, User, LogOut, Heart
 } from 'lucide-react';
+import DonationModal from './components/DonationModal';
 
 
 const API_BASE = typeof window !== "undefined" && window.location.pathname.startsWith("/ad")
@@ -62,6 +63,7 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
+  const [showDonations, setShowDonations] = useState(false);
   const [operator, setOperator] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [authProvider, setAuthProvider] = useState('ad');
@@ -80,13 +82,34 @@ export default function App() {
           setOperator(body.data);
         } else {
           setOperator(null);
+          try {
+            const pRes = await customFetch('/api/auth/providers');
+            if (pRes.ok) {
+              const pData = await pRes.json();
+              if (pData?.data?.recommended) setAuthProvider(pData.data.recommended);
+            }
+          } catch (_) {}
         }
       } else {
         setOperator(null);
+        try {
+          const pRes = await customFetch('/api/auth/providers');
+          if (pRes.ok) {
+            const pData = await pRes.json();
+            if (pData?.data?.recommended) setAuthProvider(pData.data.recommended);
+          }
+        } catch (_) {}
       }
     } catch (err) {
       console.warn("Auth check failed:", err);
       setOperator(null);
+      try {
+        const pRes = await customFetch('/api/auth/providers');
+        if (pRes.ok) {
+          const pData = await pRes.json();
+          if (pData?.data?.recommended) setAuthProvider(pData.data.recommended);
+        }
+      } catch (_) {}
     } finally {
       setAuthChecking(false);
     }
@@ -204,19 +227,30 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs">
-            <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-            <select
-              value={lang}
-              onChange={(e) => setLang(e.target.value)}
-              className="bg-transparent text-slate-200 text-xs font-semibold focus:outline-none cursor-pointer pr-2"
-              aria-label={t.selectLanguage || "Selecionar Idioma"}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowDonations(true)}
+              className="flex items-center gap-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition cursor-pointer"
+              title={t.donate || "Apoiar / Doações"}
             >
+              <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+              <span className="hidden sm:inline">{t.donate || "Apoiar"}</span>
+            </button>
+            <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs">
+              <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <select
+                value={lang}
+                onChange={(e) => setLang(e.target.value)}
+                className="bg-transparent text-slate-200 text-xs font-semibold focus:outline-none cursor-pointer pr-2"
+                aria-label={t.selectLanguage || "Selecionar Idioma"}
+              >
               <option value="pt" className="bg-slate-900 text-slate-100">🇧🇷 Português (Brasil)</option>
               <option value="en" className="bg-slate-900 text-slate-100">🇺🇸 English (US)</option>
               <option value="es" className="bg-slate-900 text-slate-100">🇪🇸 Español (España)</option>
               <option value="fr" className="bg-slate-900 text-slate-100">🇫🇷 Français (France)</option>
             </select>
+          </div>
           </div>
         </div>
 
@@ -441,6 +475,16 @@ export default function App() {
             </div>
           )}
 
+          <button
+            type="button"
+            onClick={() => setShowDonations(true)}
+            className="flex items-center gap-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition cursor-pointer shadow-inner"
+            title={t.donate || "Apoiar / Doações"}
+          >
+            <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+            <span className="hidden sm:inline">{t.donate || "Apoiar"}</span>
+          </button>
+
           {/* Language Selector Dropdown (Caixa de Seleção) */}
           <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700/80 hover:border-indigo-500/60 transition rounded-lg px-2.5 py-1.5 text-xs shadow-inner">
             <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
@@ -494,6 +538,7 @@ export default function App() {
 
       {/* Provisioning Wizard Modal */}
       {showWizard && <WizardModal onClose={() => { setShowWizard(false); fetchStatus(); }} t={t} showToast={showToast} />}
+      <DonationModal isOpen={showDonations} onClose={() => setShowDonations(false)} lang={lang} />
     </div>
   );
 }
@@ -2718,6 +2763,66 @@ function DiagnosticsTab({ t, showToast }) {
   const [loadingFw, setLoadingFw] = useState(false);
   const [openingFw, setOpeningFw] = useState(false);
   const [dryRunFw, setDryRunFw] = useState(false);
+  const [migrationData, setMigrationData] = useState(null);
+  const [loadingMigration, setLoadingMigration] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
+
+  const fetchMigrationStatus = async () => {
+    try {
+      setLoadingMigration(true);
+      const res = await customFetch('/api/firewall/migration/status');
+      if (res.ok) {
+        const json = await res.json();
+        setMigrationData(json.data);
+      }
+    } catch (e) {
+      console.warn("Falha ao carregar status de migração:", e);
+    } finally {
+      setLoadingMigration(false);
+    }
+  };
+
+  const handleAutoReconcile = async () => {
+    try {
+      setReconciling(true);
+      const res = await customFetch('/api/firewall/auto-reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: dryRunFw })
+      });
+      const json = await res.json();
+      showToast(json.message || "Auto-reconciliação concluída", json.success ? 'success' : 'error');
+      fetchFirewall();
+      fetchMigrationStatus();
+    } catch (e) {
+      showToast('Erro ao reconciliar portas do firewall', 'error');
+    } finally {
+      setReconciling(false);
+    }
+  };
+
+  const handleMigrateFirewall = async () => {
+    if (!window.confirm("Deseja iniciar a migração automática para iptables? O sistema gerará backup criptográfico SHA-256 de todas as regras atuais em /var/backups/astral-ad-dns/firewall e testará antes de aplicar.")) {
+      return;
+    }
+    try {
+      setMigrating(true);
+      const res = await customFetch('/api/firewall/migration/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: false })
+      });
+      const json = await res.json();
+      showToast(json.message || "Migração para iptables concluída com sucesso!", json.success ? 'success' : 'error');
+      fetchFirewall();
+      fetchMigrationStatus();
+    } catch (e) {
+      showToast('Erro durante a migração para iptables', 'error');
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   const fetchDiagnostics = async () => {
     try {
@@ -2752,6 +2857,7 @@ function DiagnosticsTab({ t, showToast }) {
   useEffect(() => {
     fetchDiagnostics();
     fetchFirewall();
+    fetchMigrationStatus();
   }, []);
 
   const handleOpenPorts = async () => {
@@ -2910,13 +3016,73 @@ function DiagnosticsTab({ t, showToast }) {
               <span>{t.dryRunOption}</span>
             </label>
             <button
+              onClick={handleAutoReconcile}
+              disabled={reconciling || openingFw}
+              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+              title="Auto-reconciliar e sincronizar portas de serviços ativos no iptables"
+            >
+              <RefreshCw className={reconciling ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"} />
+              <span>{reconciling ? (t.reconciling || 'Reconciliando...') : (t.autoReconcilePorts || 'Reconciliar Portas Ativas')}</span>
+            </button>
+            <button
               onClick={handleOpenPorts}
-              disabled={openingFw}
-              className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm"
+              disabled={openingFw || reconciling}
+              className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm cursor-pointer"
             >
               <Shield className="w-3.5 h-3.5" />
               <span>{openingFw ? t.openingPorts : t.openMissingPorts}</span>
             </button>
+          </div>
+        </div>
+
+        {/* Migration Section */}
+        <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-amber-400" />
+              <div>
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider">{t.firewallMigrationTitle || "Migração e Compatibilidade de Firewall"}</h4>
+                <p className="text-[11px] text-slate-400">{t.firewallMigrationDesc || "Unificação de regras para iptables com backup criptográfico SHA-256 e rollback automático."}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {migrationData?.iptables_active ? (
+                <span className="px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" /> {t.iptablesActive || "iptables Ativo"}
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-full bg-amber-950 text-amber-400 border border-amber-800 text-[10px] font-bold flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3" /> {t.iptablesInactive || "iptables Inativo"}
+                </span>
+              )}
+              {migrationData?.migration_needed && (
+                <button
+                  onClick={handleMigrateFirewall}
+                  disabled={migrating}
+                  className="bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition shadow cursor-pointer"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>{migrating ? "Migrando..." : (t.migrateToIptables || "Migrar para iptables")}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+            <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800/80">
+              <span className="text-slate-400 block mb-0.5">{t.currentManager || "Gerenciador Ativo:"}</span>
+              <span className="font-semibold text-white uppercase font-mono">{migrationData?.current_active_manager || "Detectando..."}</span>
+            </div>
+            <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800/80">
+              <span className="text-slate-400 block mb-0.5">Status da Migração:</span>
+              <span className={migrationData?.migration_needed ? "font-semibold text-amber-400" : "font-semibold text-emerald-400"}>
+                {migrationData?.migration_needed ? (t.migrationRequired || "Migração Recomendada") : (t.migrationNotRequired || "iptables Operacional")}
+              </span>
+            </div>
+            <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800/80">
+              <span className="text-slate-400 block mb-0.5">Backups Versionados (/var/backups):</span>
+              <span className="font-mono text-cyan-400 font-semibold">{migrationData?.available_backups?.length || 0} snapshot(s)</span>
+            </div>
           </div>
         </div>
 

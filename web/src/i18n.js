@@ -1,5 +1,18 @@
 export const translations = {
   pt: {
+    donate: "Doações",
+    donateTitle: "Apoie o Astral AD & Hybrid DNS",
+    autoReconcilePorts: "Auto-Reconciliar Portas Ativas",
+    reconciling: "Reconciliando Portas...",
+    firewallMigrationTitle: "Migração e Compatibilidade de Firewall",
+    firewallMigrationDesc: "Unificação de regras para iptables com backup criptográfico SHA-256 e rollback automático.",
+    migrateToIptables: "Migrar para iptables",
+    currentManager: "Gerenciador Ativo:",
+    iptablesActive: "iptables Ativo",
+    iptablesInactive: "iptables Inativo",
+    migrationRequired: "Migração Recomendada",
+    migrationNotRequired: "iptables Operacional",
+
     terminal: "Terminal do Sistema",
     terminalDesc: "Console operacional para intervenções pontuais na infraestrutura.",
     terminalDenied: "Acesso Negado: O terminal do sistema é restrito a administradores do Samba AD ou Linux Sudo. Superusuários PostgreSQL não possuem acesso ao terminal.",
@@ -276,6 +289,19 @@ export const translations = {
   },
   
   en: {
+    donate: "Donate",
+    donateTitle: "Support Astral AD & Hybrid DNS",
+    autoReconcilePorts: "Auto-Reconcile Active Ports",
+    reconciling: "Reconciling Ports...",
+    firewallMigrationTitle: "Firewall Migration & Compatibility",
+    firewallMigrationDesc: "Unification of rules to iptables with SHA-256 backup and automatic rollback.",
+    migrateToIptables: "Migrate to iptables",
+    currentManager: "Active Manager:",
+    iptablesActive: "iptables Active",
+    iptablesInactive: "iptables Inactive",
+    migrationRequired: "Migration Recommended",
+    migrationNotRequired: "iptables Operational",
+
     terminal: "System Terminal",
     terminalDesc: "Operational console for punctual infrastructure interventions.",
     terminalDenied: "Access Denied: The system terminal is restricted to Samba AD or Linux Sudo administrators. PostgreSQL superusers do not have terminal access.",
@@ -541,6 +567,19 @@ export const translations = {
   },
 
   es: {
+    donate: "Donar",
+    donateTitle: "Apoyar Astral AD & Hybrid DNS",
+    autoReconcilePorts: "Auto-Reconciliar Puertos Activos",
+    reconciling: "Reconciliando Puertos...",
+    firewallMigrationTitle: "Migración y Compatibilidad de Firewall",
+    firewallMigrationDesc: "Unificación de reglas a iptables con respaldo SHA-256 y reversión automática.",
+    migrateToIptables: "Migrar a iptables",
+    currentManager: "Gestor Activo:",
+    iptablesActive: "iptables Activo",
+    iptablesInactive: "iptables Inactivo",
+    migrationRequired: "Migración Recomendada",
+    migrationNotRequired: "iptables Operativo",
+
     terminal: "Terminal del Sistema",
     terminalDesc: "Consola operacional para intervenciones puntuales en la infraestructura.",
     terminalDenied: "Acceso Denegado: La terminal del sistema está restringida a administradores de Samba AD o Linux Sudo. Los superusuarios de PostgreSQL no tienen acceso a la terminal.",
@@ -806,6 +845,19 @@ export const translations = {
   },
 
   fr: {
+    donate: "Faire un don",
+    donateTitle: "Soutenir Astral AD & Hybrid DNS",
+    autoReconcilePorts: "Auto-Réconcilier les Ports Actifs",
+    reconciling: "Réconciliation des Ports...",
+    firewallMigrationTitle: "Migration et Compatibilité du Pare-feu",
+    firewallMigrationDesc: "Unification des règles vers iptables avec sauvegarde SHA-256 et retour automatique.",
+    migrateToIptables: "Migrer vers iptables",
+    currentManager: "Gestionnaire Actif :",
+    iptablesActive: "iptables Actif",
+    iptablesInactive: "iptables Inactif",
+    migrationRequired: "Migration Recommandée",
+    migrationNotRequired: "iptables Opérationnel",
+
     terminal: "Terminal Système",
     terminalDesc: "Console opérationnelle pour interventions ponctuelles sur l'infrastructure.",
     terminalDenied: "Accès Refusé : Le terminal système est réservé aux administrateurs Samba AD ou Linux Sudo. Les superutilisateurs PostgreSQL n'y ont pas accès.",

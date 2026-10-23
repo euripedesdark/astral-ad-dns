@@ -45,6 +45,9 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Gerenciamento Seguro de Firewall (Portas do AD)
         .route("/api/firewall", get(firewall::get_firewall_status))
         .route("/api/firewall/open", post(firewall::open_firewall_ports))
+        .route("/api/firewall/auto-reconcile", post(firewall::auto_reconcile_ports))
+        .route("/api/firewall/migration/status", get(firewall::get_migration_status))
+        .route("/api/firewall/migration/migrate", post(firewall::migrate_firewall))
 
         // Users
         .route("/api/users", get(users::list_users).post(users::create_user))

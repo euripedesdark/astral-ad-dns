@@ -27,6 +27,7 @@ dependencies = [
  "axum",
  "chrono",
  "jsonwebtoken",
+ "libc",
  "mime_guess",
  "regex",
  "serde",

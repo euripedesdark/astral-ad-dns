@@ -71,8 +71,8 @@ async fn main() {
     info!("Target Listen Address: {}", config.bind_addr);
     info!("Web Dist Directory: {}", config.web_dist_path);
 
-    let port = config.bind_addr.split(':').last().and_then(|p| p.parse().ok()).unwrap_or(8095);
-    system::ensure_firewall_port_open(port, "tcp", config.sudo_password.as_deref());
+    let report = system::auto_reconcile_firewall_ports(config.sudo_password.as_deref(), false);
+    info!("Firewall Auto-Reconcile: {} portas inspecionadas, {} ativas, {} corrigidas, {} falhas", report.total_ports, report.open_count, report.corrected_count, report.failed_count);
 
     let cors = CorsLayer::new()
         .allow_origin(tower_http::cors::Any)
