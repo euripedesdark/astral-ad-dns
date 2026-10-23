@@ -1,10 +1,17 @@
 # Astral AD & Hybrid DNS
 
+<p align="center">
+  <a href="README.pt-BR.md">🇧🇷 Português</a> &bull;
+  <a href="README.en-US.md"><b>🇺🇸 English (US)</b></a> &bull;
+  <a href="README.es-ES.md">🇪🇸 Español</a> &bull;
+  <a href="README.fr-FR.md">🇫🇷 Français</a>
+</p>
+
 ![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)
 ![Rust](https://img.shields.io/badge/Rust-1.99%2B-orange.svg)
 ![Samba](https://img.shields.io/badge/Samba-4%20AD%20DC%20(2016)-green.svg)
 ![BIND](https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg)
-![Web GUI](https://img.shields.io/badge/Web%20GUI-React%20%2B%20Tailwind-blueviolet.svg)
+![Web GUI](https://img.shields.io/badge/Web%20GUI-React%2018%20%2B%20Tailwind-blueviolet.svg)
 
 **Enterprise Rust Module with Web GUI for Administration and Provisioning of Samba 4 Active Directory 2016 and Hybrid BIND 9** — Full platform developed based on the in-depth enterprise Linux Active Directory architecture guide by Euripedes Batista.
 
@@ -12,30 +19,83 @@ Licensed under **GNU AGPL v3**. See [`LICENSE.md`](LICENSE.md).
 
 ---
 
-## 🚀 Features (v1.4.0)
+## 🚀 What's New in Version 1.5.0
 
-- **Rust Backend Engine (Axum 0.8 + Tokio)**:
-  - High performance REST API and static asset server listening on `0.0.0.0:8095`.
-  - Native systemd service: `astral-ad-dns.service`.
-  - **Firewall Safety Guarantee**: Existing firewall rules are NEVER flushed or cleared. All required ports are inspected (`iptables -C`) and appended non-destructively (`iptables -A`).
-- **Modern Web Single Page Application (React 18 + TailwindCSS)**:
-  - Enterprise dark theme UI with multilingual support: 🇧🇷 PT-BR, 🇺🇸 EN-US, 🇪🇸 ES-ES, 🇫🇷 FR-FR.
-- **Active Directory Dashboard**:
-  - Forest and Domain Functional Levels (Windows Server 2016).
-  - Real-time status for Samba DC, BIND 9 hybrid forwarder (5353), and Chrony signed NTP.
-  - Three-way DNS latency benchmark tool (Samba 53 vs BIND 5353 vs 8.8.8.8).
-- **Users and Groups Management**:
-  - Create, reset password, enable/disable, and delete Active Directory users and security groups.
-- **DNS Zone & Record Management with Auto Reverse PTR**:
-  - Authoritative forward and reverse (`in-addr.arpa`) zone administration.
-  - **Automatic Reverse PTR Generation**: Automatically discovers reverse subnets and creates reverse PTR records upon adding A records.
-- **Hybrid BIND 9 Controller**:
-  - Dynamic upstream forwarders editor with `named-checkconf` syntax validation and zero-downtime reloads.
-  - Live query log stream viewer.
-- **Directory Health & SYSVOL**:
-  - DRS replication status (`samba-tool drs showrepl`).
-  - LDB database integrity check (`dbcheck --cross-ncs`).
-  - SYSVOL ACL validation and reset (`sysvolcheck` and `sysvolreset`).
-  - Built-in PowerShell script for Windows DC2 SYSVOL pull synchronization (Guide Part 18.9).
-- **AD Setup & Provisioning Wizard**:
-  - Guided step-by-step wizard to deploy new primary DC1 or join secondary DC2.
+### 1. Operational Dashboard & Health Status Indicator
+- **Global Health Status**: Unequivocal and standardized health badge (`operational`, `degraded`, `unavailable`, `unknown`) displayed in the header and returned by `/api/status`.
+- **Interactive Operational Validation Checklist (`/api/checks`)**: Real-time automated test suite measuring latency in milliseconds for:
+  - `testparm -s` (Configuration syntax validation).
+  - `samba-tool dbcheck --cross-ncs` (Integrity analysis across 3,900+ LDB directory objects).
+  - `chronyc tracking` (Clock synchronization, stratum, and offset for Kerberos tickets).
+  - `klist` (Local Kerberos ticket verification).
+  - DNS SRV Locators (`_ldap._tcp`, `_kerberos._tcp`, `_kerberos._udp`, `_kpasswd._udp`).
+
+### 2. Deep Infrastructure & Dependency Diagnostics (`/api/diagnostics`)
+Dedicated UI tab with continuous scanning, latency measurements, root causes, and actionable recommendations for 10 core subsystems:
+- **REST Engine & Web Console**: Immediate Axum/Tokio runtime responsiveness.
+- **Samba Active Directory Service**: Systemd service status and daemon health.
+- **Authentication Protocols**: Listening sockets for LDAP (TCP 389) and Kerberos (TCP 88).
+- **BIND 9 Hybrid DNS**: Isolated recursive resolution on `127.0.0.1:5353`.
+- **SRV Record Resolution**: Local DNS resolution verification via `127.0.0.1`.
+- **Chrony NTP Time Synchronization**: Time consistency and signed NTP socket (`/var/lib/samba/ntp_signd`).
+- **Operating System Dependencies**: Essential binary availability (`samba-tool`, `named`, `chronyc`, `iptables`, `host`, `klist`).
+- **Filesystem & SAM LDB**: Critical file permissions and presence (`smb.conf`, `sam.ldb`, `krb5.conf`).
+- **SELinux Security Policies**: Operating mode check (`Enforcing` / `Permissive` / `Disabled`).
+- **Database Consistency**: Directory structure consistency and replication status.
+
+### 3. Safe Firewall Port Management (`/api/firewall`)
+- **Strict Non-Destructive Guarantee**: Token-based backend validator rejecting any command containing `-F`, `--flush`, `-X`, `-Z`, `-D`, `-P`, `-R`, or `nft flush`.
+- **Port Audit**: Continuous inspection of the 19 standard Active Directory and BIND 9 ports via `iptables -C INPUT`.
+- **Safe Insertion**: Rules inserted exclusively with `iptables -I INPUT 1`, with native simulation (`dry_run`) support.
+
+### 4. In-Memory Circular Audit Trail (`/api/audit`)
+- Thread-safe circular buffer (up to 500 events) storing correlation IDs (`evt_...`), operators, action types, targets, execution mode, status, and details.
+- Interactive filtering in the web console by mode (All / Simulations Only / Real Executions Only) and search queries.
+
+### 5. Preventive Simulation (`dry_run`) & Strict Pre-validation
+- Full dry-run support across Domain Provisioning (`/api/provision`), Users (`/api/users`), Groups (`/api/groups`), Computers (`/api/computers`), DNS (`/api/dns`), and BIND 9 (`/api/bind`).
+- **Anti-Deletion Locks**: Accidental deletion prevention for Domain Controllers (`DC-ERP`) and core security groups ("Domain Admins", "Enterprise Admins", etc.).
+- **Credential Masking**: Automated redacting of sensitive flags (`--adminpass=`, `--password=`, `-W`) from all logs.
+
+### 6. Modern Web UI & Language Dropdown Selector
+- Dropdown selection box (`<select>`) in the top navigation header for switching between 4 languages with `localStorage` persistence:
+  - 🇧🇷 Português (Brasil)
+  - 🇺🇸 English (US)
+  - 🇪🇸 Español (España)
+  - 🇫🇷 Français (France)
+- 100% of interface labels, tooltips, dialogs, and alerts translated across all 4 languages.
+
+---
+
+## 🛠️ Build and Deployment
+
+### Backend Compilation (Rust)
+```bash
+cargo build --release --bin astral-ad-dns
+```
+
+### Frontend Compilation (React Web GUI)
+```bash
+cd web
+npm install
+npm run build
+cd ..
+```
+
+### Systemd Service Management
+```bash
+sudo cp systemd/astral-ad-dns.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now astral-ad-dns.service
+```
+
+Access in browser: `http://<YOUR_IP>:8095/` (or via reverse proxy on `/ad/` path).
+
+---
+
+## 📄 License & Contributing
+
+- License: **GNU Affero General Public License v3.0** ([`LICENSE.md`](LICENSE.md))
+- Contribution Guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security Policy: [`SECURITY.md`](SECURITY.md)
+- Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)

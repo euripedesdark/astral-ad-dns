@@ -1,124 +1,101 @@
 # Astral AD & Hybrid DNS
 
+<p align="center">
+  <a href="README.pt-BR.md"><b>🇧🇷 Português (Brasil)</b></a> &bull;
+  <a href="README.en-US.md">🇺🇸 English</a> &bull;
+  <a href="README.es-ES.md">🇪🇸 Español</a> &bull;
+  <a href="README.fr-FR.md">🇫🇷 Français</a>
+</p>
+
 ![Licença](https://img.shields.io/badge/License-AGPLv3-blue.svg)
-![Samba](https://img.shields.io/badge/Samba-4-green.svg)
-![Kerberos](https://img.shields.io/badge/Auth-Kerberos%20%2F%20LDAPS-orange.svg)
-![DNS](https://img.shields.io/badge/DNS-Contextual%20Resolver-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.12%2B-yellow.svg)
+![Rust](https://img.shields.io/badge/Rust-1.99%2B-orange.svg)
+![Samba](https://img.shields.io/badge/Samba-4%20AD%20DC%20(2016)-green.svg)
+![BIND](https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg)
+![Web GUI](https://img.shields.io/badge/Web%20GUI-React%2018%20%2B%20Tailwind-blueviolet.svg)
 
-**Controlador de Domínio Corporativo Samba 4 & Resolução DNS Híbrida** — Módulo especializado do ecossistema Astral responsável pelo serviço de diretório Active Directory (AD DC), autenticação centralizada corporativa (LDAPS/Kerberos) e resolução DNS inteligente com seleção contextual de upstream.
-
-Este projeto está sob **GNU AGPL v3**. Ver [`LICENSE.md`](LICENSE.md).
-
----
-
-## 🎯 Principais Recursos
-
-- **Samba 4 Active Directory Domain Controller (AD DC)**:
-  - Scripts de provisionamento automatizado multi-distribuição (Fedora/RHEL, Debian 13 e Arch Linux).
-  - Suporte a provisionamento seguro com certificados SSL/TLS automáticos (Step-CA) e LDAPS na porta 636.
-  - Compatibilidade com clientes Windows (GPO, RSAT) e estações Linux integradas via SSSD/Realm.
-  - Padronização de credenciais de provisionamento através do arquivo seguro `auth.env`.
-- **DNS Sensível a Contexto & Híbrido**:
-  - Classificação e seleção offline de provedores DNS confiáveis (DNSSEC = true, confiabilidade >= 0.95).
-  - Integração com Pi-hole / dnsmasq para bloqueio de telemetria e anúncios.
-  - Base local com mais de 8 MB de servidores DNS mundiais (`nameservers.csv`), garantindo total soberania de dados.
-- **Segurança e Conformidade**:
-  - Kerberos KRB5 com tickets de autenticação seguros.
-  - Isolamento de credenciais locais fora do controle de versão.
-  - Integração nativa com `astral-auth-service`, `astral-internet-security` e `astral-traffic-guard`.
-
----
-
-## 🏗️ Estrutura do Projeto
-
-```
-astral-ad-dns/
-├── README.md                                 # Hub multilíngue da documentação
-├── README.pt-BR.md                           # Documentação em Português
-├── README.en-US.md                           # Documentação em Inglês
-├── README.es-ES.md                           # Documentação em Espanhol
-├── README.fr-FR.md                           # Documentação em Francês
-├── LICENSE.md                                # Licença GNU AGPLv3
-├── DONATE.md                                 # Dados para doações e apoio
-├── samba-ad-dc/                              # Automação e Provisionamento do AD DC
-│   ├── auth.env.example                      # Modelo de configuração (REALM, HOSTNAME, SENHA_ADMIN)
-│   ├── fedoradc-SSL.py                       # Provisionador para Fedora / RHEL com SSL
-│   ├── fedora42dc.py                         # Provisionador para Fedora / RHEL padrão
-│   ├── debian13-dc-ssl.py                    # Provisionador para Debian 13 com SSL e AppArmor
-│   ├── debian13-dc-no-ssl.py                 # Provisionador para Debian 13 padrão
-│   ├── arch-DC-SSL.py                        # Provisionador para Arch Linux com SSL
-│   └── arch42dc-no-ssl.py                    # Provisionador para Arch Linux padrão
-└── dns/                                      # Resolução DNS e Upstream
-    ├── nameservers.csv                       # Base de dados de DNS públicos confiáveis (>8MB)
-    └── pihole.py                             # Script de integração e regras de bloqueio
-```
-
----
-
-## 🛠️ Stack Tecnológica
-
-| Camada | Tecnologia | Finalidade |
-|---|---|---|
-| **Serviço de Diretório** | Samba 4 AD DC | Emulação completa de Active Directory, LDAP, Kerberos KDC |
-| **Criptografia e Identidade** | OpenSSL / Step-CA | PKI automática, LDAPS (TCP 636), certificados X.509 |
-| **Resolução DNS** | BIND9 DLZ / dnsmasq / Pi-hole | Resolução de nomes autoritativa de domínio e filtragem contextual |
-| **Automação do Sistema** | Python 3.12+ | Provisionamento sem interação manual e configuração do host |
-| **Sistemas Operacionais** | Linux (Fedora 42, Debian 13, Arch) | Ambientes de produção corporativos auditáveis |
-
----
-
-## 🚀 Como Utilizar
-
-1. Configure as variáveis de domínio em `samba-ad-dc/auth.env`:
-   ```bash
-   cp samba-ad-dc/auth.env.example samba-ad-dc/auth.env
-   chmod 600 samba-ad-dc/auth.env
-   nano samba-ad-dc/auth.env
-   ```
-2. Execute o provisionador adequado para a sua distribuição:
-   ```bash
-   # Para Fedora / RHEL com LDAPS e SSL:
-   sudo python3 samba-ad-dc/fedoradc-SSL.py
-
-   # Para Debian 13 com LDAPS e SSL:
-   sudo python3 samba-ad-dc/debian13-dc-ssl.py
-   ```
-3. Teste a resolução DNS e a conectividade Kerberos:
-   ```bash
-   kinit administrator
-   klist
-   smbclient -L localhost -U%
-   ```
-
----
-
-## 💖 Apoie o Projeto
-
-Astral AD & Hybrid DNS é um projeto Open Source mantido por um único desenvolvedor.
-
-Se este projeto ajudou você, sua empresa ou sua equipe, considere apoiar o desenvolvimento:
-
-**PIX:**
-```text
-24adc62c-b073-4587-974d-03fe35f6733f
-```
-
-### Transferência Internacional (Wise)
-
-| | |
-|---|---|
-| **Nome** | Euripedes Batista de Paiva Junior |
-| **Tipo de conta** | Checking |
-| **Routing number (wire e ACH)** | `101019628` |
-| **Número da conta** | `215822927677` |
-| **Banco** | Wise US Inc, 108 W 13th St, Wilmington, DE, 19801, United States |
-| **SWIFT/BIC** | `TRWIUS35XXX` |
-
----
-
-## 📄 Licença
+**Módulo Corporativo em Rust com Interface Web para Administração e Provisionamento do Samba 4 Active Directory 2016 e BIND 9 Híbrido** — Plataforma completa desenvolvida com base no guia técnico aprofundado de arquitetura corporativa em Linux (Fedora/Rocky Linux) de Euripedes Batista.
 
 Este projeto está sob **GNU AGPL v3**. Ver [`LICENSE.md`](LICENSE.md).
 
-(c) 2026 Astral AD & Hybrid DNS — **Criado por: Euripedes Batista de Paiva Junior**
+---
+
+## 🚀 Novidades da Versão 1.5.0
+
+### 1. Dashboard Operacional & Diagnóstico de Saúde Inequívoco
+- **Indicador de Saúde Geral**: Status padronizado e inequívoco (`operational`, `degraded`, `unavailable`, `unknown`) no cabeçalho e na API (`/api/status`).
+- **Checklist Operacional Interativo (`/api/checks`)**: Bateria automatizada executada diretamente da interface com medição de latência em milissegundos para:
+  - `testparm -s` (Validação sintática do `smb.conf`).
+  - `samba-tool dbcheck --cross-ncs` (Integridade de mais de 3.900 objetos do diretório LDB).
+  - `chronyc tracking` (Sincronismo de relógio, stratum e offset para Kerberos).
+  - `klist` (Validação de tickets Kerberos locais).
+  - Localizadores de Serviço DNS SRV (`_ldap._tcp`, `_kerberos._tcp`, `_kerberos._udp`, `_kpasswd._udp`).
+
+### 2. Diagnóstico Profundo de Infraestrutura & Dependências (`/api/diagnostics`)
+Aba dedicada com varredura contínua e detalhamento de latência, causas prováveis e ações recomendadas para 10 subsistemas:
+- **Motor REST & Console**: Disponibilidade imediata do runtime Axum/Tokio.
+- **Serviço Samba Active Directory**: Status e integridade no systemd.
+- **Portas de Autenticação**: Sockets LDAP (TCP 389) e Kerberos (TCP 88).
+- **Servidor BIND 9 (Hybrid DNS)**: Resolução recursiva isolada em `127.0.0.1:5353`.
+- **Resolução de Registros SRV**: Validação de resolução local via `127.0.0.1`.
+- **Sincronização de Tempo Chrony NTP**: Alinhamento de relógio e socket assinado (`/var/lib/samba/ntp_signd`).
+- **Ferramentas do SO**: Existência e versão dos binários essenciais (`samba-tool`, `named`, `chronyc`, `iptables`, `host`, `klist`).
+- **Arquivos & SAM LDB**: Presença e permissões dos arquivos críticos (`smb.conf`, `sam.ldb`, `krb5.conf`).
+- **Políticas de Segurança SELinux**: Modo operacional (`Enforcing` / `Permissive` / `Disabled`).
+- **Consistência da Base de Dados**: Verificação de integridade estrutural e replicação.
+
+### 3. Gerenciamento Seguro do Firewall (`/api/firewall`)
+- **Garantia Estrita de Não Destruição**: Trava tokenizada no backend que bloqueia expressamente comandos com `-F`, `--flush`, `-X`, `-Z`, `-D`, `-P`, `-R` ou `nft flush`.
+- **Auditoria de Portas**: Inspeção das 19 portas padrão do Active Directory e BIND 9 com `iptables -C INPUT`.
+- **Abertura Segura**: Inserção exclusiva com `iptables -I INPUT 1` e suporte a simulação preventiva (`dry_run`).
+
+### 4. Trilha de Auditoria e Histórico Operacional (`/api/audit`)
+- Buffer circular thread-safe em memória (até 500 eventos) registrando identificador de correlação (`evt_...`), operador, tipo de ação, alvo, modo de execução, status e detalhes operacionais.
+- Filtros interativos na interface por modo (Todos / Apenas Simulações / Apenas Execuções Reais) e busca textual.
+
+### 5. Modo de Simulação Preventiva (`dry_run`) & Pré-validação
+- Disponível no provisionamento (`/api/provision`), usuários (`/api/users`), grupos (`/api/groups`), computadores (`/api/computers`), DNS (`/api/dns`) e BIND 9 (`/api/bind`).
+- **Travas Anti-Exclusão**: Bloqueio de exclusão do DC (`DC-ERP`) e de grupos estruturais ("Domain Admins", "Enterprise Admins", etc.).
+- **Mascaramento de Credenciais**: Ocultação automática de senhas (`--adminpass=`, `--password=`, `-W`) em todos os logs e trilhas de auditoria.
+
+### 6. Interface Web Moderna & Seletor de Idioma
+- Caixa de seleção (`<select>`) no topo do cabeçalho para alternância instantânea entre 4 idiomas com persistência em `localStorage`:
+  - 🇧🇷 Português (Brasil)
+  - 🇺🇸 English (US)
+  - 🇪🇸 Español (España)
+  - 🇫🇷 Français (France)
+- 100% dos textos, diálogos, tabelas e alertas traduzidos nos 4 idiomas.
+
+---
+
+## 🛠️ Instalação e Execução
+
+### Compilação do Backend (Rust)
+```bash
+cargo build --release --bin astral-ad-dns
+```
+
+### Compilação do Frontend (Web GUI)
+```bash
+cd web
+npm install
+npm run build
+cd ..
+```
+
+### Inicialização via systemd
+```bash
+sudo cp systemd/astral-ad-dns.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now astral-ad-dns.service
+```
+
+Acesse no navegador: `http://<SEU_IP>:8095/` (ou através da rota reversa `/ad/` no Nginx).
+
+---
+
+## 📄 Licença e Contribuição
+
+- Licença: **GNU Affero General Public License v3.0** ([`LICENSE.md`](LICENSE.md))
+- Diretrizes de Contribuição: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Política de Segurança: [`SECURITY.md`](SECURITY.md)
+- Código de Conduta: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
