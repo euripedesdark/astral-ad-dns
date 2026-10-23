@@ -4,9 +4,15 @@ import {
   Server, Shield, Globe, Users, Network, Activity, 
   Database, RefreshCw, Key, CheckCircle, XCircle, AlertTriangle, 
   Search, Plus, Trash2, Edit3, ArrowRight, Copy, Terminal, 
-  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle, User, LogOut, Heart
+  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle, User, LogOut, Heart,
+  FolderTree, Sliders, FileText, RotateCcw, MoreVertical, Info
 } from 'lucide-react';
 import DonationModal from './components/DonationModal';
+import ComputerPropertiesModal from './components/ComputerPropertiesModal';
+import UserPropertiesModal from './components/UserPropertiesModal';
+import RestoreBackupModal from './components/RestoreBackupModal';
+import OUTab from './components/OUTab';
+import GpoTab from './components/GpoTab';
 
 
 const API_BASE = typeof window !== "undefined" && window.location.pathname.startsWith("/ad")
@@ -511,6 +517,8 @@ export default function App() {
           <NavItem active={activeTab === 'users'} onClick={() => setActiveTab('users')} icon={<Users className="w-4 h-4" />} label={t.users} badge={status?.users_count} />
           <NavItem active={activeTab === 'groups'} onClick={() => setActiveTab('groups')} icon={<Shield className="w-4 h-4" />} label={t.groups} badge={status?.groups_count} />
           <NavItem active={activeTab === 'computers'} onClick={() => setActiveTab('computers')} icon={<Server className="w-4 h-4" />} label={t.computers} badge={status?.computers_count} />
+          <NavItem active={activeTab === 'ou'} onClick={() => setActiveTab('ou')} icon={<FolderTree className="w-4 h-4 text-sky-400" />} label={t.ous || "Unidades (OU)"} />
+          <NavItem active={activeTab === 'gpo'} onClick={() => setActiveTab('gpo')} icon={<Sliders className="w-4 h-4 text-amber-400" />} label={t.gpos || "Políticas (GPO)"} />
           <NavItem active={activeTab === 'dns'} onClick={() => setActiveTab('dns')} icon={<Globe className="w-4 h-4" />} label={t.dns} badge={status?.zones_count} />
           <NavItem active={activeTab === 'bind'} onClick={() => setActiveTab('bind')} icon={<Network className="w-4 h-4" />} label={t.bind} />
           <NavItem active={activeTab === 'health'} onClick={() => setActiveTab('health')} icon={<Layers className="w-4 h-4" />} label={t.health} />
@@ -526,6 +534,8 @@ export default function App() {
           {activeTab === 'users' && <UsersTab t={t} showToast={showToast} />}
           {activeTab === 'groups' && <GroupsTab t={t} showToast={showToast} />}
           {activeTab === 'computers' && <ComputersTab t={t} showToast={showToast} />}
+          {activeTab === 'ou' && <OUTab t={t} showToast={showToast} customFetch={customFetch} />}
+          {activeTab === 'gpo' && <GpoTab t={t} showToast={showToast} customFetch={customFetch} />}
           {activeTab === 'dns' && <DnsTab t={t} showToast={showToast} />}
           {activeTab === 'bind' && <BindTab t={t} showToast={showToast} />}
           {activeTab === 'health' && <HealthTab t={t} showToast={showToast} />}
@@ -889,6 +899,8 @@ function UsersTab({ t, showToast }) {
   const [allDomainGroups, setAllDomainGroups] = useState([]);
   const [selectedAddGroup, setSelectedAddGroup] = useState('');
   const [groupLoading, setGroupLoading] = useState(false);
+  const [selectedPropertiesUser, setSelectedPropertiesUser] = useState(null);
+  const [userContextMenu, setUserContextMenu] = useState({ visible: false, x: 0, y: 0, user: null });
 
   // Form states
   const [newUsername, setNewUsername] = useState('');
@@ -916,6 +928,14 @@ function UsersTab({ t, showToast }) {
 
   useEffect(() => {
     fetchUsers();
+  }, []);
+
+  useEffect(() => {
+    const handleWindowClick = () => {
+      setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+    };
+    window.addEventListener('click', handleWindowClick);
+    return () => window.removeEventListener('click', handleWindowClick);
   }, []);
 
   const handleCreateUser = async (e) => {
@@ -1133,8 +1153,18 @@ function UsersTab({ t, showToast }) {
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">
               {filteredUsers.map((user) => (
-                <tr key={user.username} className="hover:bg-slate-800/30 transition">
-                  <td className="py-3 px-4 font-semibold text-slate-200 flex items-center gap-2 font-sans">
+                <tr 
+                  key={user.username} 
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setUserContextMenu({ visible: true, x: e.clientX, y: e.clientY, user });
+                  }}
+                  className="hover:bg-slate-800/30 transition cursor-pointer select-none"
+                >
+                  <td 
+                    onClick={() => setSelectedPropertiesUser(user.username)}
+                    className="py-3 px-4 font-semibold text-slate-200 flex items-center gap-2 font-sans"
+                  >
                     <div className="w-7 h-7 rounded-full bg-indigo-950 border border-indigo-700/60 flex items-center justify-center text-indigo-300 text-xs font-bold">
                       {user.username.charAt(0).toUpperCase()}
                     </div>
@@ -1161,6 +1191,14 @@ function UsersTab({ t, showToast }) {
                     )}
                   </td>
                   <td className="py-3 px-4 text-right space-x-2 font-sans">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPropertiesUser(user.username)}
+                      className="p-1 rounded text-slate-400 hover:text-sky-300 hover:bg-slate-800 transition"
+                      title="Ver Propriedades (Permissões, LDAP)"
+                    >
+                      <Info className="w-3.5 h-3.5" />
+                    </button>
                     <button 
                       onClick={() => handleOpenUserGroups(user.username)}
                       className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition"
@@ -1437,6 +1475,81 @@ function UsersTab({ t, showToast }) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* User Context Menu */}
+      {userContextMenu.visible && userContextMenu.user && (
+        <div
+          style={{ top: `${userContextMenu.y}px`, left: `${userContextMenu.x}px` }}
+          className="fixed z-50 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 w-52 text-xs font-sans divide-y divide-slate-800"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 text-[10px] text-slate-400 font-mono font-bold truncate">
+            {userContextMenu.user.username}
+          </div>
+          <div className="py-1">
+            <button
+              onClick={() => {
+                setSelectedPropertiesUser(userContextMenu.user.username);
+                setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Info className="w-3.5 h-3.5 text-sky-400" />
+              <span>Propriedades (LDAP)</span>
+            </button>
+            <button
+              onClick={() => {
+                handleOpenUserGroups(userContextMenu.user.username);
+                setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Shield className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Gerenciar Grupos</span>
+            </button>
+            <button
+              onClick={() => {
+                setShowPasswordModal(userContextMenu.user.username);
+                setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Key className="w-3.5 h-3.5 text-amber-400" />
+              <span>Redefinir Senha</span>
+            </button>
+            <button
+              onClick={() => {
+                handleToggleEnable(userContextMenu.user);
+                setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Activity className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{userContextMenu.user.is_disabled ? t.enableUser : t.disableUser}</span>
+            </button>
+            <button
+              onClick={() => {
+                handleDeleteUser(userContextMenu.user.username);
+                setUserContextMenu({ visible: false, x: 0, y: 0, user: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-rose-950/80 text-rose-300 flex items-center gap-2 transition"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Excluir Usuário</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* User Properties Modal */}
+      {selectedPropertiesUser && (
+        <UserPropertiesModal
+          username={selectedPropertiesUser}
+          onClose={() => setSelectedPropertiesUser(null)}
+          customFetch={customFetch}
+          showToast={showToast}
+        />
       )}
     </div>
   );
@@ -1753,6 +1866,8 @@ function ComputersTab({ t, showToast }) {
   const [search, setSearch] = useState('');
   const [newComputerName, setNewComputerName] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [selectedPropertiesComp, setSelectedPropertiesComp] = useState(null);
+  const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, comp: null });
 
   const fetchComputers = async () => {
     try {
@@ -1772,6 +1887,19 @@ function ComputersTab({ t, showToast }) {
   useEffect(() => {
     fetchComputers();
   }, []);
+
+  useEffect(() => {
+    const handleWindowClick = () => {
+      setContextMenu({ visible: false, x: 0, y: 0, comp: null });
+    };
+    window.addEventListener('click', handleWindowClick);
+    return () => window.removeEventListener('click', handleWindowClick);
+  }, []);
+
+  const handleContextMenu = (e, comp) => {
+    e.preventDefault();
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, comp });
+  };
 
   const handleCreateComputer = async (e) => {
     e.preventDefault();
@@ -1847,13 +1975,22 @@ function ComputersTab({ t, showToast }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map((comp) => (
-          <div key={comp.name} className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-lg bg-sky-950 border border-sky-800/60 flex items-center justify-center text-sky-400">
+          <div 
+            key={comp.name} 
+            onContextMenu={(e) => handleContextMenu(e, comp)}
+            className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-4 shadow-sm flex items-center justify-between transition cursor-pointer select-none"
+          >
+            <div 
+              onClick={() => setSelectedPropertiesComp(comp.name)}
+              className="flex items-center gap-3 flex-1"
+            >
+              <div className="w-9 h-9 rounded-lg bg-sky-950 border border-sky-800/60 flex items-center justify-center text-sky-400 shrink-0">
                 <Server className="w-4 h-4" />
               </div>
               <div>
-                <h4 className="text-xs font-bold text-slate-100 font-mono">{comp.name}</h4>
+                <h4 className="text-xs font-bold text-slate-100 font-mono flex items-center gap-1">
+                  <span>{comp.name}</span>
+                </h4>
                 <span className={`text-[10px] px-2 py-0.5 rounded font-sans ${
                   comp.is_dc ? 'bg-amber-950 text-amber-300 border border-amber-800' : 'text-slate-400'
                 }`}>
@@ -1861,17 +1998,77 @@ function ComputersTab({ t, showToast }) {
                 </span>
               </div>
             </div>
-            {!comp.is_dc && (
-              <button 
-                onClick={() => handleDeleteComputer(comp.name)}
-                className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setSelectedPropertiesComp(comp.name)}
+                className="p-1.5 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition"
+                title="Ver Propriedades (IP, MAC, Máscara, LDAP)"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Info className="w-3.5 h-3.5" />
               </button>
-            )}
+
+              {!comp.is_dc && (
+                <button 
+                  onClick={() => handleDeleteComputer(comp.name)}
+                  className="text-slate-500 hover:text-rose-400 p-1.5 rounded transition"
+                  title="Excluir Computador"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>
+
+      {/* Floating Context Menu */}
+      {contextMenu.visible && contextMenu.comp && (
+        <div
+          style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+          className="fixed z-50 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 w-48 text-xs font-sans divide-y divide-slate-800"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 py-1 text-[10px] text-slate-400 font-mono font-bold truncate">
+            {contextMenu.comp.name}
+          </div>
+          <div className="py-1">
+            <button
+              onClick={() => {
+                setSelectedPropertiesComp(contextMenu.comp.name);
+                setContextMenu({ visible: false, x: 0, y: 0, comp: null });
+              }}
+              className="w-full px-3 py-1.5 text-left hover:bg-slate-800 flex items-center gap-2 text-slate-200 transition"
+            >
+              <Info className="w-3.5 h-3.5 text-sky-400" />
+              <span>Propriedades</span>
+            </button>
+            {!contextMenu.comp.is_dc && (
+              <button
+                onClick={() => {
+                  handleDeleteComputer(contextMenu.comp.name);
+                  setContextMenu({ visible: false, x: 0, y: 0, comp: null });
+                }}
+                className="w-full px-3 py-1.5 text-left hover:bg-rose-950/80 text-rose-300 flex items-center gap-2 transition"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Excluir Computador</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Computer Properties Modal */}
+      {selectedPropertiesComp && (
+        <ComputerPropertiesModal
+          computerName={selectedPropertiesComp}
+          onClose={() => setSelectedPropertiesComp(null)}
+          customFetch={customFetch}
+          showToast={showToast}
+        />
+      )}
 
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -2792,6 +2989,7 @@ function BackupsTab({ t, showToast }) {
   const [backups, setBackups] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [restoreModalFile, setRestoreModalFile] = useState(null);
 
   const fetchBackups = async () => {
     try {
@@ -2830,6 +3028,22 @@ function BackupsTab({ t, showToast }) {
     }
   };
 
+  const handleDeleteBackup = async (filename) => {
+    if (!confirm(`Deseja realmente excluir o backup ${filename}?`)) return;
+    try {
+      const res = await customFetch(`/api/backups/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Backup excluído');
+        fetchBackups();
+      } else {
+        showToast(data.message || 'Erro ao excluir backup', 'error');
+      }
+    } catch (e) {
+      showToast('Falha na comunicação ao excluir backup', 'error');
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2858,6 +3072,7 @@ function BackupsTab({ t, showToast }) {
                 <th className="py-3 px-4">{t.filename}</th>
                 <th className="py-3 px-4">{t.size}</th>
                 <th className="py-3 px-4">{t.createdAt}</th>
+                <th className="py-3 px-4 text-right">{t.actions || 'Ações'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
@@ -2866,11 +3081,28 @@ function BackupsTab({ t, showToast }) {
                   <td className="py-3 px-4 text-slate-200 font-semibold">{b.filename}</td>
                   <td className="py-3 px-4 text-emerald-400">{b.size_human}</td>
                   <td className="py-3 px-4 text-slate-400">{b.created_at}</td>
+                  <td className="py-3 px-4 text-right space-x-2 font-sans">
+                    <button
+                      onClick={() => setRestoreModalFile(b.filename)}
+                      className="px-2.5 py-1 rounded bg-amber-950/80 hover:bg-amber-900 border border-amber-800 text-amber-300 text-[11px] font-sans inline-flex items-center gap-1.5 transition shadow-sm"
+                      title="Restaurar Backup do Samba AD preservando rede"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>{t.restoreBackup || "Restaurar"}</span>
+                    </button>
+                    <button
+                      onClick={() => handleDeleteBackup(b.filename)}
+                      className="p-1.5 rounded text-rose-400 hover:bg-rose-950/80 transition inline-flex items-center"
+                      title="Excluir Backup"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
                 </tr>
               ))}
               {backups.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="py-6 text-center text-slate-500 font-sans">
+                  <td colSpan={4} className="py-6 text-center text-slate-500 font-sans">
                     {t.noBackupsNotice}
                   </td>
                 </tr>
@@ -2879,6 +3111,20 @@ function BackupsTab({ t, showToast }) {
           </table>
         </div>
       </div>
+
+      {/* Restore Backup Modal */}
+      {restoreModalFile && (
+        <RestoreBackupModal
+          filename={restoreModalFile}
+          onClose={() => setRestoreModalFile(null)}
+          onSuccess={() => {
+            setRestoreModalFile(null);
+            fetchBackups();
+          }}
+          customFetch={customFetch}
+          showToast={showToast}
+        />
+      )}
     </div>
   );
 }

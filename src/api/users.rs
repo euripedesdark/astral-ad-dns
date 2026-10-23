@@ -672,6 +672,187 @@ pub async fn remove_user_from_group(
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UserProperties {
+    pub username: String,
+    pub distinguished_name: String,
+    pub display_name: String,
+    pub given_name: String,
+    pub surname: String,
+    pub mail: String,
+    pub description: String,
+    pub telephone_number: String,
+    pub is_admin: bool,
+    pub is_disabled: bool,
+    pub password_never_expires: bool,
+    pub user_account_control: u32,
+    pub permissions_summary: Vec<String>,
+    pub groups: Vec<String>,
+    pub when_created: String,
+    pub when_changed: String,
+    pub last_logon: String,
+    pub bad_pwd_count: u32,
+    pub raw_ldif: String,
+}
+
+pub async fn get_user_properties(
+    Path(username): Path<String>,
+    State(config): State<Arc<AppConfig>>,
+) -> (StatusCode, Json<ApiResponse<UserProperties>>) {
+    let sudo = config.sudo_password.as_deref();
+    if !safe_username(&username) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Nome de usuário inválido".to_string(),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let ldb_cmd = format!(
+        "ldbsearch -H /var/lib/samba/private/sam.ldb '(sAMAccountName={})'",
+        sanitize_arg(&username)
+    );
+    let ldb_res = run_cmd_dry(&ldb_cmd, sudo, false);
+
+    let raw_ldif = if ldb_res.success {
+        ldb_res.stdout.clone()
+    } else {
+        String::new()
+    };
+
+    let mut distinguished_name = format!("CN={},CN=Users", username);
+    let mut display_name = username.clone();
+    let mut given_name = String::new();
+    let mut surname = String::new();
+    let mut mail = String::new();
+    let mut description = String::new();
+    let mut telephone_number = String::new();
+    let mut user_account_control: u32 = 512;
+    let mut when_created = String::new();
+    let mut when_changed = String::new();
+    let mut last_logon = String::new();
+    let mut bad_pwd_count: u32 = 0;
+    let mut groups: Vec<String> = Vec::new();
+
+    for line in raw_ldif.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("dn:") {
+            distinguished_name = trimmed.trim_start_matches("dn:").trim().to_string();
+        } else if trimmed.starts_with("distinguishedName:") {
+            distinguished_name = trimmed.trim_start_matches("distinguishedName:").trim().to_string();
+        } else if trimmed.starts_with("displayName:") {
+            display_name = trimmed.trim_start_matches("displayName:").trim().to_string();
+        } else if trimmed.starts_with("givenName:") {
+            given_name = trimmed.trim_start_matches("givenName:").trim().to_string();
+        } else if trimmed.starts_with("sn:") {
+            surname = trimmed.trim_start_matches("sn:").trim().to_string();
+        } else if trimmed.starts_with("mail:") {
+            mail = trimmed.trim_start_matches("mail:").trim().to_string();
+        } else if trimmed.starts_with("description:") {
+            description = trimmed.trim_start_matches("description:").trim().to_string();
+        } else if trimmed.starts_with("telephoneNumber:") {
+            telephone_number = trimmed.trim_start_matches("telephoneNumber:").trim().to_string();
+        } else if trimmed.starts_with("userAccountControl:") {
+            if let Ok(v) = trimmed.trim_start_matches("userAccountControl:").trim().parse::<u32>() {
+                user_account_control = v;
+            }
+        } else if trimmed.starts_with("whenCreated:") {
+            when_created = trimmed.trim_start_matches("whenCreated:").trim().to_string();
+        } else if trimmed.starts_with("whenChanged:") {
+            when_changed = trimmed.trim_start_matches("whenChanged:").trim().to_string();
+        } else if trimmed.starts_with("lastLogonTimestamp:") || trimmed.starts_with("lastLogon:") {
+            last_logon = trimmed.split(':').nth(1).unwrap_or("").trim().to_string();
+        } else if trimmed.starts_with("badPwdCount:") {
+            if let Ok(v) = trimmed.trim_start_matches("badPwdCount:").trim().parse::<u32>() {
+                bad_pwd_count = v;
+            }
+        } else if trimmed.starts_with("memberOf:") {
+            let grp_dn = trimmed.trim_start_matches("memberOf:").trim();
+            let grp_name = if let Some(cn_part) = grp_dn.split(',').next() {
+                cn_part.trim_start_matches("CN=").trim().to_string()
+            } else {
+                grp_dn.to_string()
+            };
+            if !groups.contains(&grp_name) {
+                groups.push(grp_name);
+            }
+        }
+    }
+
+    if !groups.contains(&"Domain Users".to_string()) {
+        groups.push("Domain Users".to_string());
+    }
+
+    // Avaliação de permissões e flags
+    let is_disabled = (user_account_control & 0x0002) != 0;
+    let password_never_expires = (user_account_control & 0x10000) != 0;
+    let is_admin = username.to_lowercase() == "administrator"
+        || groups.iter().any(|g| {
+            let up = g.to_uppercase();
+            up.contains("ADMIN") || up == "DOMAIN ADMINS" || up == "ENTERPRISE ADMINS" || up == "SCHEMA ADMINS"
+        });
+
+    let mut permissions_summary = Vec::new();
+    if is_admin {
+        permissions_summary.push("Privilégio de Administrador Total do Domínio (Domain Admins / Administrators)".to_string());
+    }
+    if is_disabled {
+        permissions_summary.push("Conta Desativada (ACCOUNTDISABLE)".to_string());
+    } else {
+        permissions_summary.push("Conta Ativa e Operacional".to_string());
+    }
+    if password_never_expires {
+        permissions_summary.push("Senha Nunca Expira (DONT_EXPIRE_PASSWORD)".to_string());
+    } else {
+        permissions_summary.push("Sujeito à Política de Expiração de Senha Padrão".to_string());
+    }
+    if (user_account_control & 0x0020) != 0 {
+        permissions_summary.push("Senha Não Obrigatória (PASSWD_NOTREQD)".to_string());
+    }
+    if (user_account_control & 0x0040) != 0 {
+        permissions_summary.push("Usuário Não Pode Alterar Senha (PASSWD_CANT_CHANGE)".to_string());
+    }
+    if (user_account_control & 0x0010) != 0 {
+        permissions_summary.push("Bloqueio por Tentativas Inválidas (LOCKOUT)".to_string());
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: format!("Propriedades do usuário '{}' carregadas com sucesso", username),
+            data: Some(UserProperties {
+                username,
+                distinguished_name,
+                display_name,
+                given_name,
+                surname,
+                mail,
+                description,
+                telephone_number,
+                is_admin,
+                is_disabled,
+                password_never_expires,
+                user_account_control,
+                permissions_summary,
+                groups,
+                when_created,
+                when_changed,
+                last_logon,
+                bad_pwd_count,
+                raw_ldif,
+            }),
+            dry_run: false,
+            correlation_id: None,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

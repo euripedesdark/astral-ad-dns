@@ -3,6 +3,8 @@ pub mod status;
 pub mod users;
 pub mod groups;
 pub mod computers;
+pub mod ou;
+pub mod gpo;
 pub mod dns;
 pub mod bind;
 pub mod health;
@@ -52,6 +54,7 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Users
         .route("/api/users", get(users::list_users).post(users::create_user))
         .route("/api/users/{username}", delete(users::delete_user))
+        .route("/api/users/{username}/properties", get(users::get_user_properties))
         .route("/api/users/{username}/groups", get(users::get_user_groups).put(users::update_user_groups).post(users::update_user_groups))
         .route("/api/users/{username}/groups/{groupname}", post(users::add_user_to_group).delete(users::remove_user_from_group))
         .route("/api/users/{username}/password", post(users::set_password))
@@ -67,6 +70,18 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Computers
         .route("/api/computers", get(computers::list_computers).post(computers::create_computer))
         .route("/api/computers/{computername}", delete(computers::delete_computer))
+        .route("/api/computers/{computername}/properties", get(computers::get_computer_properties))
+
+        // Unidades Organizacionais (OU) & Objetos
+        .route("/api/ou", get(ou::list_ous).post(ou::create_ou))
+        .route("/api/ou/{ou_dn}", delete(ou::delete_ou))
+        .route("/api/ou/{ou_dn}/objects", get(ou::list_ou_objects))
+
+        // Diretivas de Grupo (GPO)
+        .route("/api/gpo", get(gpo::list_gpos).post(gpo::create_gpo))
+        .route("/api/gpo/{guid}", delete(gpo::delete_gpo))
+        .route("/api/gpo/{guid}/link", post(gpo::link_gpo))
+        .route("/api/gpo/{guid}/link/{container_dn}", delete(gpo::unlink_gpo))
 
         // DNS
         .route("/api/dns/zones", get(dns::list_zones).post(dns::create_zone))
@@ -89,6 +104,8 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
 
         // Backups
         .route("/api/backups", get(backup::list_backups).post(backup::create_backup))
+        .route("/api/backups/restore", post(backup::restore_backup))
+        .route("/api/backups/{filename}", delete(backup::delete_backup))
 
         // Provisioning & DC Join Wizard + Advanced PKI/Schema + AD DNS Sync
         .route("/api/provision/preflight", get(provision::run_preflight))
