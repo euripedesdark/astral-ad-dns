@@ -65,6 +65,19 @@ Aba dedicada com varredura contínua e detalhamento de latência, causas prováv
   - 🇫🇷 Français (France)
 - 100% dos textos, diálogos, tabelas e alertas traduzidos nos 4 idiomas.
 
+### 7. Política Unificada de Acesso & Autenticação Multi-Provedor
+Implementação da política unificada de autenticação e autorização corporativa:
+- **Samba Active Directory / OAuth2**: Autenticação de usuários e administradores de domínio com descoberta de grupos LDAP/Kerberos ou via SSO tokens emitidos pelo `astral-auth-service`.
+- **Linux Local (Root / Sudo)**: Autenticação de operadores locais do sistema operacional membros do grupo `wheel`/`sudo` ou superusuário `root`.
+- **PostgreSQL Superuser**: Acesso validado via banco de dados local para qualquer conta com permissão `rolsuper = true` (ex: `postgres`).
+- **Suporte a Bearer Token e Cookies de Sessão**: Suporte simultâneo a cabeçalho `Authorization: Bearer <jwt>` e cookies HTTP `sso_token` e `astral_token`.
+- **Rotas de Autenticação**:
+  - `POST /api/auth/login`: Autenticação e emissão de token JWT de sessão.
+  - `GET /api/auth/me`: Verificação de identidade e grupos do operador ativo.
+  - `POST /api/auth/logout`: Revogação e expiração dos cookies de sessão.
+  - `GET /api/auth/providers`: Listagem dos métodos de autenticação disponíveis.
+- **Escopos Preservados**: A política unificada se aplica transversalmente, mantendo independentes apenas o módulo legado `astral-saas-erp` (Java) e a interface web IAM do `auth-service`.
+
 ---
 
 ## 🛠️ Instalação e Execução

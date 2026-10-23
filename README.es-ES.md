@@ -65,6 +65,19 @@ Pestaña dedicada con escaneo continuo, latencias, causas probables y recomendac
   - 🇫🇷 Français (France)
 - 100% de la interfaz traducida en los 4 idiomas.
 
+### 7. Política Unificada de Acceso y Autenticación Multiproveedor
+Implementación de la política corporativa unificada de autenticación y autorización:
+- **Samba Active Directory / OAuth2**: Autenticación para usuarios y administradores de dominio con mapeo de grupos LDAP/Kerberos o mediante tokens SSO de `astral-auth-service`.
+- **Linux Local (Root / Sudo)**: Inicio de sesión para administradores del sistema operativo pertenecientes al grupo `wheel`/`sudo` o superusuario `root`.
+- **Superusuario PostgreSQL**: Validación directa de credenciales para cualquier usuario de base de dados con `rolsuper = true` (ej: `postgres`).
+- **Soporte para Bearer Token y Cookies de Sesión**: Validación simultánea de encabezados `Authorization: Bearer <jwt>` y cookies `sso_token` / `astral_token`.
+- **Rutas de Autenticación**:
+  - `POST /api/auth/login`: Validación de credenciales y emisión de token JWT.
+  - `GET /api/auth/me`: Consulta de identidad y privilegios del operador activo.
+  - `POST /api/auth/logout`: Cierre de sesión e invalidación de cookies.
+  - `GET /api/auth/providers`: Catálogo de métodos de autenticación soportados.
+- **Ámbitos Preservados**: Aplicado transversalmente manteniendo independientes únicamente `astral-saas-erp` (Java) y la interfaz web IAM de `auth-service`.
+
 ---
 
 ## 🛠️ Instalación y Despliegue

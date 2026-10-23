@@ -65,6 +65,19 @@ Onglet dédié avec surveillance continue, latences, causes probables et recomma
   - 🇫🇷 Français (France)
 - 100% de l'interface traduite avec exactitude dans les 4 langues.
 
+### 7. Politique d'Accès Unifié et Authentification Multi-Fournisseur
+Mise en œuvre de la politique corporative unifiée d'authentification et d'autorisation :
+- **Samba Active Directory / OAuth2** : Authentification des utilisateurs et administrateurs de domaine avec mappage des groupes LDAP/Kerberos ou jetons SSO d'`astral-auth-service`.
+- **Utilisateur Linux Local (Root / Sudo)** : Accès administrateur système pour les membres des groupes `wheel`/`sudo` ou le compte `root`.
+- **Superutilisateur PostgreSQL** : Validation de compte de base de données pour tout rôle disposant de `rolsuper = true` (ex. `postgres`).
+- **Jeton Bearer et Cookies de Session** : Prise en charge conjointe des en-têtes `Authorization: Bearer <jwt>` et des cookies `sso_token` / `astral_token`.
+- **Points de Terminaison d'Authentification** :
+  - `POST /api/auth/login` : Validation des identifiants et émission du jeton JWT.
+  - `GET /api/auth/me` : Consultation de l'identité et des privilèges de l'opérateur connecté.
+  - `POST /api/auth/logout` : Clôture de session et expiration des cookies.
+  - `GET /api/auth/providers` : Liste des mécanismes d'authentification disponibles.
+- **Périmètres Préservés** : Déployé transversalement tout en préservant l'autonomie d'`astral-saas-erp` (Java) et de l'interface web IAM d'`auth-service`.
+
 ---
 
 ## 🛠️ Compilation et Déploiement

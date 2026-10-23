@@ -4,7 +4,7 @@ import {
   Server, Shield, Globe, Users, Network, Activity, 
   Database, RefreshCw, Key, CheckCircle, XCircle, AlertTriangle, 
   Search, Plus, Trash2, Edit3, ArrowRight, Copy, Terminal, 
-  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle
+  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle, User, LogOut
 } from 'lucide-react';
 
 
@@ -12,11 +12,22 @@ const API_BASE = typeof window !== "undefined" && window.location.pathname.start
   ? "/ad/api"
   : (typeof window !== "undefined" && window.location.pathname.startsWith("/dns") ? "/dns/api" : "/api");
 
-const customFetch = (url, opts) => {
+const customFetch = (url, opts = {}) => {
   const finalUrl = (typeof url === "string" && url.startsWith("/api"))
     ? (API_BASE + url.slice(4))
     : url;
-  return fetch(finalUrl, opts);
+  const headers = { ...(opts.headers || {}) };
+  if (typeof window !== "undefined") {
+    const token = localStorage.getItem("astral_token");
+    if (token && !headers["Authorization"]) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+  }
+  return fetch(finalUrl, {
+    ...opts,
+    headers,
+    credentials: opts.credentials || 'include',
+  });
 };
 
 export default function App() {
@@ -45,6 +56,87 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
+  const [operator, setOperator] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authProvider, setAuthProvider] = useState('ad');
+  const [authUsername, setAuthUsername] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState(null);
+
+  const checkAuth = async () => {
+    try {
+      setAuthChecking(true);
+      const res = await customFetch('/api/auth/me');
+      if (res.ok) {
+        const body = await res.json();
+        if (body.success && body.data) {
+          setOperator(body.data);
+        } else {
+          setOperator(null);
+        }
+      } else {
+        setOperator(null);
+      }
+    } catch (err) {
+      console.warn("Auth check failed:", err);
+      setOperator(null);
+    } finally {
+      setAuthChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
+    if (!authUsername.trim() || !authPassword) {
+      setAuthError((t.usernameLabel || "Usuário") + " / " + (t.passwordLabel || "Senha"));
+      return;
+    }
+    setAuthSubmitting(true);
+    setAuthError(null);
+    try {
+      const res = await customFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: authProvider,
+          username: authUsername.trim(),
+          password: authPassword,
+        }),
+      });
+      const body = await res.json();
+      if (res.ok && body.success && body.data) {
+        if (body.data.token) {
+          localStorage.setItem('astral_token', body.data.token);
+        }
+        setOperator(body.data.operator);
+        showToast(t.loginSuccess || "Autenticado com sucesso!", 'success');
+      } else {
+        const msg = body.message || t.loginFailed || "Falha na autenticação";
+        setAuthError(msg);
+        showToast(msg, 'error');
+      }
+    } catch (err) {
+      setAuthError(err.message || 'Erro de rede');
+      showToast('Erro de rede', 'error');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await customFetch('/api/auth/logout', { method: 'POST' });
+    } catch (err) {}
+    localStorage.removeItem('astral_token');
+    setOperator(null);
+    showToast(t.logout || "Sessão encerrada", 'success');
+  };
+
   const fetchStatus = async () => {
     try {
       setLoadingStatus(true);
@@ -61,10 +153,190 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    if (operator) {
+      fetchStatus();
+      const interval = setInterval(fetchStatus, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [operator]);
+
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-sm text-slate-400 font-mono">Astral AD & Hybrid DNS &middot; {t.signingIn || 'Carregando...'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!operator) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between font-sans relative overflow-hidden">
+        {toast && (
+          <div className={`fixed bottom-5 right-5 z-50 px-5 py-3 rounded-lg shadow-xl border flex items-center gap-3 transition-all ${
+            toast.type === 'error' ? 'bg-rose-950 border-rose-700 text-rose-200' : 'bg-emerald-950 border-emerald-700 text-emerald-200'
+          }`}>
+            {toast.type === 'error' ? <AlertTriangle className="w-5 h-5 text-rose-400" /> : <CheckCircle className="w-5 h-5 text-emerald-400" />}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </div>
+        )}
+
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div className="w-full px-6 py-4 flex items-center justify-between z-10 border-b border-slate-900 bg-slate-950/70 backdrop-blur">
+          <div className="flex items-center gap-3">
+            <div className="bg-indigo-600/20 border border-indigo-500/40 p-2 rounded-xl text-indigo-400">
+              <Server className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="font-bold text-sm bg-gradient-to-r from-indigo-400 to-sky-300 bg-clip-text text-transparent">
+                Astral AD & Hybrid DNS
+              </span>
+              <span className="hidden sm:inline-block ml-2 text-xs text-slate-500 font-mono">v1.4.0</span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs">
+            <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <select
+              value={lang}
+              onChange={(e) => setLang(e.target.value)}
+              className="bg-transparent text-slate-200 text-xs font-semibold focus:outline-none cursor-pointer pr-2"
+              aria-label={t.selectLanguage || "Selecionar Idioma"}
+            >
+              <option value="pt" className="bg-slate-900 text-slate-100">🇧🇷 Português (Brasil)</option>
+              <option value="en" className="bg-slate-900 text-slate-100">🇺🇸 English (US)</option>
+              <option value="es" className="bg-slate-900 text-slate-100">🇪🇸 Español (España)</option>
+              <option value="fr" className="bg-slate-900 text-slate-100">🇫🇷 Français (France)</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex-1 flex items-center justify-center p-4 z-10">
+          <div className="w-full max-w-md bg-slate-900/95 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 backdrop-blur">
+            <div className="text-center mb-6">
+              <div className="inline-flex p-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 mb-3">
+                <Lock className="w-7 h-7" />
+              </div>
+              <h2 className="text-xl font-bold text-slate-100 tracking-wide">{t.loginTitle || "Acesso Unificado Astral"}</h2>
+              <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">{t.loginSubtitle || "Autenticação centralizada para infraestrutura e serviços Astral"}</p>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800/80 mb-5">
+              <button
+                type="button"
+                onClick={() => { setAuthProvider('ad'); setAuthError(null); }}
+                className={`flex flex-col items-center py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+                  authProvider === 'ad'
+                    ? 'bg-indigo-600 text-white shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Shield className="w-4 h-4 mb-1" />
+                <span className="truncate w-full text-center">Samba AD / SSO</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAuthProvider('linux'); setAuthError(null); }}
+                className={`flex flex-col items-center py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+                  authProvider === 'linux'
+                    ? 'bg-indigo-600 text-white shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Terminal className="w-4 h-4 mb-1" />
+                <span className="truncate w-full text-center">Linux Sudo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAuthProvider('postgres'); setAuthError(null); }}
+                className={`flex flex-col items-center py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+                  authProvider === 'postgres'
+                    ? 'bg-indigo-600 text-white shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Database className="w-4 h-4 mb-1" />
+                <span className="truncate w-full text-center">PostgreSQL</span>
+              </button>
+            </div>
+
+            <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg p-3 mb-5 text-[11px] text-slate-400 leading-relaxed">
+              {authProvider === 'ad' && (t.providerAdDesc || "Acesso via credenciais do domínio Samba AD ou token SSO emitido pelo auth-service.")}
+              {authProvider === 'linux' && (t.providerLinuxDesc || "Acesso de administrador de sistema operacional com privilégios sudo (wheel/sudo) ou root.")}
+              {authProvider === 'postgres' && (t.providerPostgresDesc || "Acesso via banco de dados para qualquer superusuário PostgreSQL (rolsuper = true).")}
+            </div>
+
+            {authError && (
+              <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/60 text-rose-200 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">{t.usernameLabel || "Usuário"}</label>
+                <div className="relative">
+                  <User className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
+                  <input
+                    type="text"
+                    required
+                    value={authUsername}
+                    onChange={(e) => setAuthUsername(e.target.value)}
+                    placeholder={
+                      authProvider === 'ad' ? "Administrator" :
+                      authProvider === 'linux' ? "euripedes / root" : "postgres"
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-3 py-2 text-sm text-slate-100 placeholder-slate-600 transition focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">{t.passwordLabel || "Senha"}</label>
+                <div className="relative">
+                  <Key className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-3 py-2 text-sm text-slate-100 placeholder-slate-600 transition focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={authSubmitting}
+                className="w-full mt-2 py-2.5 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+              >
+                {authSubmitting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>{t.signingIn || "Autenticando..."}</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>{t.signInButton || "Entrar no Sistema"}</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <div className="w-full text-center py-3 text-[11px] text-slate-500 border-t border-slate-900 bg-slate-950/40">
+          {t.unifiedAuthNotice || "Política Unificada de Acesso: Samba AD / OAuth2, Linux Sudo, PostgreSQL Superuser ou Auth-Service SSO."}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -143,6 +415,25 @@ export default function App() {
             <Shield className="w-3.5 h-3.5" />
             <span>{t.wizard}</span>
           </button>
+
+          {/* Operator Badge with Logout */}
+          {operator && (
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-lg text-xs shadow-inner">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span className="text-slate-400 hidden md:inline">{t.authenticatedAs || 'Operador:'}</span>
+              <span className="font-semibold text-indigo-300 font-mono">{operator.username}</span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-indigo-950 text-indigo-400 border border-indigo-800/60">
+                {operator.provider}
+              </span>
+              <button
+                onClick={handleLogout}
+                title={t.logout || 'Sair'}
+                className="ml-1 text-slate-400 hover:text-rose-400 transition cursor-pointer p-0.5"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* Language Selector Dropdown (Caixa de Seleção) */}
           <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700/80 hover:border-indigo-500/60 transition rounded-lg px-2.5 py-1.5 text-xs shadow-inner">

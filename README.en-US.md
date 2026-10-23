@@ -65,6 +65,19 @@ Dedicated UI tab with continuous scanning, latency measurements, root causes, an
   - 🇫🇷 Français (France)
 - 100% of interface labels, tooltips, dialogs, and alerts translated across all 4 languages.
 
+### 7. Unified Access Policy & Multi-Provider Authentication
+Implementation of the enterprise unified authentication & authorization policy:
+- **Samba Active Directory / OAuth2**: Authentication for domain users and administrators with automatic LDAP/Kerberos group mapping or via SSO tokens issued by `astral-auth-service`.
+- **Linux Local (Root / Sudo)**: Operating system administrator login for members of `wheel`/`sudo` groups or the `root` superuser.
+- **PostgreSQL Superuser**: Direct database credential validation for any PostgreSQL user with `rolsuper = true` (e.g., `postgres`).
+- **Bearer Token & Session Cookies**: Simultaneous validation of `Authorization: Bearer <jwt>` headers and `sso_token` / `astral_token` HTTP session cookies.
+- **Dedicated Auth Endpoints**:
+  - `POST /api/auth/login`: Credential validation and JWT session token generation.
+  - `GET /api/auth/me`: Active operator identity and privilege inspection.
+  - `POST /api/auth/logout`: Session termination and cookie invalidation.
+  - `GET /api/auth/providers`: Supported authentication mechanisms catalog.
+- **Preserved Scopes**: Applied across infrastructure modules while maintaining independence for `astral-saas-erp` (legacy Java auth) and `auth-service` web IAM.
+
 ---
 
 ## 🛠️ Build and Deployment
