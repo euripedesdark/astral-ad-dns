@@ -428,13 +428,30 @@ pub fn check_service_active(service: &str, sudo_pass: Option<&str>) -> bool {
     res.stdout.trim() == "active"
 }
 
-/// Desativa o systemd-resolved (libera porta 53) e protege /etc/resolv.conf com chattr +i
+/// Desativa o systemd-resolved (libera porta 53) e protege /etc/resolv.conf com chattr +i.
+/// Configura estritamente os servidores DNS do AD (local 127.0.0.1 e/ou DC parceiro),
+/// sem incluir servidores externos públicos (ex: Google 8.8.8.8) no resolv.conf,
+/// uma vez que o BIND 9 / Samba já encaminha consultas públicas via forwarders configurados.
 pub fn disable_systemd_resolved_and_protect_dns(realm: &str, sudo_pass: Option<&str>) -> CommandResult {
-    let _ = run_cmd_dry("systemctl stop systemd-resolved", sudo_pass, false);
-    let _ = run_cmd_dry("systemctl disable systemd-resolved", sudo_pass, false);
+    configure_ad_dns_resolver(realm, None, sudo_pass)
+}
+
+pub fn configure_ad_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, sudo_pass: Option<&str>) -> CommandResult {
+    let _ = run_cmd_dry("systemctl stop systemd-resolved 2>/dev/null || true", sudo_pass, false);
+    let _ = run_cmd_dry("systemctl disable systemd-resolved 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("chattr -i /etc/resolv.conf 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("rm -f /etc/resolv.conf", sudo_pass, false);
-    let conf = format!("search {}\\nnameserver 127.0.0.1\\n", realm.to_lowercase());
+
+    let search_domain = realm.trim().to_lowercase();
+    let mut conf = format!("search {}\\n", search_domain);
+    if let Some(partner_ip) = partner_dc_ip {
+        let p = partner_ip.trim();
+        if !p.is_empty() && p != "127.0.0.1" {
+            conf.push_str(&format!("nameserver {}\\n", p));
+        }
+    }
+    conf.push_str("nameserver 127.0.0.1\\n");
+
     let write_cmd = format!("sh -c 'printf \"{}\" > /etc/resolv.conf && chattr +i /etc/resolv.conf'", conf);
     run_cmd_dry(&write_cmd, sudo_pass, false)
 }

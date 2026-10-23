@@ -89,10 +89,12 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Backups
         .route("/api/backups", get(backup::list_backups).post(backup::create_backup))
 
-        // Provisioning & DC Join Wizard + Advanced PKI/Schema
+        // Provisioning & DC Join Wizard + Advanced PKI/Schema + AD DNS Sync
         .route("/api/provision/preflight", get(provision::run_preflight))
         .route("/api/provision/new-dc", post(provision::provision_new_dc))
         .route("/api/provision/join-dc", post(provision::join_domain))
+        .route("/api/provision/verify-ad-dns", get(provision::verify_ad_dns_status))
+        .route("/api/provision/sync-ad-dns", post(provision::sync_ad_dns_dc))
         .route("/api/provision/upgrade-schema", post(provision::upgrade_schema_and_levels))
         .route("/api/provision/fix-dns-partitions", post(provision::fix_dns_partitions))
         .route("/api/provision/step-ca", post(provision::setup_step_ca))

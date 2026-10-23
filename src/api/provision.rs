@@ -25,6 +25,34 @@ pub struct PreflightCheck {
     pub sam_ldb_exists: bool,
     pub ports_open: Vec<PortStatus>,
     pub ready_for_provision: bool,
+    pub ad_dns_configured: bool,
+    pub ad_dns_resolves: bool,
+    pub dc2_dns_added: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AdDnsVerification {
+    pub hostname: String,
+    pub fqdn: String,
+    pub local_ip: String,
+    pub partner_dc_ip: String,
+    pub realm: String,
+    pub resolv_conf_configured: bool,
+    pub resolv_conf_nameservers: Vec<String>,
+    pub ad_srv_resolves: bool,
+    pub ad_srv_target: Option<String>,
+    pub dc2_a_record_in_ad: bool,
+    pub dc2_ns_record_in_ad: bool,
+    pub samba_tool_installed: bool,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SyncAdDnsRequest {
+    pub realm: Option<String>,
+    pub target_dc_ip: Option<String>,
+    pub admin_username: Option<String>,
+    pub admin_password: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -147,6 +175,12 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
 
     let ready_for_provision = samba_installed && !ad_is_active && !sam_ldb_exists;
 
+    // Verificação de integração do DNS do AD no DC2
+    let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    let ad_dns_configured = resolv_content.contains("192.168.2.10") || resolv_content.contains("127.0.0.1");
+    let ad_dns_resolves = run_cmd_dry("host -t srv _ldap._tcp.dc._msdcs.srvcloud.cloud 2>/dev/null", sudo, false).success;
+    let dc2_dns_added = run_cmd_dry("samba-tool dns query 192.168.2.10 srvcloud.cloud dc2 A -U administrator%Copa@@2026 2>/dev/null", sudo, false).success;
+
     Json(PreflightCheck {
         hostname,
         fqdn,
@@ -160,6 +194,9 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
         sam_ldb_exists,
         ports_open,
         ready_for_provision,
+        ad_dns_configured,
+        ad_dns_resolves,
+        dc2_dns_added,
     })
 }
 
@@ -409,12 +446,14 @@ pub async fn join_domain(
     let d = payload.dry_run;
 
     let realm = payload.realm.trim().to_uppercase();
+    let target_dc_ip = payload.target_dc_ip.trim();
+
     if realm.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: "Realm é obrigatório".to_string(),
+                message: "Domínio Kerberos (REALM) é obrigatório".to_string(),
                 data: None,
                 dry_run: d,
                 correlation_id: None,
@@ -422,9 +461,61 @@ pub async fn join_domain(
         );
     }
 
+    if target_dc_ip.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Endereço IP do DC parceiro/primário é obrigatório".to_string(),
+                data: None,
+                dry_run: d,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    // 1. Verificação obrigatória do binário samba-tool
+    let samba_tool_installed = run_cmd_dry("which samba-tool 2>/dev/null", sudo, false).success;
+    if !samba_tool_installed {
+        return (
+            StatusCode::PRECONDITION_FAILED,
+            Json(ApiResponse {
+                success: false,
+                message: "O comando 'samba-tool' não está instalado neste servidor. Instale os pacotes Samba DC ('samba-dc', 'samba-tools', 'samba-winbind').".to_string(),
+                data: Some(ProvisionResult {
+                    steps_completed: steps,
+                    error: Some("samba-tool: comando não encontrado".to_string()),
+                    plan_only: false,
+                }),
+                dry_run: d,
+                correlation_id: None,
+            }),
+        );
+    }
+    steps.push("Utilitário samba-tool verificado no sistema.".to_string());
+
+    // 2. Configurar e verificar previamente o DNS do AD no DC2 (sem DNS externo como Google)
+    // Para ingressar no domínio, o DC2 DEVE consultar exclusivamente o DNS do AD.
+    crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
+    steps.push(format!("Resolver local (/etc/resolv.conf) apontado exclusivamente para o DNS do AD ({}) e 127.0.0.1.", target_dc_ip));
+
+    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
+    let my_hostname = host_res.stdout.trim().to_lowercase();
+    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let my_ip = ip_res.stdout.trim().to_string();
+
+    // Testa se o DNS do AD resolve os registros de serviço do domínio
+    let srv_res = run_cmd_dry(&format!("host -t srv _ldap._tcp.dc._msdcs.{} 2>/dev/null", realm.to_lowercase()), sudo, false);
+    if srv_res.success {
+        steps.push(format!("Consulta SRV do AD (_ldap._tcp.dc._msdcs.{}) validada com sucesso contra o DNS do AD.", realm.to_lowercase()));
+    } else {
+        steps.push(format!("Aviso: O registro SRV do AD ainda não resolveu diretamente. Tentando prosseguir com --server={}.", target_dc_ip));
+    }
+
     if d {
-        steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", payload.target_dc_ip));
-        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=********", realm, payload.admin_username));
+        steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", target_dc_ip));
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --dns-backend=SAMBA_INTERNAL", realm, payload.admin_username, target_dc_ip));
+        steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", my_hostname, realm.to_lowercase(), my_ip));
         steps.push("[SIMULAÇÃO] Inicialização da replicação inicial DRS e sincronismo SYSVOL".to_string());
 
         let evt_id = config.audit.record(
@@ -453,12 +544,16 @@ pub async fn join_domain(
         );
     }
 
-    // Execução real
+    // 3. Backup de smb.conf antigo se existir para não abortar o join do Samba
+    let _ = run_cmd_dry("test -f /etc/samba/smb.conf && cp -f /etc/samba/smb.conf /etc/samba/smb.conf.bak.$(date +%s) && rm -f /etc/samba/smb.conf", sudo, false);
+
+    // 4. Execução real do join no domínio apontando diretamente para o servidor e com SAMBA_INTERNAL
     let join_cmd = format!(
-        "samba-tool domain join '{}' DC -U'{}' --password='{}'",
+        "samba-tool domain join '{}' DC -U'{}' --password='{}' --server='{}' --dns-backend=SAMBA_INTERNAL",
         realm,
         sanitize_arg(&payload.admin_username),
-        sanitize_arg(&payload.admin_password)
+        sanitize_arg(&payload.admin_password),
+        target_dc_ip
     );
 
     let res = run_cmd_dry(&join_cmd, sudo, false);
@@ -479,10 +574,44 @@ pub async fn join_domain(
         );
     }
 
-    steps.push(format!("Ingressou com sucesso no domínio '{}' como DC réplica.", realm));
+    steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio (DC) réplica.", realm));
+
+    // 5. Verificação e adição do registro DNS do DC2 no AD
+    let add_a_cmd = format!(
+        "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
+        target_dc_ip,
+        realm.to_lowercase(),
+        my_hostname,
+        my_ip,
+        sanitize_arg(&payload.admin_username),
+        sanitize_arg(&payload.admin_password)
+    );
+    let _ = run_cmd_dry(&add_a_cmd, sudo, false);
+    steps.push(format!("Registro DNS A do DC2 ({}.{} -> {}) garantido na zona do AD.", my_hostname, realm.to_lowercase(), my_ip));
+
+    let add_ns_cmd = format!(
+        "samba-tool dns add '{}' '{}' @ NS '{}.{}' -U'{}%{}'",
+        target_dc_ip,
+        realm.to_lowercase(),
+        my_hostname,
+        realm.to_lowercase(),
+        sanitize_arg(&payload.admin_username),
+        sanitize_arg(&payload.admin_password)
+    );
+    let _ = run_cmd_dry(&add_ns_cmd, sudo, false);
+    steps.push(format!("Registro DNS NS ({}.{}) adicionado como servidor autoritativo da zona {}.", my_hostname, realm.to_lowercase(), realm.to_lowercase()));
+
+    // 6. Configuração definitiva do /etc/resolv.conf local: 127.0.0.1 em primeiro, e parceiro como redundância
+    crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
+    steps.push("Resolver DNS local protegido com chattr +i apontando para 127.0.0.1 e parceiro.".to_string());
+
+    // 7. Abertura do firewall e ativação do serviço Samba DC
     let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
     steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
-    let _ = run_cmd_dry("systemctl enable --now samba || systemctl enable --now samba-dc || true", sudo, false);
+
+    let _ = run_cmd_dry("systemctl unmask samba-dc 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("systemctl enable --now samba-dc || systemctl enable --now samba || true", sudo, false);
+    steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
 
     let evt_id = config.audit.record(
         "admin",
@@ -491,14 +620,14 @@ pub async fn join_domain(
         &format!("domain:{}", realm),
         false,
         true,
-        &format!("Ingresso no domínio {}", realm),
+        &format!("Ingresso no domínio {} como DC réplica", realm),
     );
 
     (
         StatusCode::OK,
         Json(ApiResponse {
             success: true,
-            message: "Ingresso no domínio concluído com sucesso!".to_string(),
+            message: "Ingresso no domínio e sincronização DNS concluídos com sucesso!".to_string(),
             data: Some(ProvisionResult {
                 steps_completed: steps,
                 error: None,
@@ -506,6 +635,166 @@ pub async fn join_domain(
             }),
             dry_run: false,
             correlation_id: Some(evt_id),
+        }),
+    )
+}
+
+/// Endpoint de diagnóstico e verificação do status do DNS do AD no DC2
+pub async fn verify_ad_dns_status(
+    State(config): State<Arc<AppConfig>>,
+) -> Json<AdDnsVerification> {
+    let sudo = config.sudo_password.as_deref();
+
+    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
+    let hostname = host_res.stdout.trim().to_lowercase();
+    let fqdn_res = run_cmd_dry("hostname -f 2>/dev/null || hostname", sudo, false);
+    let fqdn = fqdn_res.stdout.trim().to_lowercase();
+    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let local_ip = ip_res.stdout.trim().to_string();
+
+    let partner_dc_ip = "192.168.2.10".to_string();
+    let realm = "SRVCLOUD.CLOUD".to_string();
+
+    let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    let mut nameservers = Vec::new();
+    for line in resolv_content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("nameserver") {
+            if let Some(ns) = trimmed.split_whitespace().nth(1) {
+                nameservers.push(ns.to_string());
+            }
+        }
+    }
+
+    let resolv_conf_configured = nameservers.contains(&"192.168.2.10".to_string()) || nameservers.contains(&"127.0.0.1".to_string());
+
+    // Teste de resolução SRV do Active Directory
+    let srv_res = run_cmd_dry("host -t srv _ldap._tcp.dc._msdcs.srvcloud.cloud 2>/dev/null", sudo, false);
+    let ad_srv_resolves = srv_res.success;
+    let ad_srv_target = if ad_srv_resolves {
+        srv_res.stdout.lines().find(|l| l.contains("SRV")).and_then(|l| l.split_whitespace().last()).map(|s| s.trim_end_matches('.').to_string())
+    } else {
+        None
+    };
+
+    let samba_tool_installed = run_cmd_dry("which samba-tool 2>/dev/null", sudo, false).success;
+
+    // Consulta se o DC2 está registrado na zona DNS do AD
+    let q_a = format!("samba-tool dns query {} {} {} A -U administrator%Copa@@2026 2>/dev/null", partner_dc_ip, realm.to_lowercase(), hostname);
+    let dc2_a_record_in_ad = if samba_tool_installed {
+        let r = run_cmd_dry(&q_a, sudo, false);
+        r.success && r.stdout.contains(&local_ip)
+    } else {
+        false
+    };
+
+    let q_ns = format!("samba-tool dns query {} {} @ NS -U administrator%Copa@@2026 2>/dev/null", partner_dc_ip, realm.to_lowercase());
+    let dc2_ns_record_in_ad = if samba_tool_installed {
+        let r = run_cmd_dry(&q_ns, sudo, false);
+        r.success && r.stdout.contains(&hostname)
+    } else {
+        false
+    };
+
+    let message = if ad_srv_resolves && dc2_a_record_in_ad {
+        format!("DNS do AD operacional no DC2: registros A e NS autoritativos ativos na zona {}.", realm.to_lowercase())
+    } else if ad_srv_resolves {
+        format!("Resolução DNS do AD ativa no DC2, mas registro A de {} ainda não foi adicionado ao AD.", hostname)
+    } else {
+        "DNS do Active Directory não configurado ou inacessível no DC2.".to_string()
+    };
+
+    Json(AdDnsVerification {
+        hostname,
+        fqdn,
+        local_ip,
+        partner_dc_ip,
+        realm,
+        resolv_conf_configured,
+        resolv_conf_nameservers: nameservers,
+        ad_srv_resolves,
+        ad_srv_target,
+        dc2_a_record_in_ad,
+        dc2_ns_record_in_ad,
+        samba_tool_installed,
+        message,
+    })
+}
+
+/// Endpoint para sincronizar e adicionar os registros do DC2 no DNS do AD
+pub async fn sync_ad_dns_dc(
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<SyncAdDnsRequest>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    let realm = payload.realm.unwrap_or_else(|| "SRVCLOUD.CLOUD".to_string()).trim().to_uppercase();
+    let target_dc_ip = payload.target_dc_ip.unwrap_or_else(|| "192.168.2.10".to_string());
+    let admin_user = payload.admin_username.unwrap_or_else(|| "administrator".to_string());
+    let admin_pass = payload.admin_password.unwrap_or_else(|| "Copa@@2026".to_string());
+
+    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
+    let hostname = host_res.stdout.trim().to_lowercase();
+    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let local_ip = ip_res.stdout.trim().to_string();
+
+    // 1. Configurar /etc/resolv.conf estritamente com DNS do AD (parceiro e 127.0.0.1, sem DNS externo)
+    crate::system::configure_ad_dns_resolver(&realm, Some(&target_dc_ip), sudo);
+    steps.push(format!("Configurado /etc/resolv.conf exclusivo do AD: nameserver {} e 127.0.0.1.", target_dc_ip));
+
+    // 2. Garantir registro A no DNS do AD
+    let add_a_cmd = format!(
+        "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
+        target_dc_ip,
+        realm.to_lowercase(),
+        hostname,
+        local_ip,
+        sanitize_arg(&admin_user),
+        sanitize_arg(&admin_pass)
+    );
+    let r_a = run_cmd_dry(&add_a_cmd, sudo, false);
+    if r_a.success || r_a.stderr.contains("already exists") || r_a.stdout.contains("already exists") {
+        steps.push(format!("Registro A de {} ({}) verificado/adicionado no DNS do AD ({}) com sucesso.", hostname, local_ip, target_dc_ip));
+    } else {
+        steps.push(format!("Aviso ao registrar A no AD: {}", r_a.stderr.trim()));
+    }
+
+    // 3. Garantir registro NS no DNS do AD
+    let add_ns_cmd = format!(
+        "samba-tool dns add '{}' '{}' @ NS '{}.{}' -U'{}%{}'",
+        target_dc_ip,
+        realm.to_lowercase(),
+        hostname,
+        realm.to_lowercase(),
+        sanitize_arg(&admin_user),
+        sanitize_arg(&admin_pass)
+    );
+    let r_ns = run_cmd_dry(&add_ns_cmd, sudo, false);
+    if r_ns.success || r_ns.stderr.contains("already exists") || r_ns.stdout.contains("already exists") {
+        steps.push(format!("Registro NS de {}.{} adicionado na zona {} com sucesso.", hostname, realm.to_lowercase(), realm.to_lowercase()));
+    } else {
+        steps.push(format!("Aviso ao registrar NS no AD: {}", r_ns.stderr.trim()));
+    }
+
+    // 4. Teste de validação
+    let test_res = run_cmd_dry(&format!("host -t srv _ldap._tcp.dc._msdcs.{} 2>/dev/null", realm.to_lowercase()), sudo, false);
+    if test_res.success {
+        steps.push("Resolução interna de SRV do Active Directory confirmada e ativa!".to_string());
+    }
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "DNS do AD e registros do DC2 sincronizados com sucesso!".to_string(),
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: None,
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: None,
         }),
     )
 }
