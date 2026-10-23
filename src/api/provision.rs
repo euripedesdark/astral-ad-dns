@@ -349,6 +349,8 @@ pub async fn provision_new_dc(
     let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
     let _ = run_cmd_dry("systemctl enable --now samba 2>/dev/null || systemctl enable --now samba-dc 2>/dev/null || true", sudo, false);
     steps.push("Serviço Samba Active Directory iniciado e habilitado no boot.".to_string());
+    let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
+    steps.push(format!("Firewall pós-provisionamento: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
 
     let evt_id = config.audit.record(
         "admin",
@@ -456,6 +458,8 @@ pub async fn join_domain(
     }
 
     steps.push(format!("Ingressou com sucesso no domínio '{}' como DC réplica.", realm));
+    let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
+    steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
     let _ = run_cmd_dry("systemctl enable --now samba || systemctl enable --now samba-dc || true", sudo, false);
 
     let evt_id = config.audit.record(

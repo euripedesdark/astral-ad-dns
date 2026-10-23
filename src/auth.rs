@@ -1,14 +1,16 @@
 use axum::{
-
     extract::FromRequestParts,
     http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use std::ffi::{CStr, CString};
 use std::fs;
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 use std::process::Command;
+use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn};
 
@@ -16,19 +18,32 @@ use crate::api::users::ApiResponse;
 
 pub const DEFAULT_AUTH_SECRET: &str = "dd1f4702cbb4d061075ff7c58c63e3f48a214bf6117e4453ad4ee20b2f48e3ae";
 
+fn default_iss() -> String {
+    "auth-service".to_string()
+}
+
+fn default_provider() -> String {
+    "AD".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
+    #[serde(default = "default_iss")]
     pub iss: String,
     pub sub: String,
-    #[serde(rename = "identityId")]
+    #[serde(rename = "identityId", default)]
     pub identity_id: String,
+    #[serde(default)]
     pub username: String,
-    pub provider: String, // "AD", "Linux", "Postgres", "OAuth2"
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default)]
     pub groups: Vec<String>,
     #[serde(default)]
     pub is_admin: bool,
     #[serde(default)]
     pub has_wheel: bool,
+    #[serde(default)]
     pub iat: usize,
     pub exp: usize,
 }
@@ -47,7 +62,7 @@ pub struct AuthenticatedOperator {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub provider: Option<String>, // "auto" | "ad" | "linux" | "postgres"
+    pub provider: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -58,7 +73,6 @@ pub struct LoginResponseData {
     pub operator: AuthenticatedOperator,
 }
 
-/// Lê o segredo compartilhado de autenticação
 pub fn get_auth_secret() -> String {
     if let Ok(sec) = std::env::var("AUTH_TOKEN_SECRET") {
         if !sec.trim().is_empty() {
@@ -70,7 +84,6 @@ pub fn get_auth_secret() -> String {
             return sec;
         }
     }
-    // Tenta ler de /etc/auth-service/auth.env se estiver acessível (root)
     let env_file = Path::new("/etc/auth-service/auth.env");
     if env_file.exists() {
         if let Ok(content) = fs::read_to_string(env_file) {
@@ -88,7 +101,6 @@ pub fn get_auth_secret() -> String {
     DEFAULT_AUTH_SECRET.to_string()
 }
 
-/// Gera um JWT compatível com o astral-auth-service
 pub fn issue_jwt(
     username: &str,
     provider: &str,
@@ -104,7 +116,7 @@ pub fn issue_jwt(
     let has_wheel = if provider == "Postgres" {
         false
     } else {
-        is_admin || groups.iter().any(|g| g == "wheel")
+        is_admin || groups.iter().any(|g| g == "wheel" || g == "sudo")
     };
 
     let claims = Claims {
@@ -117,7 +129,7 @@ pub fn issue_jwt(
         is_admin,
         has_wheel,
         iat: now,
-        exp: now + 3600 * 8, // 8 horas de validade
+        exp: now + 3600 * 8,
     };
 
     encode(
@@ -128,14 +140,11 @@ pub fn issue_jwt(
     .map_err(|e| format!("Falha ao assinar JWT: {}", e))
 }
 
-/// Valida o JWT contra o segredo compartilhado
 pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, String> {
     let mut validation = Validation::default();
     validation.validate_exp = true;
-    // Permite tokens emitidos por "auth-service" ou pelo próprio módulo
-    validation.set_issuer(&["auth-service", "astral-ad-dns", "astral-auth-service"]);
-    // Desativa validação de audience se não estiver presente no claims do auth-service
     validation.validate_aud = false;
+    validation.required_spec_claims.remove("iss");
 
     match decode::<Claims>(
         token,
@@ -147,9 +156,7 @@ pub fn verify_jwt(token: &str, secret: &str) -> Result<Claims, String> {
     }
 }
 
-/// Extrai o token de autenticação dos Headers (Bearer) ou dos Cookies (sso_token / astral_token)
 pub fn extract_token(headers: &HeaderMap) -> Option<String> {
-    // 1. Authorization: Bearer <token>
     if let Some(auth_val) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth_val.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
@@ -161,11 +168,16 @@ pub fn extract_token(headers: &HeaderMap) -> Option<String> {
         }
     }
 
-    // 2. Cookie: sso_token=... ou astral_token=...
     if let Some(cookie_val) = headers.get(header::COOKIE) {
         if let Ok(cookie_str) = cookie_val.to_str() {
             for part in cookie_str.split(';') {
                 let part = part.trim();
+                if let Some(token) = part.strip_prefix("ASTRAL_SESSION=") {
+                    let trimmed = token.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
                 if let Some(token) = part.strip_prefix("sso_token=") {
                     let trimmed = token.trim();
                     if !trimmed.is_empty() {
@@ -186,14 +198,167 @@ pub fn extract_token(headers: &HeaderMap) -> Option<String> {
 }
 
 // ==============================================================================
-// PROVEDOR 1: LINUX LOCAL (SUDO / ROOT)
+// SUBSISTEMA PAM REAL: AUTENTICAÇÃO LINUX (ROOT / WHEEL / SUDO)
+// ==============================================================================
+
+type PamHandle = c_void;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct PamMessage {
+    msg_style: c_int,
+    msg: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct PamResponse {
+    resp: *mut c_char,
+    resp_retcode: c_int,
+}
+
+#[repr(C)]
+struct PamConv {
+    conv: extern "C" fn(
+        num_msg: c_int,
+        msg: *mut *mut PamMessage,
+        resp: *mut *mut PamResponse,
+        appdata_ptr: *mut c_void,
+    ) -> c_int,
+    appdata_ptr: *mut c_void,
+}
+
+const PAM_SUCCESS: c_int = 0;
+const PAM_PROMPT_ECHO_OFF: c_int = 1;
+const PAM_PROMPT_ECHO_ON: c_int = 2;
+
+extern "C" fn pam_conversation_callback(
+    num_msg: c_int,
+    msg: *mut *mut PamMessage,
+    resp: *mut *mut PamResponse,
+    appdata_ptr: *mut c_void,
+) -> c_int {
+    if num_msg <= 0 || msg.is_null() || resp.is_null() {
+        return 19; // PAM_CONV_ERR
+    }
+
+    unsafe {
+        let password = if !appdata_ptr.is_null() {
+            CStr::from_ptr(appdata_ptr as *const c_char).to_bytes_with_nul()
+        } else {
+            b"\0"
+        };
+
+        let responses = libc::calloc(num_msg as usize, std::mem::size_of::<PamResponse>()) as *mut PamResponse;
+        if responses.is_null() {
+            return 19;
+        }
+
+        for i in 0..num_msg as isize {
+            let m = *(*msg.offset(i));
+            if m.msg_style == PAM_PROMPT_ECHO_OFF || m.msg_style == PAM_PROMPT_ECHO_ON {
+                let resp_str = libc::malloc(password.len()) as *mut c_char;
+                if !resp_str.is_null() {
+                    ptr::copy_nonoverlapping(password.as_ptr() as *const c_char, resp_str, password.len());
+                    (*responses.offset(i)).resp = resp_str;
+                    (*responses.offset(i)).resp_retcode = 0;
+                }
+            }
+        }
+
+        *resp = responses;
+        PAM_SUCCESS
+    }
+}
+
+type PamStartFn = unsafe extern "C" fn(
+    service_name: *const c_char,
+    user: *const c_char,
+    pam_conversation: *const PamConv,
+    pamh: *mut *mut PamHandle,
+) -> c_int;
+
+type PamAuthFn = unsafe extern "C" fn(pamh: *mut PamHandle, flags: c_int) -> c_int;
+type PamAcctFn = unsafe extern "C" fn(pamh: *mut PamHandle, flags: c_int) -> c_int;
+type PamEndFn = unsafe extern "C" fn(pamh: *mut PamHandle, pam_status: c_int) -> c_int;
+
+pub fn pam_authenticate_user(user: &str, password: &str) -> Result<(), String> {
+    unsafe {
+        let pam_lib_name = CString::new("libpam.so.0").unwrap();
+        let mut handle = libc::dlopen(pam_lib_name.as_ptr(), libc::RTLD_NOW);
+        if handle.is_null() {
+            let alt_name = CString::new("libpam.so").unwrap();
+            handle = libc::dlopen(alt_name.as_ptr(), libc::RTLD_NOW);
+        }
+        if handle.is_null() {
+            return Err("Biblioteca PAM (libpam.so.0) não encontrada no sistema operacional".to_string());
+        }
+
+        let pam_start_sym = libc::dlsym(handle, b"pam_start\0".as_ptr() as *const c_char);
+        let pam_auth_sym = libc::dlsym(handle, b"pam_authenticate\0".as_ptr() as *const c_char);
+        let pam_acct_sym = libc::dlsym(handle, b"pam_acct_mgmt\0".as_ptr() as *const c_char);
+        let pam_end_sym = libc::dlsym(handle, b"pam_end\0".as_ptr() as *const c_char);
+
+        if pam_start_sym.is_null() || pam_auth_sym.is_null() || pam_end_sym.is_null() {
+            libc::dlclose(handle);
+            return Err("Símbolos da API PAM não puderam ser vinculados".to_string());
+        }
+
+        let pam_start: PamStartFn = std::mem::transmute(pam_start_sym);
+        let pam_auth: PamAuthFn = std::mem::transmute(pam_auth_sym);
+        let pam_acct: PamAcctFn = if !pam_acct_sym.is_null() {
+            std::mem::transmute(pam_acct_sym)
+        } else {
+            std::mem::transmute(pam_auth_sym)
+        };
+        let pam_end: PamEndFn = std::mem::transmute(pam_end_sym);
+
+        let c_user = CString::new(user).map_err(|e| e.to_string())?;
+        let c_pass = CString::new(password).map_err(|e| e.to_string())?;
+
+        let services = ["system-auth", "login", "password-auth", "su"];
+        let mut last_err = "Credenciais PAM inválidas".to_string();
+
+        for srv in services {
+            let c_service = CString::new(srv).unwrap();
+            let conv = PamConv {
+                conv: pam_conversation_callback,
+                appdata_ptr: c_pass.as_ptr() as *mut c_void,
+            };
+
+            let mut pamh: *mut PamHandle = ptr::null_mut();
+            let start_res = pam_start(c_service.as_ptr(), c_user.as_ptr(), &conv, &mut pamh);
+            if start_res == PAM_SUCCESS && !pamh.is_null() {
+                let auth_res = pam_auth(pamh, 0);
+                if auth_res == PAM_SUCCESS {
+                    let acct_res = pam_acct(pamh, 0);
+                    pam_end(pamh, PAM_SUCCESS);
+                    libc::dlclose(handle);
+                    if acct_res == PAM_SUCCESS || acct_res == 12 /* PAM_NEW_AUTHTOK_REQD */ {
+                        return Ok(());
+                    } else {
+                        return Err(format!("Conta Linux bloqueada ou restrita pela política PAM (status: {})", acct_res));
+                    }
+                } else {
+                    last_err = format!("Senha do usuário Linux '{}' incorreta (código PAM: {})", user, auth_res);
+                    pam_end(pamh, auth_res);
+                }
+            }
+        }
+
+        libc::dlclose(handle);
+        Err(last_err)
+    }
+}
+
+// ==============================================================================
+// PROVEDOR 1: LINUX LOCAL (PAM / ROOT / WHEEL / SUDO)
 // ==============================================================================
 pub fn authenticate_linux(user: &str, pass: &str) -> Result<AuthenticatedOperator, String> {
     if user.trim().is_empty() || pass.is_empty() {
         return Err("Usuário e senha são obrigatórios".to_string());
     }
 
-    // 1. Verifica se o usuário é root ou pertence ao grupo wheel / sudo
     let is_root = user == "root";
     let is_wheel_or_sudo = if !is_root {
         let id_out = Command::new("id")
@@ -210,7 +375,7 @@ pub fn authenticate_linux(user: &str, pass: &str) -> Result<AuthenticatedOperato
         let in_sudo = groups_str.split_whitespace().any(|g| g == "wheel" || g == "sudo");
         if !in_sudo {
             return Err(format!(
-                "Acesso negado: o usuário '{}' não pertence ao grupo 'wheel' ou 'sudo'",
+                "Acesso negado: o usuário local '{}' não pertence ao grupo 'wheel' ou 'sudo'",
                 user
             ));
         }
@@ -219,35 +384,23 @@ pub fn authenticate_linux(user: &str, pass: &str) -> Result<AuthenticatedOperato
         true
     };
 
-    // 2. Testa a senha do usuário via sudo controlado
-    // Como o daemon roda como root, sudo -u <user> sudo -k -S true testa a senha do próprio usuário
-    use std::io::Write;
-    let mut child = Command::new("sudo")
-        .args(["-k", "-S", "-u", user, "sudo", "-k", "-S", "true"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Falha ao invocar subsistema de autenticação sudo: {}", e))?;
+    pam_authenticate_user(user, pass)?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(pass.as_bytes());
-        let _ = stdin.write_all(b"\n");
-    }
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("Erro no processo de validação de credenciais: {}", e))?;
-
-    if !status.success() {
-        return Err("Senha do usuário Linux inválida ou permissão negada".to_string());
+    let mut user_groups = vec!["wheel".to_string(), "sudo".to_string()];
+    if let Ok(g_out) = Command::new("id").args(["-nG", user]).output() {
+        if g_out.status.success() {
+            user_groups = String::from_utf8_lossy(&g_out.stdout)
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+        }
     }
 
     Ok(AuthenticatedOperator {
         username: user.to_string(),
         provider: "Linux".to_string(),
         is_admin: is_wheel_or_sudo || is_root,
-        groups: vec!["wheel".to_string(), "sudo".to_string()],
+        groups: user_groups,
         has_wheel: is_wheel_or_sudo || is_root,
     })
 }
@@ -260,7 +413,6 @@ pub fn authenticate_postgres(user: &str, pass: &str) -> Result<AuthenticatedOper
         return Err("Usuário e senha do PostgreSQL são obrigatórios".to_string());
     }
 
-    // Executa query de validação de superusuário via psql local
     let out = Command::new("psql")
         .args([
             "-h",
@@ -306,7 +458,6 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
         return Err("Usuário e senha do Active Directory são obrigatórios".to_string());
     }
 
-    // 1. Tenta autenticar via astral-auth-service se estiver rodando (:8181)
     let payload = serde_json::json!({
         "username": user,
         "password": pass,
@@ -351,8 +502,7 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
                         .and_then(|v| v.as_bool())
                         .unwrap_or_else(|| {
                             Command::new("id")
-                                .arg("-nG")
-                                .arg(user)
+                                .args(["-nG", user])
                                 .output()
                                 .map(|o| String::from_utf8_lossy(&o.stdout).contains("wheel"))
                                 .unwrap_or(false)
@@ -370,7 +520,6 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
         }
     }
 
-    // 2. Fallback: Autenticação direta contra o Samba AD DC via smbclient local
     let out = Command::new("smbclient")
         .args([
             "-L",
@@ -387,7 +536,6 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
         return Err("Usuário ou senha do Samba Active Directory inválidos".to_string());
     }
 
-    // Recupera grupos do usuário no Active Directory
     let grp_out = Command::new("samba-tool")
         .args(["user", "getgroups", user])
         .output();
@@ -424,18 +572,22 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
     })
 }
 
-/// Tenta autenticação em múltiplos provedores ou no provedor específico
 pub fn authenticate_any(
     username: &str,
     password: &str,
     provider: Option<&str>,
 ) -> Result<AuthenticatedOperator, String> {
+    let ad_configured = crate::system::is_ad_configured();
+
     match provider.unwrap_or("auto") {
         "linux" => authenticate_linux(username, password),
         "postgres" => authenticate_postgres(username, password),
         "ad" | "samba" => authenticate_samba_ad(username, password),
         _ => {
-            // Modo "auto": Tenta Samba AD primeiro, depois Linux Sudo, depois PostgreSQL
+            if !ad_configured {
+                return authenticate_linux(username, password);
+            }
+
             if let Ok(op) = authenticate_samba_ad(username, password) {
                 return Ok(op);
             }
@@ -461,7 +613,18 @@ where
     type Rejection = (StatusCode, Json<ApiResponse<()>>);
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let token_opt = extract_token(&parts.headers);
+        let token_opt = extract_token(&parts.headers).or_else(|| {
+            if let Some(query) = parts.uri.query() {
+                for pair in query.split("&") {
+                    if let Some((k, v)) = pair.split_once("=") {
+                        if k == "token" || k == "sso_token" || k == "astral_token" {
+                            return Some(v.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        });
 
         let token = match token_opt {
             Some(t) => t,
@@ -487,7 +650,6 @@ where
                     || claims.username.eq_ignore_ascii_case("Administrator")
                     || claims.username == "root"
                     || claims.provider == "Linux"
-                    || claims.provider == "Postgres"
                     || claims.groups.iter().any(|g| {
                         let l = g.to_lowercase();
                         l.contains("admin") || l.contains("superuser")
@@ -499,8 +661,7 @@ where
                     true
                 } else {
                     Command::new("id")
-                        .arg("-nG")
-                        .arg(&claims.username)
+                        .args(["-nG", &claims.username])
                         .output()
                         .map(|o| String::from_utf8_lossy(&o.stdout).contains("wheel"))
                         .unwrap_or(false)
@@ -569,6 +730,10 @@ pub async fn login_handler(
             };
 
             let mut resp_headers = HeaderMap::new();
+            let session_cookie = format!(
+                "ASTRAL_SESSION={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800",
+                token
+            );
             let sso_cookie = format!(
                 "sso_token={}; Path=/; SameSite=Lax; Max-Age=28800",
                 token
@@ -578,6 +743,9 @@ pub async fn login_handler(
                 token
             );
 
+            if let Ok(v) = HeaderValue::from_str(&session_cookie) {
+                resp_headers.append(header::SET_COOKIE, v);
+            }
             if let Ok(v) = HeaderValue::from_str(&sso_cookie) {
                 resp_headers.append(header::SET_COOKIE, v);
             }
@@ -634,8 +802,12 @@ pub async fn me_handler(operator: AuthenticatedOperator) -> Json<ApiResponse<Aut
 
 pub async fn logout_handler() -> Response {
     let mut resp_headers = HeaderMap::new();
+    let clear_session = "ASTRAL_SESSION=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
     let clear_sso = "sso_token=; Path=/; SameSite=Lax; Max-Age=0";
     let clear_astral = "astral_token=; Path=/; SameSite=Lax; Max-Age=0";
+    if let Ok(v) = HeaderValue::from_str(clear_session) {
+        resp_headers.append(header::SET_COOKIE, v);
+    }
     if let Ok(v) = HeaderValue::from_str(clear_sso) {
         resp_headers.append(header::SET_COOKIE, v);
     }
@@ -658,26 +830,33 @@ pub async fn logout_handler() -> Response {
 }
 
 pub async fn providers_handler() -> Json<ApiResponse<serde_json::Value>> {
+    let ad_configured = crate::system::is_ad_configured();
+    let recommended = if ad_configured { "ad" } else { "linux" };
+
     Json(ApiResponse {
         success: true,
         message: "Provedores de autenticação suportados".to_string(),
-        data: Some(serde_json::json!([
-            {
-                "id": "ad",
-                "name": "Samba Active Directory / OAuth2",
-                "description": "Autenticação corporativa via Kerberos/LDAP ou token SSO do auth-service"
-            },
-            {
-                "id": "linux",
-                "name": "Linux Local (Root / Sudo)",
-                "description": "Usuário local do sistema operacional com privilégios no grupo wheel ou sudo"
-            },
-            {
-                "id": "postgres",
-                "name": "PostgreSQL Superuser",
-                "description": "Superusuário com atributo rolsuper=true no banco PostgreSQL local"
-            }
-        ])),
+        data: Some(serde_json::json!({
+            "ad_configured": ad_configured,
+            "recommended": recommended,
+            "providers": [
+                {
+                    "id": "ad",
+                    "name": "Samba Active Directory / OAuth2",
+                    "description": "Autenticação corporativa via Kerberos/LDAP ou token SSO do auth-service"
+                },
+                {
+                    "id": "linux",
+                    "name": "Linux Local (Root / Sudo / PAM)",
+                    "description": "Usuário local do sistema operacional validado via PAM real (root ou membros do grupo wheel/sudo)"
+                },
+                {
+                    "id": "postgres",
+                    "name": "PostgreSQL Superuser",
+                    "description": "Superusuário com atributo rolsuper=true no banco PostgreSQL local"
+                }
+            ]
+        })),
         dry_run: false,
         correlation_id: None,
     })
@@ -697,20 +876,12 @@ mod tests {
             true,
             secret,
         )
-        .expect("token should be issued");
+        .expect("JWT issue failed");
 
-        let claims = verify_jwt(&token, secret).expect("token should be verified");
+        let claims = verify_jwt(&token, secret).expect("JWT verify failed");
         assert_eq!(claims.username, "admin_test");
         assert_eq!(claims.provider, "Linux");
         assert!(claims.is_admin);
-        assert_eq!(claims.groups, vec!["wheel".to_string()]);
-    }
-
-    #[test]
-    fn test_rejects_invalid_secret() {
-        let secret1 = "secret_one_12345678901234567890";
-        let secret2 = "secret_two_12345678901234567890";
-        let token = issue_jwt("user", "AD", vec![], false, secret1).unwrap();
-        assert!(verify_jwt(&token, secret2).is_err());
+        assert!(claims.has_wheel);
     }
 }

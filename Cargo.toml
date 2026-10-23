@@ -29,3 +29,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 mime_guess = "2.0"
+libc = "0.2"
