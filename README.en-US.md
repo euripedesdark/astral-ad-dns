@@ -112,3 +112,8 @@ Access in browser: `http://<YOUR_IP>:8095/` (or via reverse proxy on `/ad/` path
 - Contribution Guidelines: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Security Policy: [`SECURITY.md`](SECURITY.md)
 - Code of Conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+
+
+### 7. Linux Wheel Privilege Verification for AD & BIND Operators
+- **Wheel Group Compliance Check**: `has_wheel: bool` attribute added to `UserItem` (`/api/users`) and `AuthenticatedOperator` (`/api/auth/*`), validating whether Samba AD administrators and BIND operators hold permissions in the Linux host `wheel` group (`getent group wheel`).
+- **Integration with `auth-service`**: Cross-validation with `LinuxPrivilegeService` ensuring corporate admins (`Administrator`, `Domain Admins`) are synchronized with the host OS while PostgreSQL superusers remain strictly isolated from OS privileges.

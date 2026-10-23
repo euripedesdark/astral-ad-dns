@@ -112,3 +112,8 @@ Acesse no navegador: `http://<SEU_IP>:8095/` (ou através da rota reversa `/ad/`
 - Diretrizes de Contribuição: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - Política de Segurança: [`SECURITY.md`](SECURITY.md)
 - Código de Conduta: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+
+
+### 7. Verificação de Privilégios Linux (Wheel) para Usuários AD & BIND
+- **Checagem de Conformidade Wheel**: Atributo `has_wheel: bool` adicionado ao `UserItem` (`/api/users`) e `AuthenticatedOperator` (`/api/auth/*`), verificando se os administradores do Samba AD e operadores BIND possuem permissão no grupo `wheel` do host Linux (`getent group wheel`).
+- **Integração com o `auth-service`**: Validação cruzada com o `LinuxPrivilegeService` para garantir que administradores corporativos (`Administrator`, `Domain Admins`) sejam sincronizados com o sistema operacional e superusuários PostgreSQL permaneçam estritamente isolados da camada Linux.

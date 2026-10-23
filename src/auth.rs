@@ -27,6 +27,8 @@ pub struct Claims {
     pub groups: Vec<String>,
     #[serde(default)]
     pub is_admin: bool,
+    #[serde(default)]
+    pub has_wheel: bool,
     pub iat: usize,
     pub exp: usize,
 }
@@ -37,6 +39,8 @@ pub struct AuthenticatedOperator {
     pub provider: String,
     pub is_admin: bool,
     pub groups: Vec<String>,
+    #[serde(default)]
+    pub has_wheel: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -97,6 +101,12 @@ pub fn issue_jwt(
         .map_err(|e| e.to_string())?
         .as_secs() as usize;
 
+    let has_wheel = if provider == "Postgres" {
+        false
+    } else {
+        is_admin || groups.iter().any(|g| g == "wheel")
+    };
+
     let claims = Claims {
         iss: "auth-service".to_string(),
         sub: username.to_string(),
@@ -105,6 +115,7 @@ pub fn issue_jwt(
         provider: provider.to_string(),
         groups,
         is_admin,
+        has_wheel,
         iat: now,
         exp: now + 3600 * 8, // 8 horas de validade
     };
@@ -237,6 +248,7 @@ pub fn authenticate_linux(user: &str, pass: &str) -> Result<AuthenticatedOperato
         provider: "Linux".to_string(),
         is_admin: is_wheel_or_sudo || is_root,
         groups: vec!["wheel".to_string(), "sudo".to_string()],
+        has_wheel: is_wheel_or_sudo || is_root,
     })
 }
 
@@ -282,6 +294,7 @@ pub fn authenticate_postgres(user: &str, pass: &str) -> Result<AuthenticatedOper
         provider: "Postgres".to_string(),
         is_admin: true,
         groups: vec!["superuser".to_string(), "pg_roles".to_string()],
+        has_wheel: false,
     })
 }
 
@@ -333,11 +346,24 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
                         lower.contains("admin") || lower.contains("administrators")
                     });
 
+                    let has_wheel = identity
+                        .get("hasWheel")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or_else(|| {
+                            Command::new("id")
+                                .arg("-nG")
+                                .arg(user)
+                                .output()
+                                .map(|o| String::from_utf8_lossy(&o.stdout).contains("wheel"))
+                                .unwrap_or(false)
+                        });
+
                     return Ok(AuthenticatedOperator {
                         username: user.to_string(),
                         provider: "AD".to_string(),
                         is_admin: is_admin || user.eq_ignore_ascii_case("Administrator"),
                         groups,
+                        has_wheel,
                     });
                 }
             }
@@ -383,11 +409,18 @@ pub fn authenticate_samba_ad(user: &str, pass: &str) -> Result<AuthenticatedOper
         }
     }
 
+    let has_wheel = Command::new("id")
+        .args(["-nG", user])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("wheel"))
+        .unwrap_or(false);
+
     Ok(AuthenticatedOperator {
         username: user.to_string(),
         provider: "AD".to_string(),
         is_admin,
         groups,
+        has_wheel,
     })
 }
 
@@ -460,11 +493,25 @@ where
                         l.contains("admin") || l.contains("superuser")
                     });
 
+                let has_wheel = if claims.provider == "Postgres" {
+                    false
+                } else if claims.has_wheel {
+                    true
+                } else {
+                    Command::new("id")
+                        .arg("-nG")
+                        .arg(&claims.username)
+                        .output()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).contains("wheel"))
+                        .unwrap_or(false)
+                };
+
                 Ok(AuthenticatedOperator {
                     username: claims.username,
                     provider: claims.provider,
                     is_admin,
                     groups: claims.groups,
+                    has_wheel,
                 })
             }
             Err(err_msg) => Err((
