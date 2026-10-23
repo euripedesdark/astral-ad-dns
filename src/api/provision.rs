@@ -84,6 +84,21 @@ pub struct JoinDomainRequest {
     pub target_dc_ip: String,
     pub admin_username: String,
     pub admin_password: String,
+    pub netbios_name: Option<String>,
+    #[serde(default = "default_true")]
+    pub clean_existing: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_true() -> bool { true }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ResetSambaRequest {
+    pub netbios_name: Option<String>,
+    pub target_dc_ip: Option<String>,
+    pub admin_username: Option<String>,
+    pub admin_password: Option<String>,
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -494,15 +509,37 @@ pub async fn join_domain(
     }
     steps.push("Utilitário samba-tool verificado no sistema.".to_string());
 
-    // 2. Configurar e verificar previamente o DNS do AD no DC2 (sem DNS externo como Google)
+    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
+    let my_hostname = host_res.stdout.trim().to_lowercase();
+    let dc_netbios = payload.netbios_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
+        .unwrap_or(&my_hostname)
+        .to_uppercase();
+
+    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let my_ip = ip_res.stdout.trim().to_string();
+
+    // 2. Limpeza prévia de banco de dados e remoção de registros órfãos no DC parceiro (se solicitado)
+    if payload.clean_existing && !d {
+        // Tenta desprovisionar conta morta/órfã no DC parceiro se já existir
+        let demote_cmd = format!(
+            "samba-tool domain demote --remove-other-dead-server='{}' -H 'ldap://{}' -U '{}%{}'",
+            dc_netbios,
+            target_dc_ip,
+            sanitize_arg(&payload.admin_username),
+            sanitize_arg(&payload.admin_password)
+        );
+        let _ = run_cmd_dry(&demote_cmd, sudo, false);
+
+        // Limpeza dos arquivos locais residuais do Samba (conforme Tranquil IT)
+        let _ = run_cmd_dry("systemctl stop samba samba-dc smbd nmbd winbind named 2>/dev/null || true", sudo, false);
+        let _ = run_cmd_dry("rm -rf /var/lib/samba/private/* /var/lib/samba/*.tdb /etc/samba/smb.conf", sudo, false);
+        steps.push(format!("Limpeza prévia de arquivos residuais e desprovisionamento da conta órfã '{}' concluída.", dc_netbios));
+    }
+
+    // 3. Configurar e verificar previamente o DNS do AD no DC2 (sem DNS externo como Google)
     // Para ingressar no domínio, o DC2 DEVE consultar exclusivamente o DNS do AD.
     crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
     steps.push(format!("Resolver local (/etc/resolv.conf) apontado exclusivamente para o DNS do AD ({}) e 127.0.0.1.", target_dc_ip));
-
-    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
-    let my_hostname = host_res.stdout.trim().to_lowercase();
-    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
-    let my_ip = ip_res.stdout.trim().to_string();
 
     // Testa se o DNS do AD resolve os registros de serviço do domínio
     let srv_res = run_cmd_dry(&format!("host -t srv _ldap._tcp.dc._msdcs.{} 2>/dev/null", realm.to_lowercase()), sudo, false);
@@ -514,8 +551,8 @@ pub async fn join_domain(
 
     if d {
         steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", target_dc_ip));
-        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --dns-backend=SAMBA_INTERNAL", realm, payload.admin_username, target_dc_ip));
-        steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", my_hostname, realm.to_lowercase(), my_ip));
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend=SAMBA_INTERNAL", realm, payload.admin_username, target_dc_ip, dc_netbios));
+        steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
         steps.push("[SIMULAÇÃO] Inicialização da replicação inicial DRS e sincronismo SYSVOL".to_string());
 
         let evt_id = config.audit.record(
@@ -544,16 +581,17 @@ pub async fn join_domain(
         );
     }
 
-    // 3. Backup de smb.conf antigo se existir para não abortar o join do Samba
-    let _ = run_cmd_dry("test -f /etc/samba/smb.conf && cp -f /etc/samba/smb.conf /etc/samba/smb.conf.bak.$(date +%s) && rm -f /etc/samba/smb.conf", sudo, false);
-
     // 4. Execução real do join no domínio apontando diretamente para o servidor e com SAMBA_INTERNAL
+    let workgroup = realm.split('.').next().unwrap_or("SRVCLOUD");
     let join_cmd = format!(
-        "samba-tool domain join '{}' DC -U'{}' --password='{}' --server='{}' --dns-backend=SAMBA_INTERNAL",
+        "samba-tool domain join '{}' DC -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend=SAMBA_INTERNAL",
         realm,
         sanitize_arg(&payload.admin_username),
         sanitize_arg(&payload.admin_password),
-        target_dc_ip
+        target_dc_ip,
+        dc_netbios,
+        realm,
+        workgroup
     );
 
     let res = run_cmd_dry(&join_cmd, sudo, false);
@@ -574,44 +612,61 @@ pub async fn join_domain(
         );
     }
 
-    steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio (DC) réplica.", realm));
+    steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio réplica ({}).", realm, dc_netbios));
 
-    // 5. Verificação e adição do registro DNS do DC2 no AD
+    // 5. Ajustes essenciais pós-join (Tranquil IT guidelines)
+    // 5.1 Adiciona functional level 2016 e forwarder no smb.conf para evitar incompatibilidade
+    let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
+    steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
+
+    // 5.2 Copia /var/lib/samba/private/krb5.conf para /etc/krb5.conf (MIT KDC requirement)
+    let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
+    steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
+
+    // 6. Verificação e adição do registro DNS do DC réplica no AD
     let add_a_cmd = format!(
         "samba-tool dns add '{}' '{}' '{}' A '{}' -U'{}%{}'",
         target_dc_ip,
         realm.to_lowercase(),
-        my_hostname,
+        dc_netbios.to_lowercase(),
         my_ip,
         sanitize_arg(&payload.admin_username),
         sanitize_arg(&payload.admin_password)
     );
     let _ = run_cmd_dry(&add_a_cmd, sudo, false);
-    steps.push(format!("Registro DNS A do DC2 ({}.{} -> {}) garantido na zona do AD.", my_hostname, realm.to_lowercase(), my_ip));
+    steps.push(format!("Registro DNS A de {} ({}.{} -> {}) garantido no AD.", dc_netbios, dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
 
     let add_ns_cmd = format!(
         "samba-tool dns add '{}' '{}' @ NS '{}.{}' -U'{}%{}'",
         target_dc_ip,
         realm.to_lowercase(),
-        my_hostname,
+        dc_netbios.to_lowercase(),
         realm.to_lowercase(),
         sanitize_arg(&payload.admin_username),
         sanitize_arg(&payload.admin_password)
     );
     let _ = run_cmd_dry(&add_ns_cmd, sudo, false);
-    steps.push(format!("Registro DNS NS ({}.{}) adicionado como servidor autoritativo da zona {}.", my_hostname, realm.to_lowercase(), realm.to_lowercase()));
+    steps.push(format!("Registro DNS NS ({}.{}) registrado como autoritativo na zona {}.", dc_netbios.to_lowercase(), realm.to_lowercase(), realm.to_lowercase()));
 
-    // 6. Configuração definitiva do /etc/resolv.conf local: 127.0.0.1 em primeiro, e parceiro como redundância
+    // 7. Configuração definitiva do /etc/resolv.conf local: 127.0.0.1 em primeiro, e parceiro como redundância
     crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
     steps.push("Resolver DNS local protegido com chattr +i apontando para 127.0.0.1 e parceiro.".to_string());
 
-    // 7. Abertura do firewall e ativação do serviço Samba DC
+    // 8. Máscara de serviços conflitantes, liberação da porta 53 e ativação do Samba AD DC
+    let _ = run_cmd_dry("systemctl mask smbd nmbd winbind systemd-resolved 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("systemctl stop named 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
+    steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
+
+    // 9. Abertura do firewall e verificação da replicação DRS
     let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
     steps.push(format!("Firewall pós-ingresso: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
 
-    let _ = run_cmd_dry("systemctl unmask samba-dc 2>/dev/null || true", sudo, false);
-    let _ = run_cmd_dry("systemctl enable --now samba-dc || systemctl enable --now samba || true", sudo, false);
-    steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
+    let repl_res = run_cmd_dry("samba-tool drs showrepl 2>&1", sudo, false);
+    if repl_res.success {
+        steps.push("Replicação Active Directory DRS testada e operacional.".to_string());
+    }
 
     let evt_id = config.audit.record(
         "admin",
@@ -620,7 +675,7 @@ pub async fn join_domain(
         &format!("domain:{}", realm),
         false,
         true,
-        &format!("Ingresso no domínio {} como DC réplica", realm),
+        &format!("Ingresso no domínio {} como DC réplica ({})", realm, dc_netbios),
     );
 
     (
@@ -628,6 +683,93 @@ pub async fn join_domain(
         Json(ApiResponse {
             success: true,
             message: "Ingresso no domínio e sincronização DNS concluídos com sucesso!".to_string(),
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: None,
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: Some(evt_id),
+        }),
+    )
+}
+
+/// Endpoint para resetar/limpar a configuração residual do Samba local e desprovisionar registros órfãos
+pub async fn reset_samba_state(
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<ResetSambaRequest>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
+    let my_hostname = host_res.stdout.trim().to_lowercase();
+    let dc_netbios = payload.netbios_name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty())
+        .unwrap_or(&my_hostname)
+        .to_uppercase();
+
+    if payload.dry_run {
+        steps.push(format!("[SIMULAÇÃO] Parar serviços Samba (samba, smbd, nmbd, winbind)"));
+        steps.push(format!("[SIMULAÇÃO] Purgar arquivos locais em /var/lib/samba/private/* e /etc/samba/smb.conf"));
+        if let Some(ref partner) = payload.target_dc_ip {
+            steps.push(format!("[SIMULAÇÃO] Desprovisionar dead DC '{}' em ldap://{}", dc_netbios, partner));
+        }
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "[SIMULAÇÃO] Plano de reset do Samba preparado.".to_string(),
+                data: Some(ProvisionResult {
+                    steps_completed: steps,
+                    error: None,
+                    plan_only: true,
+                }),
+                dry_run: true,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    // 1. Desprovisionar dead DC no parceiro se parâmetros foram fornecidos
+    if let (Some(target_dc_ip), Some(admin_user), Some(admin_pass)) = (payload.target_dc_ip, payload.admin_username, payload.admin_password) {
+        let demote_cmd = format!(
+            "samba-tool domain demote --remove-other-dead-server='{}' -H 'ldap://{}' -U '{}%{}'",
+            dc_netbios,
+            target_dc_ip,
+            sanitize_arg(&admin_user),
+            sanitize_arg(&admin_pass)
+        );
+        let demote_res = run_cmd_dry(&demote_cmd, sudo, false);
+        if demote_res.success {
+            steps.push(format!("Registros do servidor órfão '{}' removidos com sucesso do DC parceiro ({}).", dc_netbios, target_dc_ip));
+        } else {
+            steps.push(format!("Aviso ao desprovisionar no parceiro: {}", demote_res.stderr.trim()));
+        }
+    }
+
+    // 2. Parar serviços
+    let _ = run_cmd_dry("systemctl stop samba samba-dc smbd nmbd winbind named 2>/dev/null || true", sudo, false);
+    steps.push("Serviços do Samba parados localmente.".to_string());
+
+    // 3. Purgar banco de dados local
+    let _ = run_cmd_dry("rm -rf /var/lib/samba/private/* /var/lib/samba/*.tdb /etc/samba/smb.conf", sudo, false);
+    steps.push("Diretório /var/lib/samba/private/ e configuração /etc/samba/smb.conf limpos.".to_string());
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "RESET_SAMBA",
+        &format!("dc:{}", dc_netbios),
+        false,
+        true,
+        &format!("Reset e limpeza de estado Samba DC para '{}'", dc_netbios),
+    );
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: format!("Configuração do Samba para '{}' resetada com sucesso!", dc_netbios),
             data: Some(ProvisionResult {
                 steps_completed: steps,
                 error: None,

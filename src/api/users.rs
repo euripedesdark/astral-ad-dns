@@ -487,6 +487,191 @@ pub async fn set_password(
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateUserGroupsRequest {
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub async fn update_user_groups(
+    Path(username): Path<String>,
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<UpdateUserGroupsRequest>,
+) -> (StatusCode, Json<ApiResponse<()>>) {
+    let sudo = config.sudo_password.as_deref();
+    if !safe_username(&username) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Nome de usuário inválido".to_string(),
+                data: None,
+                dry_run: payload.dry_run,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    if payload.dry_run {
+        let evt_id = config.audit.record(
+            "admin",
+            None,
+            "UPDATE_USER_GROUPS_DRY",
+            &format!("user:{}", username),
+            true,
+            true,
+            &format!("Simulação de alteração de grupos para '{}'", username),
+        );
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: format!("[SIMULAÇÃO] Grupos de '{}' seriam atualizados", username),
+                data: None,
+                dry_run: true,
+                correlation_id: Some(evt_id),
+            }),
+        );
+    }
+
+    // 1. Obter grupos atuais
+    let cur_res = run_cmd_dry(&format!("samba-tool user getgroups '{}'", sanitize_arg(&username)), sudo, false);
+    let current_groups: std::collections::HashSet<String> = if cur_res.success {
+        cur_res.stdout.lines().map(|l| l.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+
+    let desired_groups: std::collections::HashSet<String> = payload.groups.into_iter().map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect();
+
+    // Grupos para adicionar
+    for grp in desired_groups.difference(&current_groups) {
+        let cmd = format!("samba-tool group addmembers '{}' '{}'", sanitize_arg(grp), sanitize_arg(&username));
+        let _ = run_cmd_dry(&cmd, sudo, false);
+    }
+
+    // Grupos para remover (evita remover o grupo padrão principal Domain Users)
+    for grp in current_groups.difference(&desired_groups) {
+        if grp.eq_ignore_ascii_case("Domain Users") {
+            continue;
+        }
+        let cmd = format!("samba-tool group removemembers '{}' '{}'", sanitize_arg(grp), sanitize_arg(&username));
+        let _ = run_cmd_dry(&cmd, sudo, false);
+    }
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "UPDATE_USER_GROUPS",
+        &format!("user:{}", username),
+        false,
+        true,
+        &format!("Grupos do usuário '{}' atualizados com sucesso", username),
+    );
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: format!("Grupos do usuário '{}' atualizados com sucesso", username),
+            data: None,
+            dry_run: false,
+            correlation_id: Some(evt_id),
+        }),
+    )
+}
+
+pub async fn add_user_to_group(
+    Path((username, groupname)): Path<(String, String)>,
+    State(config): State<Arc<AppConfig>>,
+) -> (StatusCode, Json<ApiResponse<()>>) {
+    let sudo = config.sudo_password.as_deref();
+    if !safe_username(&username) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Nome de usuário inválido".to_string(),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let cmd = format!("samba-tool group addmembers '{}' '{}'", sanitize_arg(&groupname), sanitize_arg(&username));
+    let res = run_cmd_dry(&cmd, sudo, false);
+    if res.success {
+        (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: format!("Usuário '{}' adicionado ao grupo '{}'", username, groupname),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Falha ao adicionar grupo: {}", res.stderr),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        )
+    }
+}
+
+pub async fn remove_user_from_group(
+    Path((username, groupname)): Path<(String, String)>,
+    State(config): State<Arc<AppConfig>>,
+) -> (StatusCode, Json<ApiResponse<()>>) {
+    let sudo = config.sudo_password.as_deref();
+    if !safe_username(&username) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Nome de usuário inválido".to_string(),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let cmd = format!("samba-tool group removemembers '{}' '{}'", sanitize_arg(&groupname), sanitize_arg(&username));
+    let res = run_cmd_dry(&cmd, sudo, false);
+    if res.success {
+        (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: format!("Usuário '{}' removido do grupo '{}'", username, groupname),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Falha ao remover grupo: {}", res.stderr),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

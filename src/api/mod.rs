@@ -52,7 +52,8 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Users
         .route("/api/users", get(users::list_users).post(users::create_user))
         .route("/api/users/{username}", delete(users::delete_user))
-        .route("/api/users/{username}/groups", get(users::get_user_groups))
+        .route("/api/users/{username}/groups", get(users::get_user_groups).put(users::update_user_groups).post(users::update_user_groups))
+        .route("/api/users/{username}/groups/{groupname}", post(users::add_user_to_group).delete(users::remove_user_from_group))
         .route("/api/users/{username}/password", post(users::set_password))
         .route("/api/users/{username}/enable", post(users::enable_user))
         .route("/api/users/{username}/disable", post(users::disable_user))
@@ -93,6 +94,7 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         .route("/api/provision/preflight", get(provision::run_preflight))
         .route("/api/provision/new-dc", post(provision::provision_new_dc))
         .route("/api/provision/join-dc", post(provision::join_domain))
+        .route("/api/provision/reset-samba", post(provision::reset_samba_state))
         .route("/api/provision/verify-ad-dns", get(provision::verify_ad_dns_status))
         .route("/api/provision/sync-ad-dns", post(provision::sync_ad_dns_dc))
         .route("/api/provision/upgrade-schema", post(provision::upgrade_schema_and_levels))

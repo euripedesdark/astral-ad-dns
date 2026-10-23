@@ -886,6 +886,9 @@ function UsersTab({ t, showToast }) {
   const [showPasswordModal, setShowPasswordModal] = useState(null);
   const [userGroupsModal, setUserGroupsModal] = useState(null);
   const [groupsList, setGroupsList] = useState([]);
+  const [allDomainGroups, setAllDomainGroups] = useState([]);
+  const [selectedAddGroup, setSelectedAddGroup] = useState('');
+  const [groupLoading, setGroupLoading] = useState(false);
 
   // Form states
   const [newUsername, setNewUsername] = useState('');
@@ -1010,14 +1013,75 @@ function UsersTab({ t, showToast }) {
   const handleOpenUserGroups = async (username) => {
     setUserGroupsModal(username);
     setGroupsList([]);
+    setSelectedAddGroup('');
     try {
       const res = await customFetch(`/api/users/${username}/groups`);
       if (res.ok) {
         const data = await res.json();
         setGroupsList(data.data || []);
       }
+      const gRes = await customFetch('/api/groups');
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        setAllDomainGroups(gData.data || []);
+      }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleAddGroupToUser = async () => {
+    if (!selectedAddGroup || !userGroupsModal) return;
+    setGroupLoading(true);
+    try {
+      const res = await customFetch(`/api/users/${userGroupsModal}/groups/${selectedAddGroup}`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Grupo adicionado com sucesso!');
+        const r = await customFetch(`/api/users/${userGroupsModal}/groups`);
+        if (r.ok) {
+          const d = await r.json();
+          setGroupsList(d.data || []);
+        }
+        setSelectedAddGroup('');
+      } else {
+        showToast(data.message || 'Erro ao adicionar grupo', 'error');
+      }
+    } catch (e) {
+      showToast('Falha na comunicação', 'error');
+    } finally {
+      setGroupLoading(false);
+    }
+  };
+
+  const handleRemoveGroupFromUser = async (groupName) => {
+    if (!groupName || !userGroupsModal) return;
+    if (groupName.toLowerCase() === 'domain users') {
+      showToast('Não é permitido remover o grupo primário Domain Users', 'warning');
+      return;
+    }
+    setGroupLoading(true);
+    try {
+      const res = await customFetch(`/api/users/${userGroupsModal}/groups/${groupName}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Grupo removido com sucesso!');
+        const r = await customFetch(`/api/users/${userGroupsModal}/groups`);
+        if (r.ok) {
+          const d = await r.json();
+          setGroupsList(d.data || []);
+        }
+      } else {
+        showToast(data.message || 'Erro ao remover grupo', 'error');
+      }
+    } catch (e) {
+      showToast('Falha na comunicação', 'error');
+    } finally {
+      setGroupLoading(false);
     }
   };
 
@@ -1281,28 +1345,95 @@ function UsersTab({ t, showToast }) {
         </div>
       )}
 
-      {/* User Groups Modal */}
+      {/* User Groups Modal - Gerenciamento e Alteração de Grupos */}
       {userGroupsModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-lg w-full shadow-2xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
-                <span>{t.userGroupsOf} {userGroupsModal}</span>
+                <span>Gerenciar Grupos de: <span className="text-indigo-400">{userGroupsModal}</span></span>
               </h3>
               <button onClick={() => setUserGroupsModal(null)} className="text-slate-400 hover:text-white">&times;</button>
             </div>
 
-            <div className="max-h-60 overflow-y-auto space-y-1.5 text-xs font-mono">
-              {groupsList.map((g, idx) => (
-                <div key={idx} className="bg-slate-950 border border-slate-800 px-3 py-1.5 rounded text-slate-300 flex items-center gap-2">
-                  <Shield className="w-3 h-3 text-indigo-400 shrink-0" />
-                  <span>{g}</span>
-                </div>
-              ))}
-              {groupsList.length === 0 && (
-                <div className="text-slate-500 text-center py-4 font-sans">{t.loadingGroups}</div>
-              )}
+            {/* Adicionar a um novo grupo */}
+            <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80 space-y-2 text-xs">
+              <label className="block text-slate-300 font-semibold">Adicionar ao Grupo do Domínio:</label>
+              <div className="flex gap-2">
+                <select
+                  value={selectedAddGroup}
+                  onChange={(e) => setSelectedAddGroup(e.target.value)}
+                  disabled={groupLoading}
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-100 focus:border-indigo-500 focus:outline-none"
+                >
+                  <option value="">Selecione um grupo...</option>
+                  {allDomainGroups
+                    .filter(g => !groupsList.includes(g.groupname))
+                    .map((g) => (
+                      <option key={g.groupname} value={g.groupname}>
+                        {g.groupname}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAddGroupToUser}
+                  disabled={!selectedAddGroup || groupLoading}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium rounded-lg transition flex items-center gap-1.5"
+                >
+                  {groupLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  <span>Adicionar</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Lista de Grupos Atuais */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-300">Grupos Atuais ({groupsList.length}):</span>
+                {groupLoading && <span className="text-[11px] text-indigo-400 flex items-center gap-1"><RefreshCw className="w-3 h-3 animate-spin" /> Sincronizando...</span>}
+              </div>
+
+              <div className="max-h-60 overflow-y-auto space-y-1.5 text-xs font-mono pr-1">
+                {groupsList.map((g, idx) => (
+                  <div key={idx} className="bg-slate-950 border border-slate-800 px-3 py-2 rounded-lg text-slate-200 flex items-center justify-between hover:border-slate-700 transition">
+                    <div className="flex items-center gap-2">
+                      <Shield className={`w-3.5 h-3.5 shrink-0 ${
+                        g === 'Domain Admins' || g === 'Enterprise Admins' || g === 'Administrators' ? 'text-amber-400' : 'text-indigo-400'
+                      }`} />
+                      <span className="font-semibold">{g}</span>
+                      {g === 'Domain Users' && (
+                        <span className="text-[10px] text-slate-500 font-sans italic">(Primário)</span>
+                      )}
+                    </div>
+                    {g.toLowerCase() !== 'domain users' && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveGroupFromUser(g)}
+                        disabled={groupLoading}
+                        className="px-2 py-0.5 rounded bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 text-[10px] transition font-sans flex items-center gap-1"
+                        title={`Remover ${userGroupsModal} do grupo ${g}`}
+                      >
+                        <Trash2 className="w-2.5 h-2.5" />
+                        <span>Remover</span>
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {groupsList.length === 0 && (
+                  <div className="text-slate-500 text-center py-4 font-sans">{t.loadingGroups}</div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-3 border-t border-slate-800">
+              <button 
+                onClick={() => setUserGroupsModal(null)} 
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition"
+              >
+                Fechar
+              </button>
             </div>
           </div>
         </div>
@@ -3350,6 +3481,9 @@ function WizardModal({ onClose, t, showToast }) {
   const [setupBind, setSetupBind] = useState(true);
   const [targetDcIp, setTargetDcIp] = useState('192.168.2.10');
   const [targetAdmin, setTargetAdmin] = useState('administrator');
+  const [dcNetbiosName, setDcNetbiosName] = useState('DC2');
+  const [cleanExisting, setCleanExisting] = useState(true);
+  const [resettingSamba, setResettingSamba] = useState(false);
 
   // Execution
   const [executing, setExecuting] = useState(false);
@@ -3366,9 +3500,40 @@ function WizardModal({ onClose, t, showToast }) {
       if (res.ok) {
         const data = await res.json();
         setDnsCheck(data);
+        if (data.hostname) {
+          setDcNetbiosName(data.hostname.toUpperCase());
+        }
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleResetSamba = async () => {
+    if (!window.confirm("Deseja limpar todos os dados residuais do Samba local e desprovisionar eventuais registros órfãos deste DC no parceiro?")) return;
+    setResettingSamba(true);
+    try {
+      const res = await customFetch('/api/provision/reset-samba', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          netbios_name: dcNetbiosName,
+          target_dc_ip: targetDcIp,
+          admin_username: targetAdmin,
+          admin_password: adminPassword,
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message || 'Configuração do Samba resetada com sucesso!');
+        await checkAdDns();
+      } else {
+        showToast(data.message || 'Erro ao resetar Samba', 'error');
+      }
+    } catch (e) {
+      showToast('Falha na comunicação com o servidor', 'error');
+    } finally {
+      setResettingSamba(false);
     }
   };
 
@@ -3438,6 +3603,8 @@ function WizardModal({ onClose, t, showToast }) {
         target_dc_ip: targetDcIp,
         admin_username: targetAdmin,
         admin_password: adminPassword,
+        netbios_name: dcNetbiosName,
+        clean_existing: cleanExisting,
       };
 
       const res = await customFetch(endpoint, {
@@ -3640,6 +3807,20 @@ function WizardModal({ onClose, t, showToast }) {
               {mode === 'join' && (
                 <div className="space-y-2">
                   <div>
+                    <label className="block text-slate-300 font-medium mb-1">Nome NetBIOS do DC Réplica (Hostname do DC) *</label>
+                    <input 
+                      type="text" 
+                      value={dcNetbiosName} 
+                      onChange={(e) => setDcNetbiosName(e.target.value.toUpperCase())} 
+                      placeholder="DC2 (ou outro nome desejado)"
+                      className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 font-mono uppercase focus:border-indigo-500 focus:outline-none"
+                    />
+                    <span className="text-[10px] text-slate-400 mt-0.5 block">
+                      Permite definir ou alterar o nome NetBIOS para evitar conflitos com nomes já provisionados.
+                    </span>
+                  </div>
+
+                  <div>
                     <label className="block text-slate-300 font-medium mb-1">IP do DC Primário (DC1) *</label>
                     <input 
                       type="text" 
@@ -3692,6 +3873,32 @@ function WizardModal({ onClose, t, showToast }) {
                   onChange={(e) => setAdminPassword(e.target.value)} 
                   className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
                 />
+              </div>
+
+              {/* Opções de Limpeza de Estado Anterior */}
+              <div className="pt-2 border-t border-slate-800 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer text-slate-200">
+                  <input 
+                    type="checkbox" 
+                    checked={cleanExisting} 
+                    onChange={(e) => setCleanExisting(e.target.checked)} 
+                    className="rounded bg-slate-950 border-slate-700 text-indigo-600"
+                  />
+                  <span className="font-medium text-amber-300">Limpar dados residuais anteriores e remover conta órfã no DC parceiro</span>
+                </label>
+
+                <div className="flex items-center justify-between bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px]">
+                  <span className="text-slate-400">Resetar dados locais do Samba:</span>
+                  <button
+                    type="button"
+                    onClick={handleResetSamba}
+                    disabled={resettingSamba}
+                    className="px-2.5 py-1 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded text-[11px] font-medium transition flex items-center gap-1"
+                  >
+                    {resettingSamba ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                    <span>Limpar / Resetar Samba</span>
+                  </button>
+                </div>
               </div>
 
               {mode === 'new' && (
