@@ -2,6 +2,11 @@
 name = "astral-ad-dns"
 version = "1.4.0"
 edition = "2021"
+default-run = "astral-ad-dns"
+
+[[bin]]
+name = "astral-ad-dns"
+path = "src/main.rs"
 
 [[bin]]
 name = "provisioner"
@@ -10,3 +15,16 @@ path = "samba-ad-dc/provisioner.rs"
 [[bin]]
 name = "dns_manager"
 path = "dns/dns_manager.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+mime_guess = "2.0"

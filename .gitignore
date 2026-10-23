@@ -33,3 +33,11 @@ Thumbs.db
 # IDEs
 .idea/
 .vscode/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node & Frontend
+web/node_modules/
+.npm

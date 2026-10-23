@@ -1,0 +1,19 @@
+[Unit]
+Description=Astral Active Directory & Hybrid DNS Management Service
+After=network.target samba.service named.service chronyd.service
+Wants=samba.service named.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/euripedes/astral/astral-ad-dns
+ExecStart=/home/euripedes/astral/astral-ad-dns/target/release/astral-ad-dns
+Restart=always
+RestartSec=5
+Environment=ASTRAL_BIND_ADDR=0.0.0.0:8095
+Environment=ASTRAL_ADMIN_PASS=Copa@@2026
+Environment=ASTRAL_SUDO_PASS=Btf1_Mk3
+Environment=ASTRAL_WEB_DIST=/home/euripedes/astral/astral-ad-dns/web/dist
+
+[Install]
+WantedBy=multi-user.target

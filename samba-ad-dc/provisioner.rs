@@ -37,7 +37,7 @@ impl AdConfig {
                 let mut parts = trimmed.splitn(2, '=');
                 let k = parts.next().unwrap().trim().to_string();
                 let mut v = parts.next().unwrap().trim().to_string();
-                if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with(''') && v.ends_with(''')) {
+                if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
                     v = v[1..v.len() - 1].to_string();
                 }
                 map.insert(k, v);

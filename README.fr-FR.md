@@ -1,53 +1,28 @@
 # Astral AD & Hybrid DNS
 
 ![Licence](https://img.shields.io/badge/License-AGPLv3-blue.svg)
-![Samba](https://img.shields.io/badge/Samba-4-green.svg)
-![Kerberos](https://img.shields.io/badge/Auth-Kerberos%20%2F%20LDAPS-orange.svg)
-![DNS](https://img.shields.io/badge/DNS-Contextual%20Resolver-blue.svg)
-![Python](https://img.shields.io/badge/Python-3.12%2B-yellow.svg)
+![Rust](https://img.shields.io/badge/Rust-1.99%2B-orange.svg)
+![Samba](https://img.shields.io/badge/Samba-4%20AD%20DC%20(2016)-green.svg)
+![BIND](https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg)
+![Web GUI](https://img.shields.io/badge/Web%20GUI-React%20%2B%20Tailwind-blueviolet.svg)
 
-**Contrôleur de Domaine d'Entreprise Samba 4 et Résolution DNS Hybride** — Module spécialisé de l'écosystème Astral assurant les services d'Active Directory Domain Controller (AD DC), l'authentification centralisée (LDAPS/Kerberos) et la résolution DNS contextuelle haute performance.
+**Module d'Entreprise en Rust avec Interface Web pour l'Administration et le Déploiement de Samba 4 Active Directory 2016 et BIND 9 Hybride** — Développé selon le guide d'architecture d'entreprise Linux d'Euripedes Batista.
 
-Ce projet est distribué sous licence **GNU AGPL v3**. Consultez [`LICENSE.md`](LICENSE.md).
-
----
-
-## 🎯 Fonctionnalités Clés
-
-- **Samba 4 Active Directory Domain Controller (AD DC)**:
-  - Scripts d'approvisionnement entièrement automatisés pour Fedora/RHEL, Debian 13 et Arch Linux.
-  - Prise en charge native des certificats SSL/TLS automatiques (Step-CA) et LDAPS sur le port 636.
-  - Compatibilité totale avec les postes clients Windows (GPO, RSAT) et les postes Linux via SSSD/PAM.
-  - Gestion sécurisée des identifiants d'installation via le fichier isolé `auth.env`.
-- **Résolveur DNS Hybride et Contextuel**:
-  - Filtrage hors ligne des résolveurs mondiaux fiables (DNSSEC = true, fiabilité >= 0.95).
-  - Intégration avec Pi-hole et dnsmasq pour le blocage publicitaire et de télémétrie.
-  - Base de données locale de plus de 8 Mo de serveurs DNS internationaux (`nameservers.csv`).
+Licence **GNU AGPL v3**. Voir [`LICENSE.md`](LICENSE.md).
 
 ---
 
-## 🛠️ Technologies Utilisées
+## 🚀 Fonctionnalités (v1.4.0)
 
-| Couche | Technologie | Rôle |
-|---|---|---|
-| **Service d'Annuaire** | Samba 4 AD DC | Émulation Active Directory, LDAP, Kerberos KDC |
-| **Sécurité & Identité** | OpenSSL / Step-CA | PKI automatisée, LDAPS (TCP 636), certificats X.509 |
-| **Résolution DNS** | BIND9 DLZ / dnsmasq / Pi-hole | DNS faisant autorité et filtrage contextuel |
-| **Automatisation Système** | Python 3.12+ | Déploiement sans intervention manuelle |
-
----
-
-## 💖 Soutenir le Projet
-
-**Virement International (Wise):**
-- **Bénéficiaire:** Euripedes Batista de Paiva Junior
-- **Routing number (Wire / ACH):** `101019628`
-- **Numéro de compte:** `215822927677`
-- **Banque:** Wise US Inc, 108 W 13th St, Wilmington, DE, 19801, United States
-- **SWIFT / BIC:** `TRWIUS35XXX`
-
-**PIX (Brésil):** `24adc62c-b073-4587-974d-03fe35f6733f`
-
----
-
-(c) 2026 Astral AD & Hybrid DNS — **Créé par : Euripedes Batista de Paiva Junior**
+- **Moteur Backend en Rust (Axum 0.8 + Tokio)**:
+  - Serveur REST performant sur le port `8095`.
+  - **Sécurité Pare-feu**: Aucune règle existante n'est purgée. Les ports requis sont inspectés et ajoutés de manière non destructive.
+- **Interface Web Moderne (React 18 + TailwindCSS)**:
+  - Support multilingue complet : 🇧🇷 PT-BR, 🇺🇸 EN-US, 🇪🇸 ES-ES, 🇫🇷 FR-FR.
+- **Gestion Complète d'Active Directory**:
+  - Niveau fonctionnel Windows Server 2016 (Domaine & Forêt).
+  - Gestion des utilisateurs, groupes et ordinateurs du domaine.
+  - Administration DNS avec génération automatique des enregistrements inverses PTR (`in-addr.arpa`).
+  - BIND 9 hybride récursif sur `127.0.0.1:5353`.
+  - Diagnostic de réplication DRS, vérification de base dbcheck et réinitialisation SYSVOL.
+  - Assistant de déploiement interactif pour DC1 et DC2.

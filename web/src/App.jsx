@@ -1,0 +1,2614 @@
+import React, { useState, useEffect } from 'react';
+import { translations } from './i18n';
+import { 
+  Server, Shield, Globe, Users, Network, Activity, 
+  Database, RefreshCw, Key, CheckCircle, XCircle, AlertTriangle, 
+  Search, Plus, Trash2, Edit3, ArrowRight, Copy, Terminal, 
+  ExternalLink, Layers, Cpu, Lock, HardDrive, HelpCircle
+} from 'lucide-react';
+
+export default function App() {
+  const [lang, setLang] = useState('pt');
+  const t = translations[lang] || translations.pt;
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [status, setStatus] = useState(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [showWizard, setShowWizard] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const fetchStatus = async () => {
+    try {
+      setLoadingStatus(true);
+      const res = await fetch('/api/status');
+      if (res.ok) {
+        const data = await res.json();
+        setStatus(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch status:', err);
+    } finally {
+      setLoadingStatus(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-5 right-5 z-50 px-5 py-3 rounded-lg shadow-xl border flex items-center gap-3 transition-all ${
+          toast.type === 'error' ? 'bg-rose-950 border-rose-700 text-rose-200' : 'bg-emerald-950 border-emerald-700 text-emerald-200'
+        }`}>
+          {toast.type === 'error' ? <AlertTriangle className="w-5 h-5 text-rose-400" /> : <CheckCircle className="w-5 h-5 text-emerald-400" />}
+          <span className="text-sm font-medium">{toast.message}</span>
+        </div>
+      )}
+
+      {/* Top Header */}
+      <header className="bg-slate-900/90 border-b border-slate-800 backdrop-blur sticky top-0 z-40 px-6 py-3.5 flex items-center justify-between shadow-lg">
+        <div className="flex items-center gap-4">
+          <div className="bg-indigo-600/20 border border-indigo-500/40 p-2 rounded-xl text-indigo-400 shadow-inner">
+            <Server className="w-6 h-6" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-lg font-bold tracking-wide bg-gradient-to-r from-indigo-400 via-sky-300 to-indigo-200 bg-clip-text text-transparent">
+                {t.appTitle}
+              </h1>
+              {status && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-950 border border-indigo-700 text-indigo-300 font-mono font-medium">
+                  {status.realm || 'AD 2016'}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 hidden sm:block">{t.appSubtitle}</p>
+          </div>
+        </div>
+
+        {/* Status Indicators & Language Switcher */}
+        <div className="flex items-center gap-3">
+          {/* Status Pills */}
+          <div className="hidden lg:flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded-lg text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${status?.samba_active ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
+              <span className="text-slate-300 font-medium">{t.sambaDc}</span>
+            </div>
+            <span className="text-slate-700">|</span>
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${status?.named_active ? 'bg-sky-400' : 'bg-amber-500'}`} />
+              <span className="text-slate-300 font-medium">{t.bindHybrid}</span>
+            </div>
+            <span className="text-slate-700">|</span>
+            <div className="flex items-center gap-1.5">
+              <span className={`w-2 h-2 rounded-full ${status?.chrony_active ? 'bg-indigo-400' : 'bg-slate-500'}`} />
+              <span className="text-slate-300 font-medium">{t.chronyNtp}</span>
+            </div>
+          </div>
+
+          {/* Wizard Action Button */}
+          <button 
+            onClick={() => setShowWizard(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition shadow-sm border border-indigo-400/30"
+          >
+            <Shield className="w-3.5 h-3.5" />
+            <span>{t.wizard}</span>
+          </button>
+
+          {/* Language Switcher */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs font-medium">
+            <button 
+              onClick={() => setLang('pt')} 
+              className={`px-2 py-1 rounded transition ${lang === 'pt' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+              title="Português (Brasil)"
+            >
+              🇧🇷 PT
+            </button>
+            <button 
+              onClick={() => setLang('en')} 
+              className={`px-2 py-1 rounded transition ${lang === 'en' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+              title="English (US)"
+            >
+              🇺🇸 EN
+            </button>
+            <button 
+              onClick={() => setLang('es')} 
+              className={`px-2 py-1 rounded transition ${lang === 'es' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+              title="Español"
+            >
+              🇪🇸 ES
+            </button>
+            <button 
+              onClick={() => setLang('fr')} 
+              className={`px-2 py-1 rounded transition ${lang === 'fr' ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+              title="Français"
+            >
+              🇫🇷 FR
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <div className="flex-1 flex flex-col md:flex-row">
+        {/* Navigation Sidebar */}
+        <aside className="w-full md:w-64 bg-slate-900/60 border-r border-slate-800/80 p-3 shrink-0 flex flex-row md:flex-col gap-1 overflow-x-auto">
+          <NavItem active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<Activity className="w-4 h-4" />} label={t.dashboard} />
+          <NavItem active={activeTab === 'users'} onClick={() => setActiveTab('users')} icon={<Users className="w-4 h-4" />} label={t.users} badge={status?.users_count} />
+          <NavItem active={activeTab === 'groups'} onClick={() => setActiveTab('groups')} icon={<Shield className="w-4 h-4" />} label={t.groups} badge={status?.groups_count} />
+          <NavItem active={activeTab === 'computers'} onClick={() => setActiveTab('computers')} icon={<Server className="w-4 h-4" />} label={t.computers} badge={status?.computers_count} />
+          <NavItem active={activeTab === 'dns'} onClick={() => setActiveTab('dns')} icon={<Globe className="w-4 h-4" />} label={t.dns} badge={status?.zones_count} />
+          <NavItem active={activeTab === 'bind'} onClick={() => setActiveTab('bind')} icon={<Network className="w-4 h-4" />} label={t.bind} />
+          <NavItem active={activeTab === 'health'} onClick={() => setActiveTab('health')} icon={<Layers className="w-4 h-4" />} label={t.health} />
+          <NavItem active={activeTab === 'backups'} onClick={() => setActiveTab('backups')} icon={<HardDrive className="w-4 h-4" />} label={t.backups} />
+        </aside>
+
+        {/* Tab Content */}
+        <main className="flex-1 p-5 lg:p-7 overflow-y-auto">
+          {activeTab === 'dashboard' && <DashboardTab status={status} t={t} fetchStatus={fetchStatus} showToast={showToast} />}
+          {activeTab === 'users' && <UsersTab t={t} showToast={showToast} />}
+          {activeTab === 'groups' && <GroupsTab t={t} showToast={showToast} />}
+          {activeTab === 'computers' && <ComputersTab t={t} showToast={showToast} />}
+          {activeTab === 'dns' && <DnsTab t={t} showToast={showToast} />}
+          {activeTab === 'bind' && <BindTab t={t} showToast={showToast} />}
+          {activeTab === 'health' && <HealthTab t={t} showToast={showToast} />}
+          {activeTab === 'backups' && <BackupsTab t={t} showToast={showToast} />}
+        </main>
+      </div>
+
+      {/* Provisioning Wizard Modal */}
+      {showWizard && <WizardModal onClose={() => { setShowWizard(false); fetchStatus(); }} t={t} showToast={showToast} />}
+    </div>
+  );
+}
+
+function NavItem({ active, onClick, icon, label, badge }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg text-xs font-medium transition ${
+        active 
+          ? 'bg-indigo-600 text-white font-semibold shadow-md shadow-indigo-950/50' 
+          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+      }`}
+    >
+      <div className="flex items-center gap-2.5">
+        {icon}
+        <span>{label}</span>
+      </div>
+      {badge !== undefined && (
+        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold ${
+          active ? 'bg-indigo-700/80 text-indigo-100' : 'bg-slate-800 text-slate-400'
+        }`}>
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ==============================================================================
+// 1. DASHBOARD TAB
+// ==============================================================================
+function DashboardTab({ status, t, fetchStatus, showToast }) {
+  const [testDomain, setTestDomain] = useState('google.com');
+  const [benchmarking, setBenchmarking] = useState(false);
+  const [benchResults, setBenchResults] = useState(null);
+
+  const runBenchmark = async () => {
+    if (!testDomain.trim()) return;
+    try {
+      setBenchmarking(true);
+      const res = await fetch('/api/bind/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: testDomain, record_type: 'A' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBenchResults(data);
+      }
+    } catch (e) {
+      showToast('DNS test failed', 'error');
+    } finally {
+      setBenchmarking(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Top Banner Status */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xs px-2.5 py-1 rounded-md bg-emerald-950 border border-emerald-700 text-emerald-400 font-mono font-bold uppercase tracking-wider">
+                Active Directory 2016
+              </span>
+              <span className="text-xs px-2.5 py-1 rounded-md bg-sky-950 border border-sky-700 text-sky-400 font-mono">
+                FQDN: {status?.hostname || 'dc-erp.srvcloud.cloud'}
+              </span>
+            </div>
+            <h2 className="text-2xl font-bold text-white tracking-tight">
+              {status?.realm || 'SRVCLOUD.CLOUD'}
+            </h2>
+            <p className="text-xs text-slate-400 max-w-xl">
+              Controlador de domínio Samba 4 AD DC com níveis funcionais de Floresta e Domínio elevados para 2016. Encaminhamento recursivo isolado via BIND 9 na porta 5353.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            <MetricBox label={t.totalUsers} value={status?.users_count ?? '-'} icon={<Users className="w-4 h-4 text-indigo-400" />} />
+            <MetricBox label={t.totalGroups} value={status?.groups_count ?? '-'} icon={<Shield className="w-4 h-4 text-emerald-400" />} />
+            <MetricBox label={t.totalComputers} value={status?.computers_count ?? '-'} icon={<Server className="w-4 h-4 text-sky-400" />} />
+            <MetricBox label={t.totalZones} value={status?.zones_count ?? '-'} icon={<Globe className="w-4 h-4 text-amber-400" />} />
+          </div>
+        </div>
+      </div>
+
+      {/* Domain Architecture Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Domain Parameters */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 text-indigo-400 font-semibold text-sm">
+              <Shield className="w-4 h-4" />
+              <span>{t.domainLevel} / {t.forestLevel}</span>
+            </div>
+            <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800">
+              {status?.functional_level_domain || '2016'}
+            </span>
+          </div>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">{t.realm}:</span>
+              <span className="font-mono text-slate-200 font-semibold">{status?.realm || '-'}</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">{t.workgroup}:</span>
+              <span className="font-mono text-slate-200 font-semibold">{status?.workgroup || '-'}</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">{t.dnsForwarder}:</span>
+              <span className="font-mono text-cyan-400">{status?.dns_forwarder || '127.0.0.1:5353'}</span>
+            </div>
+            <div className="flex justify-between py-1">
+              <span className="text-slate-400">NetBIOS DC:</span>
+              <span className="font-mono text-slate-200">{status?.netbios_name || 'DC-ERP'}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Hybrid BIND 9 Card */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 text-sky-400 font-semibold text-sm">
+              <Network className="w-4 h-4" />
+              <span>{t.bindHybrid}</span>
+            </div>
+            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+              status?.named_active ? 'bg-sky-950 text-sky-400 border-sky-800' : 'bg-rose-950 text-rose-400 border-rose-800'
+            }`}>
+              {status?.named_active ? t.active : t.inactive}
+            </span>
+          </div>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Escuta Recurso:</span>
+              <span className="font-mono text-slate-200">127.0.0.1:5353</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Modo:</span>
+              <span className="text-slate-300">Apenas Recursivo (Não-autoritativo)</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Configuração:</span>
+              <span className="font-mono text-slate-300">/etc/named.conf</span>
+            </div>
+            <div className="flex justify-between py-1">
+              <span className="text-slate-400">Cache DNS:</span>
+              <span className="font-mono text-emerald-400">Habilitado (64M)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Chrony NTP Card */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2 text-blue-400 font-semibold text-sm">
+              <Cpu className="w-4 h-4" />
+              <span>{t.chronyNtp}</span>
+            </div>
+            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded border ${
+              status?.chrony_active ? 'bg-blue-950 text-blue-400 border-blue-800' : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`}>
+              {status?.chrony_active ? t.synced : t.unsynced}
+            </span>
+          </div>
+          <div className="space-y-2 text-xs">
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Fonte de Referência:</span>
+              <span className="font-mono text-slate-200">{status?.ntp?.reference_id || 'gps.nu.ntp.br'}</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Stratum:</span>
+              <span className="font-mono text-slate-200">{status?.ntp?.stratum || 2}</span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Desvio (Offset):</span>
+              <span className="font-mono text-emerald-400">{status?.ntp?.offset || '< 0.2ms'}</span>
+            </div>
+            <div className="flex justify-between py-1">
+              <span className="text-slate-400">Socket Kerberos:</span>
+              <span className="font-mono text-slate-300">/var/lib/samba/ntp_signd</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Quick DNS Benchmark Tool */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Globe className="w-4 h-4 text-cyan-400" />
+              <span>{t.quickDnsTestTitle}</span>
+            </h3>
+            <p className="text-xs text-slate-400">{t.quickDnsTestDesc}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input 
+              type="text" 
+              value={testDomain}
+              onChange={(e) => setTestDomain(e.target.value)}
+              placeholder="google.com"
+              className="bg-slate-950 border border-slate-700 text-xs px-3 py-1.5 rounded-lg text-slate-100 font-mono focus:border-indigo-500 focus:outline-none w-48"
+            />
+            <button 
+              onClick={runBenchmark}
+              disabled={benchmarking}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-1.5 rounded-lg flex items-center gap-1.5 transition"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${benchmarking ? 'animate-spin' : ''}`} />
+              <span>{benchmarking ? t.testing : t.runTest}</span>
+            </button>
+          </div>
+        </div>
+
+        {benchResults && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {benchResults.results.map((res, i) => (
+              <div key={i} className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-200">{res.description}</span>
+                  <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
+                    res.status === 'NOERROR' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400'
+                  }`}>
+                    {res.status}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between text-slate-400">
+                  <span>{t.queryTime}:</span>
+                  <span className="font-mono text-sm font-bold text-cyan-400">{res.query_time_ms} ms</span>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded p-2 font-mono text-[11px] text-slate-300 max-h-24 overflow-y-auto">
+                  {res.answer.length > 0 ? (
+                    res.answer.map((ans, idx) => <div key={idx} className="truncate">{ans}</div>)
+                  ) : (
+                    <span className="text-slate-500 italic">Nenhum registro retornado</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MetricBox({ label, value, icon }) {
+  return (
+    <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 space-y-1">
+      <div className="flex items-center justify-center gap-1.5 text-slate-400 text-[11px]">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="text-xl font-bold font-mono text-white">{value}</div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 2. USERS TAB
+// ==============================================================================
+function UsersTab({ t, showToast }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showPasswordModal, setShowPasswordModal] = useState(null);
+  const [userGroupsModal, setUserGroupsModal] = useState(null);
+  const [groupsList, setGroupsList] = useState([]);
+
+  // Form states
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [givenName, setGivenName] = useState('');
+  const [surname, setSurname] = useState('');
+  const [email, setEmail] = useState('');
+  const [description, setDescription] = useState('');
+  const [resetPwd, setResetPwd] = useState('');
+
+  const fetchUsers = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/users');
+      if (res.ok) {
+        const json = await res.json();
+        setUsers(json.data || []);
+      }
+    } catch (e) {
+      showToast('Failed to load users', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    if (!newUsername.trim() || !newPassword.trim()) return;
+
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: newUsername,
+          password: newPassword,
+          given_name: givenName || undefined,
+          surname: surname || undefined,
+          mail: email || undefined,
+          description: description || undefined,
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowCreateModal(false);
+        setNewUsername('');
+        setNewPassword('');
+        setGivenName('');
+        setSurname('');
+        setEmail('');
+        setDescription('');
+        fetchUsers();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (err) {
+      showToast('Error creating user', 'error');
+    }
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    if (!resetPwd.trim() || !showPasswordModal) return;
+
+    try {
+      const res = await fetch(`/api/users/${showPasswordModal}/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: resetPwd })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowPasswordModal(null);
+        setResetPwd('');
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (err) {
+      showToast('Error resetting password', 'error');
+    }
+  };
+
+  const handleToggleEnable = async (user) => {
+    const action = user.is_disabled ? 'enable' : 'disable';
+    try {
+      const res = await fetch(`/api/users/${user.username}/${action}`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchUsers();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast(`Error ${action}ing user`, 'error');
+    }
+  };
+
+  const handleDeleteUser = async (username) => {
+    if (!window.confirm(`Tem certeza que deseja excluir o usuário ${username}?`)) return;
+    try {
+      const res = await fetch(`/api/users/${username}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchUsers();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error deleting user', 'error');
+    }
+  };
+
+  const handleOpenUserGroups = async (username) => {
+    setUserGroupsModal(username);
+    setGroupsList([]);
+    try {
+      const res = await fetch(`/api/users/${username}/groups`);
+      if (res.ok) {
+        const data = await res.json();
+        setGroupsList(data.data || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const filteredUsers = users.filter(u => u.username.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-4">
+      {/* Action Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          <input 
+            type="text" 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t.searchUsers}
+            className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={fetchUsers} 
+            className="p-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+            title="Recarregar"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button 
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{t.addUser}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Users Table */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-3 px-4">{t.username}</th>
+                <th className="py-3 px-4">{t.adminStatus}</th>
+                <th className="py-3 px-4">{t.accountStatus}</th>
+                <th className="py-3 px-4 text-right">{t.actions}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono">
+              {filteredUsers.map((user) => (
+                <tr key={user.username} className="hover:bg-slate-800/30 transition">
+                  <td className="py-3 px-4 font-semibold text-slate-200 flex items-center gap-2 font-sans">
+                    <div className="w-7 h-7 rounded-full bg-indigo-950 border border-indigo-700/60 flex items-center justify-center text-indigo-300 text-xs font-bold">
+                      {user.username.charAt(0).toUpperCase()}
+                    </div>
+                    <span>{user.username}</span>
+                  </td>
+                  <td className="py-3 px-4 font-sans">
+                    {user.is_admin ? (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-950/80 text-amber-300 border border-amber-800 text-[10px] font-bold">
+                        {t.domainAdmin}
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 text-xs">{t.standardUser}</span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 font-sans">
+                    {user.is_disabled ? (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-950 text-rose-400 border border-rose-800 text-[10px]">
+                        {t.disabled}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px]">
+                        {t.enabled}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-right space-x-2 font-sans">
+                    <button 
+                      onClick={() => handleOpenUserGroups(user.username)}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition"
+                    >
+                      {t.viewGroups}
+                    </button>
+                    <button 
+                      onClick={() => setShowPasswordModal(user.username)}
+                      className="px-2.5 py-1 rounded bg-slate-800 hover:bg-indigo-900/60 text-indigo-300 text-[11px] transition"
+                    >
+                      {t.resetPassword}
+                    </button>
+                    <button 
+                      onClick={() => handleToggleEnable(user)}
+                      className={`px-2.5 py-1 rounded text-[11px] transition ${
+                        user.is_disabled 
+                          ? 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800' 
+                          : 'bg-amber-950 hover:bg-amber-900 text-amber-300 border border-amber-800'
+                      }`}
+                    >
+                      {user.is_disabled ? t.enableUser : t.disableUser}
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteUser(user.username)}
+                      className="p-1 rounded text-rose-400 hover:bg-rose-950/80 transition"
+                      title={t.deleteUser}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Create User Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Users className="w-4 h-4 text-indigo-400" />
+              <span>{t.createUserTitle}</span>
+            </h3>
+
+            <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.username} *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={newUsername} 
+                  onChange={(e) => setNewUsername(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.newPassword} *</label>
+                <input 
+                  type="password" 
+                  required 
+                  value={newPassword} 
+                  onChange={(e) => setNewPassword(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">{t.firstName}</label>
+                  <input 
+                    type="text" 
+                    value={givenName} 
+                    onChange={(e) => setGivenName(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">{t.lastName}</label>
+                  <input 
+                    type="text" 
+                    value={surname} 
+                    onChange={(e) => setSurname(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.email}</label>
+                <input 
+                  type="email" 
+                  value={email} 
+                  onChange={(e) => setEmail(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.description}</label>
+                <input 
+                  type="text" 
+                  value={description} 
+                  onChange={(e) => setDescription(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Password Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Key className="w-4 h-4 text-amber-400" />
+              <span>{t.resetPassword}: {showPasswordModal}</span>
+            </h3>
+
+            <form onSubmit={handleResetPassword} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.newPassword}</label>
+                <input 
+                  type="password" 
+                  required 
+                  value={resetPwd} 
+                  onChange={(e) => setResetPwd(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowPasswordModal(null)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* User Groups Modal */}
+      {userGroupsModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-400" />
+                <span>Grupos de {userGroupsModal}</span>
+              </h3>
+              <button onClick={() => setUserGroupsModal(null)} className="text-slate-400 hover:text-white">&times;</button>
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-1.5 text-xs font-mono">
+              {groupsList.map((g, idx) => (
+                <div key={idx} className="bg-slate-950 border border-slate-800 px-3 py-1.5 rounded text-slate-300 flex items-center gap-2">
+                  <Shield className="w-3 h-3 text-indigo-400 shrink-0" />
+                  <span>{g}</span>
+                </div>
+              ))}
+              {groupsList.length === 0 && (
+                <div className="text-slate-500 text-center py-4 font-sans">Carregando grupos...</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==============================================================================
+// 3. GROUPS TAB
+// ==============================================================================
+function GroupsTab({ t, showToast }) {
+  const [groups, setGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedGroup, setSelectedGroup] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [newMemberUsername, setNewMemberUsername] = useState('');
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupDesc, setNewGroupDesc] = useState('');
+
+  const fetchGroups = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/groups');
+      if (res.ok) {
+        const json = await res.json();
+        setGroups(json.data || []);
+      }
+    } catch (e) {
+      showToast('Failed to load groups', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchGroups();
+  }, []);
+
+  const openGroupMembers = async (groupname) => {
+    setSelectedGroup(groupname);
+    setMembers([]);
+    try {
+      const res = await fetch(`/api/groups/${groupname}/members`);
+      if (res.ok) {
+        const json = await res.json();
+        setMembers(json.data || []);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleAddMember = async (e) => {
+    e.preventDefault();
+    if (!newMemberUsername.trim() || !selectedGroup) return;
+
+    try {
+      const res = await fetch(`/api/groups/${selectedGroup}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: newMemberUsername })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setNewMemberUsername('');
+        openGroupMembers(selectedGroup);
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (err) {
+      showToast('Error adding member', 'error');
+    }
+  };
+
+  const handleRemoveMember = async (username) => {
+    if (!window.confirm(`Remover ${username} do grupo ${selectedGroup}?`)) return;
+    try {
+      const res = await fetch(`/api/groups/${selectedGroup}/members/${username}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        openGroupMembers(selectedGroup);
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error removing member', 'error');
+    }
+  };
+
+  const handleCreateGroup = async (e) => {
+    e.preventDefault();
+    if (!newGroupName.trim()) return;
+
+    try {
+      const res = await fetch('/api/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupname: newGroupName, description: newGroupDesc || undefined })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowCreateModal(false);
+        setNewGroupName('');
+        setNewGroupDesc('');
+        fetchGroups();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (err) {
+      showToast('Error creating group', 'error');
+    }
+  };
+
+  const handleDeleteGroup = async (groupname) => {
+    if (!window.confirm(`Excluir o grupo ${groupname}?`)) return;
+    try {
+      const res = await fetch(`/api/groups/${groupname}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchGroups();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error deleting group', 'error');
+    }
+  };
+
+  const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-4">
+      {/* Action Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          <input 
+            type="text" 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t.searchGroups}
+            className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={fetchGroups} 
+            className="p-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button 
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{t.addGroup}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Groups Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {filteredGroups.map((group) => (
+          <div key={group.name} className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-4 transition shadow-sm space-y-3">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-950/70 border border-indigo-700/50 flex items-center justify-center text-indigo-400">
+                  <Shield className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-100 font-mono">{group.name}</h4>
+                  <span className="text-[10px] text-slate-400">Grupo de Segurança</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => handleDeleteGroup(group.name)}
+                className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
+              <button 
+                onClick={() => openGroupMembers(group.name)}
+                className="text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1"
+              >
+                <span>{t.viewMembers}</span>
+                <ArrowRight className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Group Members Drawer / Modal */}
+      {selectedGroup && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-white font-mono">{selectedGroup}</h3>
+                <p className="text-xs text-slate-400">{t.membersTitle}</p>
+              </div>
+              <button onClick={() => setSelectedGroup(null)} className="text-slate-400 hover:text-white">&times;</button>
+            </div>
+
+            {/* Add Member Input */}
+            <form onSubmit={handleAddMember} className="flex gap-2">
+              <input 
+                type="text" 
+                value={newMemberUsername}
+                onChange={(e) => setNewMemberUsername(e.target.value)}
+                placeholder="Nome do usuário para adicionar..."
+                className="flex-1 bg-slate-950 border border-slate-700 text-xs px-3 py-1.5 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+              />
+              <button 
+                type="submit" 
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
+              >
+                {t.addMember}
+              </button>
+            </form>
+
+            {/* Member List */}
+            <div className="max-h-60 overflow-y-auto space-y-1.5 text-xs font-mono">
+              {members.map((m, idx) => (
+                <div key={idx} className="bg-slate-950 border border-slate-800 px-3 py-1.5 rounded flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-slate-300">
+                    <Users className="w-3 h-3 text-indigo-400" />
+                    <span>{m}</span>
+                  </div>
+                  <button 
+                    onClick={() => handleRemoveMember(m)}
+                    className="text-rose-400 hover:text-rose-300 text-[11px]"
+                  >
+                    {t.removeMember}
+                  </button>
+                </div>
+              ))}
+              {members.length === 0 && (
+                <div className="text-slate-500 text-center py-4 font-sans text-xs">Nenhum membro neste grupo.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Group Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Shield className="w-4 h-4 text-indigo-400" />
+              <span>{t.addGroup}</span>
+            </h3>
+
+            <form onSubmit={handleCreateGroup} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.groupName} *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={newGroupName} 
+                  onChange={(e) => setNewGroupName(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.description}</label>
+                <input 
+                  type="text" 
+                  value={newGroupDesc} 
+                  onChange={(e) => setNewGroupDesc(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==============================================================================
+// 4. COMPUTERS TAB
+// ==============================================================================
+function ComputersTab({ t, showToast }) {
+  const [computers, setComputers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [newComputerName, setNewComputerName] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
+
+  const fetchComputers = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/computers');
+      if (res.ok) {
+        const json = await res.json();
+        setComputers(json.data || []);
+      }
+    } catch (e) {
+      showToast('Failed to load computers', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchComputers();
+  }, []);
+
+  const handleCreateComputer = async (e) => {
+    e.preventDefault();
+    if (!newComputerName.trim()) return;
+
+    try {
+      const res = await fetch('/api/computers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ computername: newComputerName })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowAddModal(false);
+        setNewComputerName('');
+        fetchComputers();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error creating computer account', 'error');
+    }
+  };
+
+  const handleDeleteComputer = async (name) => {
+    if (!window.confirm(`Excluir conta de computador ${name}?`)) return;
+    try {
+      const res = await fetch(`/api/computers/${name}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchComputers();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error deleting computer account', 'error');
+    }
+  };
+
+  const filtered = computers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+          <input 
+            type="text" 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t.searchComputers}
+            className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={fetchComputers} 
+            className="p-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button 
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{t.addComputer}</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {filtered.map((comp) => (
+          <div key={comp.name} className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-sky-950 border border-sky-800/60 flex items-center justify-center text-sky-400">
+                <Server className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-100 font-mono">{comp.name}</h4>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-sans ${
+                  comp.is_dc ? 'bg-amber-950 text-amber-300 border border-amber-800' : 'text-slate-400'
+                }`}>
+                  {comp.is_dc ? t.domainController : t.workstation}
+                </span>
+              </div>
+            </div>
+            {!comp.is_dc && (
+              <button 
+                onClick={() => handleDeleteComputer(comp.name)}
+                className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Server className="w-4 h-4 text-indigo-400" />
+              <span>{t.addComputer}</span>
+            </h3>
+
+            <form onSubmit={handleCreateComputer} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.computerName} *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={newComputerName} 
+                  onChange={(e) => setNewComputerName(e.target.value)} 
+                  placeholder="EX: DESKTOP-FINANCEIRO"
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowAddModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==============================================================================
+// 5. DNS MANAGEMENT TAB (WITH AUTO REVERSE PTR CREATION)
+// ==============================================================================
+function DnsTab({ t, showToast }) {
+  const [zones, setZones] = useState([]);
+  const [selectedZone, setSelectedZone] = useState('');
+  const [records, setRecords] = useState([]);
+  const [loadingZones, setLoadingZones] = useState(true);
+  const [loadingRecords, setLoadingRecords] = useState(false);
+  const [search, setSearch] = useState('');
+
+  // Modals
+  const [showAddZoneModal, setShowAddZoneModal] = useState(false);
+  const [newZoneName, setNewZoneName] = useState('');
+  const [showAddRecordModal, setShowAddRecordModal] = useState(false);
+
+  // New record form
+  const [recName, setRecName] = useState('@');
+  const [recType, setRecType] = useState('A');
+  const [recData, setRecData] = useState('');
+  const [autoPtr, setAutoPtr] = useState(true);
+
+  const fetchZones = async () => {
+    try {
+      setLoadingZones(true);
+      const res = await fetch('/api/dns/zones');
+      if (res.ok) {
+        const json = await res.json();
+        const zlist = json.data || [];
+        setZones(zlist);
+        if (zlist.length > 0 && !selectedZone) {
+          setSelectedZone(zlist[0].name);
+        }
+      }
+    } catch (e) {
+      showToast('Failed to load DNS zones', 'error');
+    } finally {
+      setLoadingZones(false);
+    }
+  };
+
+  const fetchRecords = async (zoneName) => {
+    if (!zoneName) return;
+    try {
+      setLoadingRecords(true);
+      const res = await fetch(`/api/dns/zones/${zoneName}/records`);
+      if (res.ok) {
+        const json = await res.json();
+        setRecords(json.data || []);
+      }
+    } catch (e) {
+      showToast(`Failed to load records for ${zoneName}`, 'error');
+    } finally {
+      setLoadingRecords(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchZones();
+  }, []);
+
+  useEffect(() => {
+    if (selectedZone) {
+      fetchRecords(selectedZone);
+    }
+  }, [selectedZone]);
+
+  const handleCreateZone = async (e) => {
+    e.preventDefault();
+    if (!newZoneName.trim()) return;
+
+    try {
+      const res = await fetch('/api/dns/zones', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zone_name: newZoneName })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowAddZoneModal(false);
+        setNewZoneName('');
+        fetchZones();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error creating zone', 'error');
+    }
+  };
+
+  const handleDeleteZone = async (zoneName) => {
+    if (!window.confirm(`Excluir permanentemente a zona DNS ${zoneName}?`)) return;
+    try {
+      const res = await fetch(`/api/dns/zones/${zoneName}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchZones();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error deleting zone', 'error');
+    }
+  };
+
+  const handleAddRecord = async (e) => {
+    e.preventDefault();
+    if (!recData.trim() || !selectedZone) return;
+
+    try {
+      const res = await fetch(`/api/dns/zones/${selectedZone}/records`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: recName,
+          record_type: recType,
+          data: recData,
+          create_ptr: recType === 'A' ? autoPtr : false,
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        setShowAddRecordModal(false);
+        setRecName('@');
+        setRecData('');
+        fetchRecords(selectedZone);
+        fetchZones(); // in case a new reverse zone was created
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error adding DNS record', 'error');
+    }
+  };
+
+  const handleDeleteRecord = async (rec) => {
+    if (!window.confirm(`Excluir o registro ${rec.record_type}: ${rec.name} -> ${rec.data}?`)) return;
+    try {
+      const res = await fetch(`/api/dns/zones/${selectedZone}/records`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: rec.name,
+          record_type: rec.record_type,
+          data: rec.data,
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchRecords(selectedZone);
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error deleting record', 'error');
+    }
+  };
+
+  const filteredRecords = records.filter(r => 
+    r.name.toLowerCase().includes(search.toLowerCase()) || 
+    r.data.toLowerCase().includes(search.toLowerCase()) ||
+    r.record_type.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Zone Switcher Header */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Globe className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-sm font-bold text-white">{t.zones}</h3>
+          </div>
+          <button 
+            onClick={() => setShowAddZoneModal(true)}
+            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>{t.addZone}</span>
+          </button>
+        </div>
+
+        {/* Zone Pills */}
+        <div className="flex flex-wrap gap-2 pt-1">
+          {zones.map((z) => (
+            <button
+              key={z.name}
+              onClick={() => setSelectedZone(z.name)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono transition border ${
+                selectedZone === z.name 
+                  ? 'bg-indigo-600 border-indigo-500 text-white font-bold shadow' 
+                  : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+              }`}
+            >
+              <span>{z.name}</span>
+              {z.is_reverse && (
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-950 text-amber-300 border border-amber-800/60 font-sans">
+                  PTR
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Selected Zone Records */}
+      {selectedZone && (
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input 
+                type="text" 
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Filtrar registros por nome, tipo ou IP..."
+                className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none font-mono"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => fetchRecords(selectedZone)} 
+                className="p-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+              >
+                <RefreshCw className={`w-4 h-4 ${loadingRecords ? 'animate-spin' : ''}`} />
+              </button>
+              <button 
+                onClick={() => setShowAddRecordModal(true)}
+                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{t.addRecord}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Records Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th className="py-3 px-4">{t.recordName}</th>
+                    <th className="py-3 px-4">{t.recordType}</th>
+                    <th className="py-3 px-4">{t.recordData}</th>
+                    <th className="py-3 px-4">{t.ttl}</th>
+                    <th className="py-3 px-4 text-right">{t.actions}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {filteredRecords.map((rec, idx) => (
+                    <tr key={idx} className="hover:bg-slate-800/30 transition">
+                      <td className="py-2.5 px-4 font-bold text-slate-200">{rec.name}</td>
+                      <td className="py-2.5 px-4">
+                        <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                          rec.record_type === 'A' ? 'bg-sky-950 text-sky-400 border border-sky-800' :
+                          rec.record_type === 'PTR' ? 'bg-amber-950 text-amber-400 border border-amber-800' :
+                          rec.record_type === 'CNAME' ? 'bg-indigo-950 text-indigo-400 border border-indigo-800' :
+                          rec.record_type === 'SRV' ? 'bg-purple-950 text-purple-400 border border-purple-800' :
+                          'bg-slate-800 text-slate-300'
+                        }`}>
+                          {rec.record_type}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 text-slate-300 break-all">{rec.data}</td>
+                      <td className="py-2.5 px-4 text-slate-500">{rec.ttl}s</td>
+                      <td className="py-2.5 px-4 text-right">
+                        {!['SOA', 'NS'].includes(rec.record_type) && (
+                          <button 
+                            onClick={() => handleDeleteRecord(rec)}
+                            className="text-slate-500 hover:text-rose-400 p-1 rounded transition"
+                            title={t.deleteRecord}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Record Modal */}
+      {showAddRecordModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Globe className="w-4 h-4 text-emerald-400" />
+              <span>{t.addRecord} na Zona {selectedZone}</span>
+            </h3>
+
+            <form onSubmit={handleAddRecord} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.recordName} *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={recName} 
+                  onChange={(e) => setRecName(e.target.value)} 
+                  placeholder="@ para raiz ou subdomínio (ex: dc-erp, fileserver)"
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.recordType}</label>
+                <select 
+                  value={recType} 
+                  onChange={(e) => setRecType(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
+                >
+                  <option value="A">A (Endereço IPv4)</option>
+                  <option value="PTR">PTR (Ponteiro Reverso)</option>
+                  <option value="CNAME">CNAME (Alias)</option>
+                  <option value="TXT">TXT (Texto)</option>
+                  <option value="SRV">SRV (Serviço)</option>
+                  <option value="MX">MX (Mail Server)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.recordData} *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={recData} 
+                  onChange={(e) => setRecData(e.target.value)} 
+                  placeholder={recType === 'A' ? '192.168.2.50' : 'destino.srvcloud.cloud'}
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
+                />
+              </div>
+
+              {/* Auto PTR Toggle */}
+              {recType === 'A' && (
+                <div className="bg-slate-950 border border-indigo-900/60 rounded-lg p-3 space-y-1">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-200 font-medium">
+                    <input 
+                      type="checkbox" 
+                      checked={autoPtr} 
+                      onChange={(e) => setAutoPtr(e.target.checked)} 
+                      className="rounded bg-slate-800 border-slate-700 text-indigo-600 focus:ring-0"
+                    />
+                    <span>{t.autoPtrLabel}</span>
+                  </label>
+                  <p className="text-[11px] text-slate-400 pl-6 leading-relaxed">
+                    {t.autoPtrHelp}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowAddRecordModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add Zone Modal */}
+      {showAddZoneModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Globe className="w-4 h-4 text-indigo-400" />
+              <span>{t.addZone}</span>
+            </h3>
+
+            <form onSubmit={handleCreateZone} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Nome da Zona *</label>
+                <input 
+                  type="text" 
+                  required 
+                  value={newZoneName} 
+                  onChange={(e) => setNewZoneName(e.target.value)} 
+                  placeholder="ex: filial.empresa.lan ou 10.168.192.in-addr.arpa"
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowAddZoneModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+                >
+                  {t.cancel}
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+                >
+                  {t.save}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==============================================================================
+// 6. HYBRID BIND 9 MANAGEMENT TAB
+// ==============================================================================
+function BindTab({ t, showToast }) {
+  const [bindStatus, setBindStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [forwarders, setForwarders] = useState([]);
+  const [newFwd, setNewFwd] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [logs, setLogs] = useState([]);
+
+  const fetchBind = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/bind/status');
+      if (res.ok) {
+        const data = await res.json();
+        setBindStatus(data);
+        setForwarders(data.forwarders || []);
+      }
+      const lres = await fetch('/api/bind/logs');
+      if (lres.ok) {
+        const ldata = await lres.json();
+        setLogs(ldata.data || []);
+      }
+    } catch (e) {
+      showToast('Failed to load BIND status', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBind();
+  }, []);
+
+  const handleAddForwarder = () => {
+    if (!newFwd.trim()) return;
+    if (!forwarders.includes(newFwd.trim())) {
+      setForwarders([...forwarders, newFwd.trim()]);
+      setNewFwd('');
+    }
+  };
+
+  const handleRemoveForwarder = (ip) => {
+    setForwarders(forwarders.filter(f => f !== ip));
+  };
+
+  const handleSaveForwarders = async () => {
+    try {
+      setSaving(true);
+      const res = await fetch('/api/bind/forwarders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forwarders })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchBind();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error saving forwarders', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleServiceAction = async (action) => {
+    try {
+      const res = await fetch(`/api/bind/service/${action}`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchBind();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast(`Error executing ${action}`, 'error');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Hybrid DNS Architectural Overview */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 text-sky-400 font-bold text-sm">
+          <Network className="w-5 h-5" />
+          <span>{t.bindArchitecture}</span>
+        </div>
+        <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
+          {t.bindArchDesc}
+        </p>
+
+        {/* Visual Architecture Diagram */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-2 text-center text-xs font-mono">
+          <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+            <span className="text-[10px] text-slate-500 uppercase">Clientes da Rede</span>
+            <div className="text-slate-200 font-bold">192.168.2.x</div>
+            <span className="text-[10px] text-indigo-400">DNS: 192.168.2.10</span>
+          </div>
+          <div className="bg-indigo-950/60 border border-indigo-700/60 p-3 rounded-lg space-y-1">
+            <span className="text-[10px] text-indigo-300 uppercase">Samba 4 AD DC</span>
+            <div className="text-white font-bold">Porta 53 (Padrão)</div>
+            <span className="text-[10px] text-emerald-400">Autoritativo AD</span>
+          </div>
+          <div className="bg-sky-950/60 border border-sky-700/60 p-3 rounded-lg space-y-1">
+            <span className="text-[10px] text-sky-300 uppercase">BIND 9 Híbrido</span>
+            <div className="text-white font-bold">127.0.0.1:5353</div>
+            <span className="text-[10px] text-sky-400">Recursivo Seguro</span>
+          </div>
+          <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+            <span className="text-[10px] text-slate-500 uppercase">Internet / Upstream</span>
+            <div className="text-slate-200 font-bold">8.8.8.8 / 1.1.1.1</div>
+            <span className="text-[10px] text-cyan-400">Resolução Global</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Forwarders Management Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white">{t.bindForwardersTitle}</h3>
+            <p className="text-xs text-slate-400">{t.bindForwardersDesc}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => handleServiceAction('reload')} 
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition"
+            >
+              {t.reloadService}
+            </button>
+            <button 
+              onClick={() => handleServiceAction('restart')} 
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition"
+            >
+              {t.restartService}
+            </button>
+          </div>
+        </div>
+
+        {/* Forwarders List & Add */}
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {forwarders.map((ip) => (
+              <div key={ip} className="bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-2 font-mono text-xs">
+                <Globe className="w-3.5 h-3.5 text-sky-400" />
+                <span className="text-slate-200">{ip}</span>
+                <button 
+                  onClick={() => handleRemoveForwarder(ip)}
+                  className="text-slate-500 hover:text-rose-400 transition"
+                >
+                  &times;
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2 max-w-sm">
+            <input 
+              type="text" 
+              value={newFwd}
+              onChange={(e) => setNewFwd(e.target.value)}
+              placeholder="Ex: 8.8.4.4 ou 9.9.9.9"
+              className="flex-1 bg-slate-950 border border-slate-700 text-xs px-3 py-1.5 rounded-lg text-slate-100 font-mono focus:border-indigo-500 focus:outline-none"
+            />
+            <button 
+              onClick={handleAddForwarder}
+              className="bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition"
+            >
+              {t.addForwarder}
+            </button>
+          </div>
+
+          <div className="pt-2">
+            <button 
+              onClick={handleSaveForwarders}
+              disabled={saving}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${saving ? 'animate-spin' : ''}`} />
+              <span>{t.applyAndReload}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Query Logs Stream */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+          <Terminal className="w-4 h-4 text-emerald-400" />
+          <span>{t.bindLogs}</span>
+        </h3>
+        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-64 overflow-y-auto font-mono text-[11px] text-slate-300 space-y-1">
+          {logs.map((log, idx) => (
+            <div key={idx} className="hover:bg-slate-900/60 px-1 py-0.5 rounded transition">
+              {log}
+            </div>
+          ))}
+          {logs.length === 0 && (
+            <div className="text-slate-500 italic py-2">Nenhum log recente capturado.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 7. HEALTH, REPLICATION & SYSVOL TAB
+// ==============================================================================
+function HealthTab({ t, showToast }) {
+  const [drs, setDrs] = useState(null);
+  const [loadingDrs, setLoadingDrs] = useState(false);
+  const [dbChecking, setDbChecking] = useState(false);
+  const [dbOutput, setDbOutput] = useState(null);
+  const [fixDb, setFixDb] = useState(false);
+  const [sysvolResult, setSysvolResult] = useState(null);
+  const [checkingSysvol, setCheckingSysvol] = useState(false);
+  const [psScript, setPsScript] = useState('');
+
+  const fetchDrs = async () => {
+    try {
+      setLoadingDrs(true);
+      const res = await fetch('/api/health/drs');
+      if (res.ok) {
+        const json = await res.json();
+        setDrs(json.data);
+      }
+    } catch (e) {
+      showToast('Failed to check DRS status', 'error');
+    } finally {
+      setLoadingDrs(false);
+    }
+  };
+
+  const fetchScript = async () => {
+    try {
+      const res = await fetch('/api/health/sysvol-script');
+      if (res.ok) {
+        const json = await res.json();
+        setPsScript(json.data || '');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    fetchDrs();
+    fetchScript();
+  }, []);
+
+  const handleDbCheck = async () => {
+    try {
+      setDbChecking(true);
+      const res = await fetch('/api/health/dbcheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fix: fixDb })
+      });
+      const json = await res.json();
+      setDbOutput(json.data);
+      showToast(json.message, json.success ? 'success' : 'error');
+    } catch (e) {
+      showToast('Error during dbcheck', 'error');
+    } finally {
+      setDbChecking(false);
+    }
+  };
+
+  const handleSysvolCheck = async () => {
+    try {
+      setCheckingSysvol(true);
+      const res = await fetch('/api/health/sysvolcheck', { method: 'POST' });
+      const json = await res.json();
+      setSysvolResult(json.data);
+      showToast(json.message, json.success ? 'success' : 'error');
+    } catch (e) {
+      showToast('Error checking sysvol', 'error');
+    } finally {
+      setCheckingSysvol(false);
+    }
+  };
+
+  const handleSysvolReset = async () => {
+    if (!window.confirm('Deseja realmente restaurar as permissões e ACLs padrão do SYSVOL?')) return;
+    try {
+      setCheckingSysvol(true);
+      const res = await fetch('/api/health/sysvolreset', { method: 'POST' });
+      const json = await res.json();
+      setSysvolResult(json.data);
+      showToast(json.message, json.success ? 'success' : 'error');
+    } catch (e) {
+      showToast('Error resetting sysvol', 'error');
+    } finally {
+      setCheckingSysvol(false);
+    }
+  };
+
+  const copyScriptToClipboard = () => {
+    navigator.clipboard.writeText(psScript);
+    showToast(t.scriptCopied);
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* DRS Replication Status Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Layers className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-sm font-bold text-white">{t.drsTitle}</h3>
+          </div>
+          <button 
+            onClick={fetchDrs} 
+            className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 transition"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingDrs ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
+
+        {drs && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+              <span className="text-slate-400 font-sans">{t.dsaGuid}</span>
+              <div className="font-mono text-[11px] text-slate-200 truncate">{drs.dsa_guid || 'N/A'}</div>
+            </div>
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+              <span className="text-slate-400 font-sans">{t.invocationId}</span>
+              <div className="font-mono text-[11px] text-slate-200 truncate">{drs.invocation_id || 'N/A'}</div>
+            </div>
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+              <span className="text-slate-400 font-sans">{t.inboundNeighbors}</span>
+              <div className="font-mono text-sm font-bold text-emerald-400">{drs.inbound_neighbors_count}</div>
+            </div>
+            <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
+              <span className="text-slate-400 font-sans">{t.outboundNeighbors}</span>
+              <div className="font-mono text-sm font-bold text-sky-400">{drs.outbound_neighbors_count}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Database Integrity Check (dbcheck) Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Database className="w-4 h-4 text-emerald-400" />
+              <span>{t.dbcheckTitle}</span>
+            </h3>
+            <p className="text-xs text-slate-400">{t.dbcheckDesc}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+              <input 
+                type="checkbox" 
+                checked={fixDb} 
+                onChange={(e) => setFixDb(e.target.checked)} 
+                className="rounded bg-slate-950 border-slate-700 text-indigo-600"
+              />
+              <span>{t.fixErrors}</span>
+            </label>
+            <button 
+              onClick={handleDbCheck}
+              disabled={dbChecking}
+              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition flex items-center gap-1.5"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${dbChecking ? 'animate-spin' : ''}`} />
+              <span>{dbChecking ? 'Verificando...' : t.runDbcheck}</span>
+            </button>
+          </div>
+        </div>
+
+        {dbOutput && (
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] max-h-48 overflow-y-auto text-slate-300">
+            <pre className="whitespace-pre-wrap">{dbOutput.stdout || dbOutput.stderr}</pre>
+          </div>
+        )}
+      </div>
+
+      {/* SYSVOL ACLs Integrity Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <HardDrive className="w-4 h-4 text-amber-400" />
+              <span>{t.sysvolTitle}</span>
+            </h3>
+            <p className="text-xs text-slate-400">Verifique e restaure os descritores de segurança (NTACLs) das políticas de grupo (GPOs) no sysvol.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={handleSysvolCheck}
+              disabled={checkingSysvol}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition"
+            >
+              {t.runSysvolCheck}
+            </button>
+            <button 
+              onClick={handleSysvolReset}
+              disabled={checkingSysvol}
+              className="px-3 py-1.5 bg-amber-950 hover:bg-amber-900 border border-amber-800 text-amber-300 text-xs font-semibold rounded-lg transition"
+            >
+              {t.runSysvolReset}
+            </button>
+          </div>
+        </div>
+
+        {sysvolResult && (
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-[11px] text-slate-300">
+            <pre className="whitespace-pre-wrap">{sysvolResult.stdout || sysvolResult.stderr || 'Verificação concluída com sucesso!'}</pre>
+          </div>
+        )}
+      </div>
+
+      {/* Windows DC2 SYSVOL Replication Script */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white">{t.powershellScriptTitle}</h3>
+            <p className="text-xs text-slate-400">{t.powershellScriptDesc}</p>
+          </div>
+          <button 
+            onClick={copyScriptToClipboard}
+            className="flex items-center gap-1.5 bg-slate-800 hover:bg-indigo-950 hover:text-indigo-300 text-slate-300 text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-700 transition"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>{t.copyScript}</span>
+          </button>
+        </div>
+
+        <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-56 overflow-y-auto font-mono text-[11px] text-slate-300">
+          <pre className="whitespace-pre-wrap">{psScript}</pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 8. BACKUPS TAB
+// ==============================================================================
+function BackupsTab({ t, showToast }) {
+  const [backups, setBackups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+
+  const fetchBackups = async () => {
+    try {
+      setLoading(true);
+      const res = await fetch('/api/backups');
+      if (res.ok) {
+        const json = await res.json();
+        setBackups(json.data || []);
+      }
+    } catch (e) {
+      showToast('Failed to load backups', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBackups();
+  }, []);
+
+  const handleCreateBackup = async () => {
+    try {
+      setCreating(true);
+      const res = await fetch('/api/backups', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(data.message);
+        fetchBackups();
+      } else {
+        showToast(data.message, 'error');
+      }
+    } catch (e) {
+      showToast('Error creating backup', 'error');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <HardDrive className="w-4 h-4 text-indigo-400" />
+            <span>{t.backupsTitle}</span>
+          </h3>
+          <p className="text-xs text-slate-400">{t.backupsDesc}</p>
+        </div>
+        <button 
+          onClick={handleCreateBackup}
+          disabled={creating}
+          className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md flex items-center gap-1.5 shrink-0"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${creating ? 'animate-spin' : ''}`} />
+          <span>{creating ? t.creatingBackup : t.createBackup}</span>
+        </button>
+      </div>
+
+      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs font-mono">
+            <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-3 px-4">{t.filename}</th>
+                <th className="py-3 px-4">{t.size}</th>
+                <th className="py-3 px-4">{t.createdAt}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {backups.map((b) => (
+                <tr key={b.filename} className="hover:bg-slate-800/30 transition">
+                  <td className="py-3 px-4 text-slate-200 font-semibold">{b.filename}</td>
+                  <td className="py-3 px-4 text-emerald-400">{b.size_human}</td>
+                  <td className="py-3 px-4 text-slate-400">{b.created_at}</td>
+                </tr>
+              ))}
+              {backups.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="py-6 text-center text-slate-500 font-sans">
+                    Nenhum backup em /var/backups/samba. Clique em "Criar Backup Online Agora" para gerar um.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 9. ACTIVE DIRECTORY PROVISIONING WIZARD MODAL
+// ==============================================================================
+function WizardModal({ onClose, t, showToast }) {
+  const [step, setStep] = useState(1);
+  const [preflight, setPreflight] = useState(null);
+  const [loadingPreflight, setLoadingPreflight] = useState(true);
+  const [mode, setMode] = useState('new'); // 'new' | 'join'
+
+  // Form
+  const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
+  const [workgroup, setWorkgroup] = useState('SRVCLOUD');
+  const [adminPassword, setAdminPassword] = useState('Copa@@2026');
+  const [setupBind, setSetupBind] = useState(true);
+  const [targetDcIp, setTargetDcIp] = useState('192.168.2.10');
+  const [targetAdmin, setTargetAdmin] = useState('administrator');
+
+  // Execution
+  const [executing, setExecuting] = useState(false);
+  const [completedSteps, setCompletedSteps] = useState([]);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  useEffect(() => {
+    async function loadPreflight() {
+      try {
+        setLoadingPreflight(true);
+        const res = await fetch('/api/provision/preflight');
+        if (res.ok) {
+          const data = await res.json();
+          setPreflight(data);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoadingPreflight(false);
+      }
+    }
+    loadPreflight();
+  }, []);
+
+  const handleStartProvision = async () => {
+    setExecuting(true);
+    setCompletedSteps([]);
+    setErrorMsg(null);
+    setStep(4);
+
+    try {
+      const endpoint = mode === 'new' ? '/api/provision/new-dc' : '/api/provision/join-dc';
+      const payload = mode === 'new' ? {
+        realm,
+        workgroup,
+        hostname_fqdn: preflight?.fqdn || 'dc1.srvcloud.cloud',
+        admin_password: adminPassword,
+        dns_forwarder: setupBind ? '127.0.0.1:5353' : '8.8.8.8',
+        setup_bind_hybrid: setupBind,
+      } : {
+        realm,
+        target_dc_ip: targetDcIp,
+        admin_username: targetAdmin,
+        admin_password: adminPassword,
+      };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCompletedSteps(data.data?.steps_completed || []);
+        showToast(data.message);
+      } else {
+        setErrorMsg(data.message || 'Falha no provisionamento');
+        setCompletedSteps(data.data?.steps_completed || []);
+      }
+    } catch (e) {
+      setErrorMsg('Erro de comunicação com o servidor');
+    } finally {
+      setExecuting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        {/* Modal Header */}
+        <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Shield className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-base font-bold text-white tracking-wide">{t.wizardTitle}</h3>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg font-bold">&times;</button>
+        </div>
+
+        {/* Step Indicator */}
+        <div className="bg-slate-900/60 px-6 py-3 border-b border-slate-800/80 grid grid-cols-4 gap-2 text-center text-xs">
+          <span className={`py-1 rounded font-medium ${step === 1 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>1. Checagem</span>
+          <span className={`py-1 rounded font-medium ${step === 2 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>2. Topologia</span>
+          <span className={`py-1 rounded font-medium ${step === 3 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>3. Parâmetros</span>
+          <span className={`py-1 rounded font-medium ${step === 4 ? 'bg-indigo-600 text-white font-bold' : 'text-slate-400'}`}>4. Execução</span>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-6 overflow-y-auto space-y-4 text-xs flex-1">
+          {/* STEP 1: PREFLIGHT */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <div className="bg-emerald-950/50 border border-emerald-800/60 rounded-xl p-3.5 space-y-1">
+                <span className="font-bold text-emerald-300 flex items-center gap-1.5">
+                  <CheckCircle className="w-4 h-4 text-emerald-400" />
+                  <span>{t.firewallSafetyNotice}</span>
+                </span>
+              </div>
+
+              {loadingPreflight ? (
+                <div className="text-center py-8 text-slate-400 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
+                  <span>{t.preflightNotice}</span>
+                </div>
+              ) : preflight && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2 font-mono">
+                    <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[11px]">FQDN:</span>
+                      <div className="text-slate-200 font-bold">{preflight.fqdn}</div>
+                    </div>
+                    <div className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                      <span className="text-slate-400 text-[11px]">Endereço IP:</span>
+                      <div className="text-slate-200 font-bold">{preflight.ip_address}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="font-bold text-slate-200">Portas de Firewall do Active Directory:</span>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {preflight.ports_open.map((p, idx) => (
+                        <div key={idx} className="bg-slate-950 border border-slate-800/80 px-2.5 py-1.5 rounded flex items-center justify-between text-[11px]">
+                          <span className="font-mono text-slate-300">{p.port}/{p.proto}</span>
+                          <span className={`px-1.5 py-0.2 rounded font-sans text-[10px] ${
+                            p.open ? 'text-emerald-400 bg-emerald-950' : 'text-amber-400 bg-amber-950'
+                          }`}>
+                            {p.open ? 'Aberta' : 'Será Adicionada'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 2: CHOOSE TOPOLOGY */}
+          {step === 2 && (
+            <div className="space-y-3">
+              <label 
+                onClick={() => setMode('new')}
+                className={`block p-4 rounded-xl border cursor-pointer transition ${
+                  mode === 'new' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
+                  <input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} />
+                  <span>{t.provisionNewDc}</span>
+                </div>
+                <p className="text-slate-400 text-xs mt-1 pl-5">{t.provisionNewDcDesc}</p>
+              </label>
+
+              <label 
+                onClick={() => setMode('join')}
+                className={`block p-4 rounded-xl border cursor-pointer transition ${
+                  mode === 'join' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
+                  <input type="radio" checked={mode === 'join'} onChange={() => setMode('join')} />
+                  <span>{t.joinExistingDc}</span>
+                </div>
+                <p className="text-slate-400 text-xs mt-1 pl-5">{t.joinExistingDcDesc}</p>
+              </label>
+            </div>
+          )}
+
+          {/* STEP 3: PARAMETERS */}
+          {step === 3 && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">Domínio Kerberos (REALM) *</label>
+                <input 
+                  type="text" 
+                  value={realm} 
+                  onChange={(e) => setRealm(e.target.value.toUpperCase())} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 font-mono uppercase focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              {mode === 'new' && (
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">Workgroup NetBIOS *</label>
+                  <input 
+                    type="text" 
+                    value={workgroup} 
+                    onChange={(e) => setWorkgroup(e.target.value.toUpperCase())} 
+                    className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 font-mono uppercase focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {mode === 'join' && (
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">IP do DC Primário (DC1) *</label>
+                  <input 
+                    type="text" 
+                    value={targetDcIp} 
+                    onChange={(e) => setTargetDcIp(e.target.value)} 
+                    className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 font-mono focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-300 font-medium mb-1">{t.adminPasswordLabel} *</label>
+                <input 
+                  type="password" 
+                  value={adminPassword} 
+                  onChange={(e) => setAdminPassword(e.target.value)} 
+                  className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              {mode === 'new' && (
+                <div className="space-y-2 pt-2">
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-200">
+                    <input 
+                      type="checkbox" 
+                      checked={setupBind} 
+                      onChange={(e) => setSetupBind(e.target.checked)} 
+                      className="rounded bg-slate-950 border-slate-700 text-indigo-600"
+                    />
+                    <span>{t.bindHybridOption}</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer text-slate-200">
+                    <input type="checkbox" checked={true} readOnly className="rounded bg-slate-950 border-slate-700 text-indigo-600" />
+                    <span>{t.chronySignedOption}</span>
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 4: EXECUTION PROGRESS */}
+          {step === 4 && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                {executing && <RefreshCw className="w-5 h-5 animate-spin text-indigo-400" />}
+                {!executing && !errorMsg && <CheckCircle className="w-5 h-5 text-emerald-400" />}
+                {!executing && errorMsg && <AlertTriangle className="w-5 h-5 text-rose-400" />}
+                <h4 className="font-bold text-sm text-slate-100">
+                  {executing ? t.provisioningInProgress : errorMsg ? 'Erro no Provisionamento' : 'Provisionamento Concluído com Sucesso!'}
+                </h4>
+              </div>
+
+              {errorMsg && (
+                <div className="bg-rose-950/80 border border-rose-800 p-3 rounded-lg text-rose-200 font-mono">
+                  {errorMsg}
+                </div>
+              )}
+
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5 font-mono text-[11px]">
+                {completedSteps.map((st, i) => (
+                  <div key={i} className="flex items-center gap-2 text-emerald-400">
+                    <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{st}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer Controls */}
+        <div className="bg-slate-950 px-6 py-3 border-t border-slate-800 flex justify-between items-center text-xs">
+          {step > 1 && step < 4 && (
+            <button 
+              onClick={() => setStep(step - 1)}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+            >
+              Voltar
+            </button>
+          )}
+          {step === 1 && <div />}
+
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={onClose}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition"
+            >
+              {step === 4 ? 'Fechar' : t.cancel}
+            </button>
+            {step < 3 && (
+              <button 
+                onClick={() => setStep(step + 1)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg transition"
+              >
+                Avançar
+              </button>
+            )}
+            {step === 3 && (
+              <button 
+                onClick={handleStartProvision}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition shadow-md"
+              >
+                {t.startProvisioning}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
