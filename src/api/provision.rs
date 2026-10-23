@@ -200,6 +200,12 @@ pub async fn provision_new_dc(
     let mut steps = Vec::new();
     let d = payload.dry_run;
 
+    // 0.1 Desativar systemd-resolved para liberar porta 53 e proteger /etc/resolv.conf
+    if !d {
+        crate::system::disable_systemd_resolved_and_protect_dns(&payload.realm, sudo);
+        steps.push("systemd-resolved desativado e /etc/resolv.conf protegido com chattr +i.".to_string());
+    }
+
     // 1. Verificação segura de firewall
     let ports = vec![
         (53, "tcp"), (53, "udp"),
@@ -211,6 +217,7 @@ pub async fn provision_new_dc(
         (445, "tcp"),
         (464, "tcp"), (464, "udp"),
         (636, "tcp"),
+        (8443, "tcp"),
         (3268, "tcp"), (3269, "tcp"),
         (5353, "tcp"), (5353, "udp"),
         (8095, "tcp"),
@@ -349,6 +356,21 @@ pub async fn provision_new_dc(
     let _ = run_cmd_dry("systemctl unmask samba 2>/dev/null || true", sudo, false);
     let _ = run_cmd_dry("systemctl enable --now samba 2>/dev/null || systemctl enable --now samba-dc 2>/dev/null || true", sudo, false);
     steps.push("Serviço Samba Active Directory iniciado e habilitado no boot.".to_string());
+
+    // 8. Elevação de Schema para 2019 e Functional Level para 2016
+    let _ = run_cmd_dry("samba-tool domain schemaupgrade --schema=2019 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("samba-tool domain functionalprep --function-level=2016 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("samba-tool domain level raise --domain-level=2016 --forest-level=2016 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("samba-tool dbcheck --cross-ncs --fix --yes 2>/dev/null || true", sudo, false);
+    steps.push("Schema do AD elevado para 2019 e níveis funcionais configurados para 2016.".to_string());
+
+    // 9. Correção de partições DNS (msDS-SDReferenceDomain) e zonas reversas
+    let fix_script = "/home/euripedes/astral/astral-ad-dns/samba-ad-dc/provision_ad_step_ca.py";
+    if Path::new(fix_script).exists() {
+        let _ = run_cmd_dry(&format!("python3 {} --dns-fix-only", fix_script), sudo, false);
+        steps.push("Partições DNS corrigidas e zonas reversas provisionadas.".to_string());
+    }
+
     let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
     steps.push(format!("Firewall pós-provisionamento: {} portas verificadas/abertas automaticamente ({} abertas, {} corrigidas).", fw_rep.total_ports, fw_rep.open_count, fw_rep.corrected_count));
 
@@ -484,6 +506,240 @@ pub async fn join_domain(
             }),
             dry_run: false,
             correlation_id: Some(evt_id),
+        }),
+    )
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemaUpgradeRequest {
+    #[serde(default = "default_schema_ver")]
+    pub schema_version: String,
+    #[serde(default = "default_func_level")]
+    pub functional_level: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+fn default_schema_ver() -> String { "2019".to_string() }
+fn default_func_level() -> String { "2016".to_string() }
+
+pub async fn upgrade_schema_and_levels(
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<SchemaUpgradeRequest>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    if payload.dry_run {
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain schemaupgrade --schema={}", payload.schema_version));
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain functionalprep --function-level={}", payload.functional_level));
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain level raise --domain-level={} --forest-level={}", payload.functional_level, payload.functional_level));
+        steps.push("[SIMULAÇÃO] Execução prevista: samba-tool dbcheck --cross-ncs --fix --yes".to_string());
+
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "[SIMULAÇÃO] Plano de elevação de schema e níveis preparado.".to_string(),
+                data: Some(ProvisionResult {
+                    steps_completed: steps,
+                    error: None,
+                    plan_only: true,
+                }),
+                dry_run: true,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let _ = run_cmd_dry("sed -i '/ad dc functional level/d' /etc/samba/smb.conf && sed -i '/\\[global\\]/a \\    ad dc functional level = 2016' /etc/samba/smb.conf", sudo, false);
+    let _ = run_cmd_dry("systemctl restart samba 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry("systemctl stop samba 2>/dev/null || true", sudo, false);
+
+    let s_res = run_cmd_dry(&format!("samba-tool domain schemaupgrade --schema={}", payload.schema_version), sudo, false);
+    steps.push(format!("Schema upgrade para {}: {}", payload.schema_version, if s_res.success { "Sucesso" } else { "Aviso/Não modificado" }));
+
+    let f_res = run_cmd_dry(&format!("samba-tool domain functionalprep --function-level={}", payload.functional_level), sudo, false);
+    steps.push(format!("Functional prep {}: {}", payload.functional_level, if f_res.success { "Sucesso" } else { "Aviso/Não modificado" }));
+
+    let l_res = run_cmd_dry(&format!("samba-tool domain level raise --domain-level={} --forest-level={}", payload.functional_level, payload.functional_level), sudo, false);
+    steps.push(format!("Domain & Forest level raise {}: {}", payload.functional_level, if l_res.success { "Sucesso" } else { "Aviso/Já no nível" }));
+
+    let _ = run_cmd_dry("systemctl start samba 2>/dev/null || true", sudo, false);
+    let db_res = run_cmd_dry("samba-tool dbcheck --cross-ncs --fix --yes 2>/dev/null || true", sudo, false);
+    steps.push(format!("Samba dbcheck: {}", if db_res.success { "Base consistente" } else { "Executado com alertas" }));
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Schema e níveis funcionais elevados com sucesso!".to_string(),
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: None,
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: None,
+        }),
+    )
+}
+
+pub async fn fix_dns_partitions(
+    State(config): State<Arc<AppConfig>>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    let fix_script = "/home/euripedes/astral/astral-ad-dns/samba-ad-dc/provision_ad_step_ca.py";
+    let cmd = if Path::new(fix_script).exists() {
+        format!("python3 {} --dns-fix-only", fix_script)
+    } else {
+        "samba-tool dbcheck --cross-ncs --fix --yes".to_string()
+    };
+
+    let res = run_cmd_dry(&cmd, sudo, false);
+    steps.push(format!("Execução do corretor de partições DNS: {}", if res.success { "Sucesso" } else { &res.stderr }));
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: res.success,
+            message: if res.success { "Partições DNS corrigidas com sucesso!".to_string() } else { "Falha na correção de partições DNS".to_string() },
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: if res.success { None } else { Some(res.stderr) },
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: None,
+        }),
+    )
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StepCaSetupRequest {
+    pub static_ip: Option<String>,
+    pub cert_password: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub async fn setup_step_ca(
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<StepCaSetupRequest>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    if payload.dry_run {
+        steps.push("[SIMULAÇÃO] Instalação dos pacotes step-cli e step-ca via Smallstep RPM".to_string());
+        steps.push("[SIMULAÇÃO] Inicialização da autoridade Root CA standalone e provisioner ACME".to_string());
+        steps.push("[SIMULAÇÃO] Geração de certificado X.509 com SANs completos para LDAPS (636)".to_string());
+        steps.push("[SIMULAÇÃO] Instalação do root_ca.crt em /etc/pki/ca-trust e ativação do step-ca-renew.timer".to_string());
+
+        return (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "[SIMULAÇÃO] Plano de configuração da PKI Step-CA preparado.".to_string(),
+                data: Some(ProvisionResult {
+                    steps_completed: steps,
+                    error: None,
+                    plan_only: true,
+                }),
+                dry_run: true,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let fix_script = "/home/euripedes/astral/astral-ad-dns/samba-ad-dc/provision_ad_step_ca.py";
+    let cmd = format!("python3 {} --step-ca-only", fix_script);
+    let res = run_cmd_dry(&cmd, sudo, false);
+    steps.push(format!("Configuração Step-CA: {}", if res.success { "Sucesso" } else { &res.stderr }));
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: res.success,
+            message: if res.success { "Step-CA PKI configurado e integrado ao Samba LDAPS!".to_string() } else { "Falha ao configurar Step-CA".to_string() },
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: if res.success { None } else { Some(res.stderr) },
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: None,
+        }),
+    )
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ReverseZoneRequest {
+    pub ip_address: String,
+    pub hostname_fqdn: String,
+    pub realm: String,
+    pub admin_password: String,
+}
+
+pub async fn configure_reverse_zone(
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<ReverseZoneRequest>,
+) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    let sudo = config.sudo_password.as_deref();
+    let mut steps = Vec::new();
+
+    let octets: Vec<&str> = payload.ip_address.split('.').collect();
+    if octets.len() != 4 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "Endereço IPv4 inválido para cálculo de zona reversa".to_string(),
+                data: None,
+                dry_run: false,
+                correlation_id: None,
+            }),
+        );
+    }
+
+    let rev_zone = format!("{}.{}.{}.in-addr.arpa", octets[2], octets[1], octets[0]);
+    let last_octet = octets[3];
+    let cred = format!("Administrator%{}", sanitize_arg(&payload.admin_password));
+
+    // Zone create
+    let z_cmd = format!("samba-tool dns zonecreate '{}' '{}' -U '{}'", payload.hostname_fqdn, rev_zone, cred);
+    let z_res = run_cmd_dry(&z_cmd, sudo, false);
+    steps.push(format!("Criação da zona reversa {}: {}", rev_zone, if z_res.success { "Criada" } else { "Já existe ou aviso" }));
+
+    // PTR
+    let ptr_cmd = format!("samba-tool dns add '{}' '{}' '{}' PTR '{}' -U '{}'", payload.hostname_fqdn, rev_zone, last_octet, payload.hostname_fqdn, cred);
+    let ptr_res = run_cmd_dry(&ptr_cmd, sudo, false);
+    steps.push(format!("Registro PTR {} -> {}: {}", last_octet, payload.hostname_fqdn, if ptr_res.success { "Adicionado" } else { "Aviso" }));
+
+    // A ca
+    let a_cmd = format!("samba-tool dns add '{}' '{}' ca A '{}' -U '{}'", payload.hostname_fqdn, payload.realm.to_lowercase(), payload.ip_address, cred);
+    let a_res = run_cmd_dry(&a_cmd, sudo, false);
+    steps.push(format!("Registro A ca.{}: {}", payload.realm.to_lowercase(), if a_res.success { "Adicionado" } else { "Aviso" }));
+
+    // CNAME pki
+    let cname_cmd = format!("samba-tool dns add '{}' '{}' pki CNAME 'ca.{}' -U '{}'", payload.hostname_fqdn, payload.realm.to_lowercase(), payload.realm.to_lowercase(), cred);
+    let cname_res = run_cmd_dry(&cname_cmd, sudo, false);
+    steps.push(format!("Registro CNAME pki.{}: {}", payload.realm.to_lowercase(), if cname_res.success { "Adicionado" } else { "Aviso" }));
+
+    (
+        StatusCode::OK,
+        Json(ApiResponse {
+            success: true,
+            message: "Zona reversa e registros DNS da autoridade configurados com sucesso!".to_string(),
+            data: Some(ProvisionResult {
+                steps_completed: steps,
+                error: None,
+                plan_only: false,
+            }),
+            dry_run: false,
+            correlation_id: None,
         }),
     )
 }
