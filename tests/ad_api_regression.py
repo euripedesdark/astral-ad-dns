@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""HTTP regressions with Samba/system commands replaced by isolated fakes.
+Run: cargo build --locked --bin astral-ad-dns && python3 tests/ad_api_regression.py
+Never talks to an AD or changes the host's firewall/services.
+"""
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+FAKE = '''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+with open(os.environ['AD_TEST_LOG'], 'a') as f:
+    f.write(json.dumps([name, *args]) + '\\n')
+if name == 'testparm':
+    print('PRIMARY')
+elif name == 'hostname':
+    print('primary' if args == ['-s'] else '192.0.2.10')
+elif name == 'systemctl':
+    sys.exit(1)
+elif name == 'samba-tool':
+    if args == ['computer', 'list']:
+        print('DC-DESKTOP$\\nSECONDARY$\\nPRIMARY$')
+    elif args[:2] == ['computer', 'show']:
+        dc = args[2].rstrip('$') in ['SECONDARY', 'PRIMARY']
+        print('sAMAccountName: ' + args[2].rstrip('$') + '$')
+        print('userAccountControl: ' + ('532480' if dc else '4096'))
+        print('primaryGroupID: ' + ('516' if dc else '515'))
+        print('dNSHostName: 127.0.0.1')
+    elif args == ['fsmo', 'show']:
+        print('SchemaMasterRole owner: CN=NTDS Settings,CN=' + Path(os.environ['AD_TEST_LOG']).with_name('fsmo').read_text() + ',CN=Servers')
+    elif args[:2] == ['ou', 'list']:
+        print("OU=R&D's Lab,DC=example,DC=test")
+    elif args[:2] == ['ou', 'delete'] and '--force-subtree-delete' not in args:
+        print('OU is not empty', file=sys.stderr)
+        sys.exit(1)
+    else:
+        print('Success')
+'''
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix='astral-ad-test-') as temp:
+        tmp = Path(temp)
+        executable = tmp / 'fake'
+        executable.write_text(FAKE)
+        executable.chmod(0o755)
+        (tmp / 'fsmo').write_text('PRIMARY')
+        for name in ['testparm', 'hostname', 'systemctl', 'samba-tool', 'iptables',
+                     'ip6tables', 'ss', 'firewall-cmd', 'nft']:
+            (tmp / name).symlink_to(executable)
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        env = dict(os.environ, PATH=str(tmp) + os.pathsep + os.environ['PATH'],
+                   AD_TEST_LOG=str(tmp / 'calls.jsonl'), ASTRAL_BIND_ADDR=f'127.0.0.1:{port}',
+                   ASTRAL_WEB_DIST=str(ROOT / 'web/dist'))
+        proc = subprocess.Popen([str(ROOT / 'target/debug/astral-ad-dns')], cwd=ROOT,
+                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def request(method, path, payload=None):
+            req = urllib.request.Request(f'http://127.0.0.1:{port}' + path,
+                data=json.dumps(payload).encode() if payload is not None else None,
+                headers={'Content-Type': 'application/json'}, method=method)
+            try:
+                response = urllib.request.urlopen(req, timeout=5)
+            except urllib.error.HTTPError as error:
+                response = error
+            return response.status, json.load(response)
+        def calls():
+            return [json.loads(line) for line in (tmp / 'calls.jsonl').read_text().splitlines()]
+        try:
+            for _ in range(100):
+                if proc.poll() is not None:
+                    raise RuntimeError('Test server exited')
+                try:
+                    status, data = request('GET', '/api/computers')
+                    break
+                except (OSError, urllib.error.URLError):
+                    time.sleep(.05)
+            assert status == 200, data
+            assert data['data'][0]['is_dc'] is False, data
+            assert data['data'][1]['is_dc'] is True, data
+            assert data['data'][2]['is_local'] is True, data
+            assert request('DELETE', '/api/computers/DC-DESKTOP%24')[0] == 200
+            assert ['samba-tool', 'computer', 'delete', 'DC-DESKTOP'] in calls()
+            assert request('DELETE', '/api/computers/PRIMARY%24')[0] == 403
+            assert request('DELETE', '/api/computers/SECONDARY%24')[0] == 409
+            (tmp / 'fsmo').write_text('SECONDARY')
+            assert request('DELETE', '/api/computers/SECONDARY%24?remove_dead_dc=true')[0] == 409
+            (tmp / 'fsmo').write_text('PRIMARY')
+            assert request('DELETE', '/api/computers/SECONDARY%24?remove_dead_dc=true')[0] == 200
+            assert ['samba-tool', 'domain', 'demote', '--remove-other-dead-server=SECONDARY'] in calls()
+            group = "R&D's #1 / Brasil"
+            assert request('DELETE', '/api/groups/' + urllib.parse.quote(group, safe=''))[0] == 200
+            assert ['samba-tool', 'group', 'delete', group] in calls()
+            assert request('DELETE', '/api/groups/Domain%20Admins')[0] == 403
+            ou = "OU=R&D's Lab,DC=example,DC=test"
+            path = '/api/ou/' + urllib.parse.quote(ou, safe='')
+            assert request('DELETE', path)[0] == 400
+            assert request('DELETE', path + '?recursive=true')[0] == 200
+            assert ['samba-tool', 'ou', 'delete', ou, '--force-subtree-delete'] in calls()
+            assert request('DELETE', '/api/ou/OU%3DDomain%20Controllers%2CDC%3Dexample%2CDC%3Dtest?recursive=true')[0] == 403
+            before = len(calls())
+            assert request('DELETE', path + '?recursive=true&dry_run=true')[0] == 200
+            assert len(calls()) == before, 'Dry run executed a mutation'
+            # Backend rejection occurs before filesystem or service changes.
+            for role in ['DC', 'RODC']:
+                before = len(calls())
+                status, result = request('POST', '/api/provision/join-dc', {
+                    'realm': 'EXAMPLE.TEST', 'target_dc_ip': '192.0.2.10',
+                    'admin_username': 'Administrator', 'admin_password': 'test-only-password',
+                    'domain_role': role, 'dns_backend': 'BIND9_DLZ', 'dry_run': False})
+                assert status == 400, result
+                assert len(calls()) == before
+            before = len(calls())
+            status, result = request('POST', '/api/provision/new-dc', {
+                'realm': 'EXAMPLE.TEST', 'workgroup': 'EXAMPLE',
+                'hostname_fqdn': 'primary.example.test', 'admin_password': 'test-only-password',
+                'dns_backend': 'BIND9_DLZ', 'dry_run': False})
+            assert status == 400, result
+            assert len(calls()) == before
+            print('PASS: computer/DC detection and deletion, local DC protection, DC metadata cleanup, '
+                  'group/OU special characters, recursive OU opt-in, protected objects, dry-run and DLZ rejection')
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+
+if __name__ == '__main__':
+    main()

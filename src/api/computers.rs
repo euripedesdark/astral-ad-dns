@@ -6,13 +6,43 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg};
-use crate::api::users::{ApiResponse, ActionQuery};
+use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
+use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ComputerItem {
     pub name: String,
     pub is_dc: bool,
+    pub is_local: bool,
+}
+
+#[derive(Deserialize, Default)]
+pub struct DeleteComputerQuery {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub remove_dead_dc: bool,
+}
+
+fn ldif_value(ldif: &str, key: &str) -> String {
+    ldif.lines().find_map(|line| {
+        let (attribute, value) = line.split_once(": ")?;
+        if attribute.eq_ignore_ascii_case(key) { Some(value.trim().to_string()) } else { None }
+    }).unwrap_or_default()
+}
+
+fn is_domain_controller(ldif: &str) -> bool {
+    let flags = ldif_value(ldif, "userAccountControl").parse::<u32>().unwrap_or(0);
+    flags & 0x2000 != 0 || ldif_value(ldif, "primaryGroupID") == "521"
+}
+
+fn local_netbios(sudo: Option<&str>) -> String {
+    let result = run_cmd_dry("testparm -s --parameter-name='netbios name' 2>/dev/null", sudo, false);
+    if result.success && !result.stdout.trim().is_empty() {
+        result.stdout.trim().to_uppercase()
+    } else {
+        run_cmd_dry("hostname -s", sudo, false).stdout.trim().to_uppercase()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -40,18 +70,9 @@ pub async fn get_computer_properties(
     let sudo = config.sudo_password.as_deref();
     let clean_name = computername.trim_end_matches('$').trim().to_uppercase();
 
-    // 1. Consulta no LDB do Samba para obter atributos do computador
-    let ldb_cmd = format!(
-        "ldbsearch -H /var/lib/samba/private/sam.ldb '(|(sAMAccountName={}$)(sAMAccountName={}))'",
-        clean_name, clean_name
-    );
+    let ldb_cmd = format!("samba-tool computer show {}", shell_quote(&clean_name));
     let ldb_res = run_cmd_dry(&ldb_cmd, sudo, false);
-
-    let raw_ldif = if ldb_res.success {
-        ldb_res.stdout.clone()
-    } else {
-        String::new()
-    };
+    let raw_ldif = ldb_res.stdout.clone();
 
     let mut distinguished_name = format!("CN={},CN=Computers", clean_name);
     let mut dns_hostname = String::new();
@@ -59,20 +80,14 @@ pub async fn get_computer_properties(
     let mut operating_system_version = String::new();
     let mut when_created = String::new();
     let mut last_logon = String::new();
-    let mut is_dc = clean_name.contains("DC") || computername.ends_with('$');
+    let is_dc = is_domain_controller(&raw_ldif);
 
     for line in raw_ldif.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("dn:") {
             distinguished_name = trimmed.trim_start_matches("dn:").trim().to_string();
-            if distinguished_name.to_uppercase().contains("OU=DOMAIN CONTROLLERS") {
-                is_dc = true;
-            }
         } else if trimmed.starts_with("distinguishedName:") {
             distinguished_name = trimmed.trim_start_matches("distinguishedName:").trim().to_string();
-            if distinguished_name.to_uppercase().contains("OU=DOMAIN CONTROLLERS") {
-                is_dc = true;
-            }
         } else if trimmed.starts_with("dNSHostName:") {
             dns_hostname = trimmed.trim_start_matches("dNSHostName:").trim().to_lowercase();
         } else if trimmed.starts_with("operatingSystem:") {
@@ -216,16 +231,18 @@ pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
         });
     }
 
-    let computers: Vec<ComputerItem> = res
-        .stdout
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|s| !s.is_empty())
+    let local = local_netbios(sudo);
+    let computers: Vec<ComputerItem> = res.stdout.lines()
+        .map(str::trim).filter(|name| !name.is_empty())
         .map(|name| {
-            let is_dc = name.to_uppercase().contains("DC") || name.ends_with('$');
-            ComputerItem { name, is_dc }
-        })
-        .collect();
+            let clean = name.trim_end_matches('$');
+            let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(clean)), sudo, false);
+            ComputerItem {
+                name: name.to_string(),
+                is_dc: is_domain_controller(&details.stdout),
+                is_local: clean.eq_ignore_ascii_case(&local),
+            }
+        }).collect();
 
     Json(ApiResponse {
         success: true,
@@ -301,27 +318,49 @@ pub async fn create_computer(
 
 pub async fn delete_computer(
     Path(computername): Path<String>,
-    Query(q): Query<ActionQuery>,
+    Query(q): Query<DeleteComputerQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let sudo = config.sudo_password.as_deref();
 
-    // TRAVA DE SEGURANÇA: Não permitir exclusão acidental do controlador de domínio principal!
-    let upper = computername.to_uppercase();
-    if upper.contains("DC-ERP") {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Operação bloqueada: '{}' é o Controlador de Domínio (DC) do cluster e não pode ser excluído", computername),
-                data: None,
-                dry_run: q.dry_run,
-                correlation_id: None,
-            }),
-        );
+    let name = computername.trim().trim_end_matches('$').to_uppercase();
+    let fail = |status, message: String| (status, Json(ApiResponse::<()> {
+        success: false, message, data: None, dry_run: q.dry_run, correlation_id: None,
+    }));
+    if name.is_empty() || name.starts_with('-') || name.contains(['\n', '\r', '\0']) {
+        return fail(StatusCode::BAD_REQUEST, "Nome de computador inválido".into());
     }
-
-    let cmd = format!("samba-tool computer delete '{}'", sanitize_arg(&computername));
+    let local = local_netbios(sudo);
+    if local.is_empty() || name.eq_ignore_ascii_case(&local) {
+        return fail(StatusCode::FORBIDDEN, "Não é permitido excluir o próprio servidor do AD.".into());
+    }
+    let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&name)), sudo, false);
+    if !details.success {
+        return fail(StatusCode::BAD_REQUEST, format!("Falha ao consultar computador: {}", details.stderr));
+    }
+    let cmd = if is_domain_controller(&details.stdout) {
+        if !q.remove_dead_dc {
+            return fail(StatusCode::CONFLICT, "DC exige despromoção. Para DC permanentemente desativado, confirme a limpeza de metadados.".into());
+        }
+        let fsmo = run_cmd_dry("samba-tool fsmo show", sudo, false);
+        let marker = format!("CN=NTDS SETTINGS,CN={},", name);
+        if !fsmo.success || fsmo.stdout.to_uppercase().contains(&marker) {
+            return fail(StatusCode::CONFLICT, "Não foi possível liberar o DC: verifique/transfira suas funções FSMO antes da remoção.".into());
+        }
+        let host = ldif_value(&details.stdout, "dNSHostName");
+        if host.is_empty() {
+            return fail(StatusCode::CONFLICT, "DC sem dNSHostName: não foi possível verificar seu estado.".into());
+        }
+        use std::net::{TcpStream, ToSocketAddrs};
+        if let Ok(addresses) = (host.as_str(), 389).to_socket_addrs() {
+            if addresses.into_iter().any(|addr| TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(2)).is_ok()) {
+                return fail(StatusCode::CONFLICT, "DC ainda está acessível. Execute samba-tool domain demote no DC secundário antes de removê-lo.".into());
+            }
+        }
+        format!("samba-tool domain demote --remove-other-dead-server={}", shell_quote(&name))
+    } else {
+        format!("samba-tool computer delete {}", shell_quote(&name))
+    };
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
     let evt_id = config.audit.record(
@@ -360,5 +399,18 @@ pub async fn delete_computer(
                 correlation_id: Some(evt_id),
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dc_detection_uses_directory_attributes() {
+        assert!(!is_domain_controller("sAMAccountName: DC-DESKTOP$\nuserAccountControl: 4096\nprimaryGroupID: 515"));
+        assert!(is_domain_controller("userAccountControl: 532480\nprimaryGroupID: 516"));
+        assert!(is_domain_controller("userAccountControl: 67112960\nprimaryGroupID: 521"));
+        assert!(!is_domain_controller(""));
     }
 }

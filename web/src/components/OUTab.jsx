@@ -1,3 +1,4 @@
+import { confirmAction } from './ConfirmationDialog';
 import React, { useState, useEffect } from 'react';
 import { FolderTree, Plus, Trash2, RefreshCw, Search, Users, Server, Layers, X, CheckCircle, AlertTriangle } from 'lucide-react';
 
@@ -73,12 +74,11 @@ export default function OUTab({ t, showToast, customFetch }) {
       showToast('Não é permitido excluir a OU de sistema Domain Controllers', 'error');
       return;
     }
-    if (!window.confirm(`Deseja realmente excluir a Unidade Organizacional '${ou.name}'?\n\nDN: ${ou.dn}`)) {
-      return;
-    }
+    const recursive = await confirmAction(`Excluir também todos os objetos dentro de '${ou.name}'?\n\nEscolha como prosseguir.`, { confirmLabel: 'Excluir conteúdo também', cancelLabel: 'Somente OU vazia' });
+    if (!await confirmAction(`Confirmar exclusão ${recursive ? 'da OU e TODOS os seus objetos' : 'somente da OU vazia'}?\n\nDN: ${ou.dn}`)) return;
 
     try {
-      const res = await customFetch(`/api/ou/${encodeURIComponent(ou.dn)}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/ou/${encodeURIComponent(ou.dn)}?recursive=${recursive}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message || 'OU excluída com sucesso');

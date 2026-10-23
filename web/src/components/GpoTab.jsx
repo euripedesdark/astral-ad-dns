@@ -1,3 +1,4 @@
+import { confirmAction } from './ConfirmationDialog';
 import React, { useState, useEffect } from 'react';
 import { Sliders, Plus, Trash2, Link, Unlink, RefreshCw, Search, FileText, Image, Terminal, Lock, HardDrive, CheckCircle, X } from 'lucide-react';
 
@@ -105,7 +106,7 @@ export default function GpoTab({ t, showToast, customFetch }) {
       showToast('Não é permitido excluir diretivas padrão do Active Directory', 'error');
       return;
     }
-    if (!window.confirm(`Deseja realmente excluir a Diretiva '${gpo.display_name}' (${gpo.guid})?`)) {
+    if (!await confirmAction(`Deseja realmente excluir a Diretiva '${gpo.display_name}' (${gpo.guid})?`)) {
       return;
     }
 
@@ -148,7 +149,7 @@ export default function GpoTab({ t, showToast, customFetch }) {
   };
 
   const handleUnlinkGpo = async (guid, containerDn) => {
-    if (!window.confirm(`Remover vínculo da política com '${containerDn}'?`)) return;
+    if (!await confirmAction(`Remover vínculo da política com '${containerDn}'?`)) return;
 
     try {
       const res = await customFetch(`/api/gpo/${encodeURIComponent(guid)}/link/${encodeURIComponent(containerDn)}`, {

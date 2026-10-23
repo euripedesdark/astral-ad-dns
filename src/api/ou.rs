@@ -6,8 +6,21 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg};
-use crate::api::users::{ApiResponse, ActionQuery};
+use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
+use crate::api::users::ApiResponse;
+
+#[derive(Deserialize, Default)]
+pub struct DeleteOuQuery {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+fn is_system_ou(dn: &str) -> bool {
+    let upper = dn.to_uppercase();
+    upper == "OU=DOMAIN CONTROLLERS" || upper.starts_with("OU=DOMAIN CONTROLLERS,DC=")
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OuItem {
@@ -36,7 +49,7 @@ pub struct CreateOuRequest {
 
 pub async fn list_ous(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<OuItem>>> {
     let sudo = config.sudo_password.as_deref();
-    let res = run_cmd_dry("samba-tool ou list", sudo, false);
+    let res = run_cmd_dry("samba-tool ou list --full-dn", sudo, false);
 
     if !res.success {
         return Json(ApiResponse {
@@ -58,7 +71,7 @@ pub async fn list_ous(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<
         let dn = trimmed.to_string();
         let name = dn.split(',').next().unwrap_or(&dn).trim_start_matches("OU=").to_string();
         let parent_dn = dn.split_once(',').map(|(_, rest)| rest.to_string()).unwrap_or_default();
-        let is_system = name.to_uppercase() == "DOMAIN CONTROLLERS";
+        let is_system = is_system_ou(&dn);
 
         ous.push(OuItem {
             dn,
@@ -162,14 +175,13 @@ pub async fn create_ou(
 
 pub async fn delete_ou(
     Path(ou_dn): Path<String>,
-    Query(q): Query<ActionQuery>,
+    Query(q): Query<DeleteOuQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let sudo = config.sudo_password.as_deref();
 
     // TRAVA DE SEGURANÇA: Jamais permitir exclusão de Domain Controllers
-    let up = ou_dn.to_uppercase();
-    if up.contains("DOMAIN CONTROLLERS") {
+    if is_system_ou(&ou_dn) {
         return (
             StatusCode::FORBIDDEN,
             Json(ApiResponse {
@@ -182,7 +194,8 @@ pub async fn delete_ou(
         );
     }
 
-    let cmd = format!("samba-tool ou delete '{}'", sanitize_arg(&ou_dn));
+    let cmd = format!("samba-tool ou delete {}{}", shell_quote(&ou_dn),
+        if q.recursive { " --force-subtree-delete" } else { "" });
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
     let evt_id = config.audit.record(
@@ -211,7 +224,7 @@ pub async fn delete_ou(
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: format!("Falha ao excluir Unidade Organizacional: {}", res.stderr),
+                message: format!("Falha ao excluir Unidade Organizacional (OU com objetos exige exclusão recursiva explícita): {}", res.stderr),
                 data: None,
                 dry_run: q.dry_run,
                 correlation_id: Some(evt_id),
@@ -225,7 +238,7 @@ pub async fn list_ou_objects(
     State(config): State<Arc<AppConfig>>,
 ) -> Json<ApiResponse<Vec<OuObjectItem>>> {
     let sudo = config.sudo_password.as_deref();
-    let cmd = format!("samba-tool ou listobjects '{}'", sanitize_arg(&ou_dn));
+    let cmd = format!("samba-tool ou listobjects {} --full-dn", shell_quote(&ou_dn));
     let res = run_cmd_dry(&cmd, sudo, false);
 
     let mut objects = Vec::new();

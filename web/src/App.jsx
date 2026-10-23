@@ -12,6 +12,7 @@ import ComputerPropertiesModal from './components/ComputerPropertiesModal';
 import UserPropertiesModal from './components/UserPropertiesModal';
 import RestoreBackupModal from './components/RestoreBackupModal';
 import OUTab from './components/OUTab';
+import ConfirmationDialog, { confirmAction } from './components/ConfirmationDialog';
 import GpoTab from './components/GpoTab';
 
 
@@ -44,6 +45,10 @@ const customFetch = (url, opts = {}) => {
 };
 
 export default function App() {
+  return <><ConfirmationDialog /><Application /></>;
+}
+
+function Application() {
   const [lang, setLang] = useState(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("astral_lang");
@@ -1015,7 +1020,7 @@ function UsersTab({ t, showToast }) {
   };
 
   const handleDeleteUser = async (username) => {
-    if (!window.confirm(`${t.confirmDeleteUser} '${username}'?`)) return;
+    if (!await confirmAction(`${t.confirmDeleteUser} '${username}'?`)) return;
     try {
       const res = await customFetch(`/api/users/${username}`, { method: 'DELETE' });
       const data = await res.json();
@@ -1592,7 +1597,7 @@ function GroupsTab({ t, showToast }) {
     setSelectedGroup(groupname);
     setMembers([]);
     try {
-      const res = await customFetch(`/api/groups/${groupname}/members`);
+      const res = await customFetch(`/api/groups/${encodeURIComponent(groupname)}/members`);
       if (res.ok) {
         const json = await res.json();
         setMembers(json.data || []);
@@ -1607,7 +1612,7 @@ function GroupsTab({ t, showToast }) {
     if (!newMemberUsername.trim() || !selectedGroup) return;
 
     try {
-      const res = await customFetch(`/api/groups/${selectedGroup}/members`, {
+      const res = await customFetch(`/api/groups/${encodeURIComponent(selectedGroup)}/members`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: newMemberUsername })
@@ -1626,9 +1631,9 @@ function GroupsTab({ t, showToast }) {
   };
 
   const handleRemoveMember = async (username) => {
-    if (!window.confirm(`Remover ${username} do grupo ${selectedGroup}?`)) return;
+    if (!await confirmAction(`Remover ${username} do grupo ${selectedGroup}?`)) return;
     try {
-      const res = await customFetch(`/api/groups/${selectedGroup}/members/${username}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/groups/${encodeURIComponent(selectedGroup)}/members/${encodeURIComponent(username)}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1667,9 +1672,9 @@ function GroupsTab({ t, showToast }) {
   };
 
   const handleDeleteGroup = async (groupname) => {
-    if (!window.confirm(`Excluir o grupo ${groupname}?`)) return;
+    if (!await confirmAction(`Excluir o grupo ${groupname}?`)) return;
     try {
-      const res = await customFetch(`/api/groups/${groupname}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/groups/${encodeURIComponent(groupname)}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -1926,9 +1931,14 @@ function ComputersTab({ t, showToast }) {
   };
 
   const handleDeleteComputer = async (name) => {
-    if (!window.confirm(`Excluir conta de computador ${name}?`)) return;
+    const computer = computers.find(c => c.name === name);
+    const deadDc = !!computer?.is_dc;
+    const warning = deadDc
+      ? `Remover os metadados do DC desativado ${name}? Confirme que ele foi desligado permanentemente e não voltará ao domínio. Para DC ativo, execute samba-tool domain demote nele primeiro.`
+      : `Excluir conta de computador ${name}?`;
+    if (!await confirmAction(warning)) return;
     try {
-      const res = await customFetch(`/api/computers/${name}`, { method: 'DELETE' });
+      const res = await customFetch(`/api/computers/${encodeURIComponent(name)}?remove_dead_dc=${deadDc}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {
         showToast(data.message);
@@ -2009,11 +2019,11 @@ function ComputersTab({ t, showToast }) {
                 <Info className="w-3.5 h-3.5" />
               </button>
 
-              {!comp.is_dc && (
+              {!comp.is_local && (
                 <button 
                   onClick={() => handleDeleteComputer(comp.name)}
                   className="text-slate-500 hover:text-rose-400 p-1.5 rounded transition"
-                  title="Excluir Computador"
+                  title={comp.is_dc ? "Remover DC desativado" : "Excluir Computador"}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -2044,7 +2054,7 @@ function ComputersTab({ t, showToast }) {
               <Info className="w-3.5 h-3.5 text-sky-400" />
               <span>Propriedades</span>
             </button>
-            {!contextMenu.comp.is_dc && (
+            {!contextMenu.comp.is_local && (
               <button
                 onClick={() => {
                   handleDeleteComputer(contextMenu.comp.name);
@@ -2206,7 +2216,7 @@ function DnsTab({ t, showToast }) {
   };
 
   const handleDeleteZone = async (zoneName) => {
-    if (!window.confirm(`Excluir permanentemente a zona DNS ${zoneName}?`)) return;
+    if (!await confirmAction(`Excluir permanentemente a zona DNS ${zoneName}?`)) return;
     try {
       const res = await customFetch(`/api/dns/zones/${zoneName}`, { method: 'DELETE' });
       const data = await res.json();
@@ -2253,7 +2263,7 @@ function DnsTab({ t, showToast }) {
   };
 
   const handleDeleteRecord = async (rec) => {
-    if (!window.confirm(`Excluir o registro ${rec.record_type}: ${rec.name} -> ${rec.data}?`)) return;
+    if (!await confirmAction(`Excluir o registro ${rec.record_type}: ${rec.name} -> ${rec.data}?`)) return;
     try {
       const res = await customFetch(`/api/dns/zones/${selectedZone}/records`, {
         method: 'DELETE',
@@ -2827,7 +2837,7 @@ function HealthTab({ t, showToast }) {
   };
 
   const handleSysvolReset = async () => {
-    if (!window.confirm('Deseja realmente restaurar as permissões e ACLs padrão do SYSVOL?')) return;
+    if (!await confirmAction('Deseja realmente restaurar as permissões e ACLs padrão do SYSVOL?')) return;
     try {
       setCheckingSysvol(true);
       const res = await customFetch('/api/health/sysvolreset', { method: 'POST' });
@@ -3180,7 +3190,7 @@ function DiagnosticsTab({ t, showToast }) {
   };
 
   const handleMigrateFirewall = async () => {
-    if (!window.confirm("Deseja iniciar a migração automática para iptables? O sistema gerará backup criptográfico SHA-256 de todas as regras atuais em /var/backups/astral-ad-dns/firewall e testará antes de aplicar.")) {
+    if (!await confirmAction("Deseja iniciar a migração automática para iptables? O sistema gerará backup criptográfico SHA-256 de todas as regras atuais em /var/backups/astral-ad-dns/firewall e testará antes de aplicar.")) {
       return;
     }
     try {
@@ -3539,7 +3549,7 @@ function AuditTab({ t, showToast }) {
   }, []);
 
   const handleClear = async () => {
-    if (!window.confirm(t.confirmClearAudit)) return;
+    if (!await confirmAction(t.confirmClearAudit)) return;
     try {
       setClearing(true);
       const res = await customFetch('/api/audit/clear', { method: 'POST' });
@@ -3719,7 +3729,7 @@ function WizardModal({ onClose, t, showToast }) {
   const [preflight, setPreflight] = useState(null);
   const [loadingPreflight, setLoadingPreflight] = useState(true);
   const [mode, setMode] = useState('join_dc'); // 'new' | 'join_dc' | 'join_rodc' | 'join_member'
-  const [dnsBackend, setDnsBackend] = useState('SAMBA_INTERNAL'); // 'SAMBA_INTERNAL' | 'BIND9_DLZ'
+  const dnsBackend = 'SAMBA_INTERNAL';
 
   // Form
   const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
@@ -3729,7 +3739,7 @@ function WizardModal({ onClose, t, showToast }) {
   const [targetDcIp, setTargetDcIp] = useState('192.168.2.10');
   const [targetAdmin, setTargetAdmin] = useState('administrator');
   const [dcNetbiosName, setDcNetbiosName] = useState('DC2');
-  const [cleanExisting, setCleanExisting] = useState(true);
+  const [cleanExisting, setCleanExisting] = useState(false);
   const [resettingSamba, setResettingSamba] = useState(false);
 
   // Execution
@@ -3757,7 +3767,7 @@ function WizardModal({ onClose, t, showToast }) {
   };
 
   const handleResetSamba = async () => {
-    if (!window.confirm("Deseja limpar todos os dados residuais do Samba local e desprovisionar eventuais registros órfãos deste DC no parceiro?")) return;
+    if (!await confirmAction("Deseja limpar todos os dados residuais do Samba local e desprovisionar eventuais registros órfãos deste DC no parceiro?")) return;
     setResettingSamba(true);
     try {
       const res = await customFetch('/api/provision/reset-samba', {
@@ -4194,26 +4204,9 @@ function WizardModal({ onClose, t, showToast }) {
               {mode !== 'join_member' && (
                 <div className="pt-2 border-t border-slate-800 space-y-2">
                   <label className="block text-slate-300 font-medium">{t.dnsBackendLabel || "Backend DNS"}</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <label className={`p-2.5 rounded-lg border cursor-pointer flex flex-col gap-0.5 transition ${
-                      dnsBackend === 'SAMBA_INTERNAL' ? 'bg-indigo-950/60 border-indigo-500' : 'bg-slate-950 border-slate-800'
-                    }`}>
-                      <div className="flex items-center gap-2 font-bold text-slate-100 text-xs">
-                        <input type="radio" checked={dnsBackend === 'SAMBA_INTERNAL'} onChange={() => setDnsBackend('SAMBA_INTERNAL')} />
-                        <span>SAMBA_INTERNAL</span>
-                      </div>
-                      <span className="text-[10px] text-slate-400 pl-5">{t.dnsBackendInternalDesc || "Recomendado Tranquil IT + BIND Híbrido"}</span>
-                    </label>
-
-                    <label className={`p-2.5 rounded-lg border cursor-pointer flex flex-col gap-0.5 transition ${
-                      dnsBackend === 'BIND9_DLZ' ? 'bg-indigo-950/60 border-indigo-500' : 'bg-slate-950 border-slate-800'
-                    }`}>
-                      <div className="flex items-center gap-2 font-bold text-slate-100 text-xs">
-                        <input type="radio" checked={dnsBackend === 'BIND9_DLZ'} onChange={() => setDnsBackend('BIND9_DLZ')} />
-                        <span>BIND9_DLZ</span>
-                      </div>
-                      <span className="text-[10px] text-slate-400 pl-5">{t.dnsBackendBindDlzDesc || "Módulo Dinâmico BIND 9"}</span>
-                    </label>
+                  <div className="p-2.5 rounded-lg border border-indigo-500 bg-indigo-950/60">
+                    <strong>SAMBA_INTERNAL · AD DNS :53</strong>
+                    <p className="text-[10px] text-slate-400">{t.dnsBackendInternalDesc}</p>
                   </div>
 
                   {dnsBackend === 'SAMBA_INTERNAL' && (

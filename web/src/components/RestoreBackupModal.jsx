@@ -1,3 +1,4 @@
+import { confirmAction } from './ConfirmationDialog';
 import React, { useState } from 'react';
 import { RotateCcw, AlertTriangle, CheckCircle, RefreshCw, X, ShieldCheck } from 'lucide-react';
 
@@ -9,7 +10,7 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
   const [completed, setCompleted] = useState(false);
 
   const handleExecuteRestore = async () => {
-    if (!dryRun && !window.confirm(`ATENÇÃO: Deseja restaurar o backup do Samba AD '${filename}'? Os bancos LDB e Sysvol do Samba serão restaurados, preservando o IP e configurações de rede atuais da máquina.`)) {
+    if (!dryRun && !await confirmAction(`ATENÇÃO: Deseja restaurar o backup do Samba AD '${filename}'? Os bancos LDB e Sysvol do Samba serão restaurados, preservando o IP e configurações de rede atuais da máquina.`)) {
       return;
     }
 

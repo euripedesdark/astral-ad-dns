@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::fs;
 use std::path::Path;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, ensure_firewall_port_open, check_service_active, sanitize_arg};
+use crate::system::{run_cmd_dry, ensure_firewall_port_open, check_service_active, sanitize_arg, shell_quote};
 use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -87,15 +87,14 @@ pub struct JoinDomainRequest {
     pub admin_password: String,
     pub netbios_name: Option<String>,
     pub domain_role: Option<String>, // "DC", "RODC", "MEMBER" (default: "DC")
-    pub dns_backend: Option<String>, // "SAMBA_INTERNAL", "BIND9_DLZ", "NONE" (default: "SAMBA_INTERNAL")
+    pub dns_backend: Option<String>, // SAMBA_INTERNAL for DC/RODC; NONE for MEMBER
     pub setup_bind_hybrid: Option<bool>,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub clean_existing: bool,
     #[serde(default)]
     pub dry_run: bool,
 }
 
-fn default_true() -> bool { true }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ResetSambaRequest {
@@ -223,6 +222,15 @@ pub async fn provision_new_dc(
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<ProvisionNewDcRequest>,
 ) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    if let Some(backend) = payload.dns_backend.as_deref() {
+        if !backend.eq_ignore_ascii_case("SAMBA_INTERNAL") {
+            return (StatusCode::BAD_REQUEST, Json(ApiResponse {
+                success: false,
+                message: "Este projeto usa SAMBA_INTERNAL na porta 53 e BIND recursivo em 127.0.0.1:5353. Backend DNS incompatível.".into(),
+                data: None, dry_run: payload.dry_run, correlation_id: None,
+            }));
+        }
+    }
     let sudo = config.sudo_password.as_deref();
 
     // 0. Validação de pré-requisitos e formato
@@ -303,7 +311,11 @@ pub async fn provision_new_dc(
     }
 
     // 3. Configuração do BIND 9 Híbrido (porta 5353)
-    let forwarder = payload.dns_forwarder.unwrap_or_else(|| "127.0.0.1:5353".to_string());
+    let forwarder = if payload.setup_bind_hybrid.unwrap_or(true) {
+        "127.0.0.1:5353".to_string()
+    } else {
+        payload.dns_forwarder.unwrap_or_else(|| "8.8.8.8".to_string())
+    };
     if payload.setup_bind_hybrid.unwrap_or(true) {
         let fwd_list = payload.upstream_forwarders.unwrap_or_else(|| vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]);
         let fwd_formatted = fwd_list.iter().map(|f| format!(" {};", f.trim())).collect::<Vec<_>>().join("");
@@ -317,24 +329,26 @@ pub async fn provision_new_dc(
             let _ = fs::write(temp_named, named_conf);
             let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
             let _ = fs::remove_file(temp_named);
-            let _ = run_cmd_dry("systemctl enable --now named || true", sudo, false);
+            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
+            if !named_result.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
+                    data: None, dry_run: false, correlation_id: None,
+                }));
+            }
             steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353.".to_string());
         }
     }
 
     // 4. Comando de provisionamento do Samba
-    let dns_backend = payload.dns_backend.as_deref().unwrap_or("SAMBA_INTERNAL").trim().to_uppercase();
-    let selected_dns_backend = match dns_backend.as_str() {
-        "BIND9_DLZ" => "BIND9_DLZ",
-        _ => "SAMBA_INTERNAL",
-    };
+    let selected_dns_backend = "SAMBA_INTERNAL";
 
     let prov_cmd = format!(
-        "samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend={} --adminpass='{}'",
+        "samba-tool domain provision --use-rfc2307 --realm='{}' --domain='{}' --server-role=dc --dns-backend={} --adminpass={}",
         payload.realm.to_uppercase(),
         payload.workgroup.to_uppercase(),
         selected_dns_backend,
-        sanitize_arg(&payload.admin_password)
+        shell_quote(&payload.admin_password)
     );
 
     if d {
@@ -468,6 +482,15 @@ pub async fn join_domain(
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<JoinDomainRequest>,
 ) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
+    if let Some(backend) = payload.dns_backend.as_deref() {
+        if !backend.eq_ignore_ascii_case("SAMBA_INTERNAL") && !(payload.domain_role.as_deref().unwrap_or("DC").eq_ignore_ascii_case("MEMBER") && backend.eq_ignore_ascii_case("NONE")) {
+            return (StatusCode::BAD_REQUEST, Json(ApiResponse {
+                success: false,
+                message: "Este projeto usa SAMBA_INTERNAL na porta 53 e BIND recursivo em 127.0.0.1:5353. Backend DNS incompatível.".into(),
+                data: None, dry_run: payload.dry_run, correlation_id: None,
+            }));
+        }
+    }
     let sudo = config.sudo_password.as_deref();
     let mut steps = Vec::new();
     let d = payload.dry_run;
@@ -548,6 +571,7 @@ pub async fn join_domain(
         steps.push(format!("Limpeza prévia de arquivos residuais e desprovisionamento da conta órfã '{}' concluída.", dc_netbios));
     }
 
+    if !d {
     // 3. Configurar e verificar previamente o DNS do AD no DC2 (sem DNS externo como Google)
     // Para ingressar no domínio, o DC2 DEVE consultar exclusivamente o DNS do AD.
     crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
@@ -561,6 +585,8 @@ pub async fn join_domain(
         steps.push(format!("Aviso: O registro SRV do AD ainda não resolveu diretamente. Tentando prosseguir com --server={}.", target_dc_ip));
     }
 
+    }
+
     let raw_role = payload.domain_role.as_deref().unwrap_or("DC").trim().to_uppercase();
     let domain_role = match raw_role.as_str() {
         "RODC" => "RODC",
@@ -568,12 +594,7 @@ pub async fn join_domain(
         _ => "DC",
     };
 
-    let raw_backend = payload.dns_backend.as_deref().unwrap_or("SAMBA_INTERNAL").trim().to_uppercase();
-    let dns_backend = match raw_backend.as_str() {
-        "BIND9_DLZ" => "BIND9_DLZ",
-        "NONE" => "NONE",
-        _ => "SAMBA_INTERNAL",
-    };
+    let dns_backend = "SAMBA_INTERNAL";
 
     if d {
         steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", target_dc_ip));
@@ -619,10 +640,10 @@ pub async fn join_domain(
     let workgroup = realm.split('.').next().unwrap_or("SRVCLOUD");
     let join_cmd = if domain_role == "MEMBER" {
         format!(
-            "samba-tool domain join '{}' MEMBER -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}'",
+            "samba-tool domain join '{}' MEMBER -U{} --password={} --server='{}' --netbios-name='{}' --realm='{}' -W '{}'",
             realm,
-            sanitize_arg(&payload.admin_username),
-            sanitize_arg(&payload.admin_password),
+            shell_quote(&payload.admin_username),
+            shell_quote(&payload.admin_password),
             target_dc_ip,
             dc_netbios,
             realm,
@@ -630,11 +651,11 @@ pub async fn join_domain(
         )
     } else {
         format!(
-            "samba-tool domain join '{}' {} -U'{}' --password='{}' --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend={}",
+            "samba-tool domain join '{}' {} -U{} --password={} --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend={} --option='ad dc functional level = 2016'",
             realm,
             domain_role,
-            sanitize_arg(&payload.admin_username),
-            sanitize_arg(&payload.admin_password),
+            shell_quote(&payload.admin_username),
+            shell_quote(&payload.admin_password),
             target_dc_ip,
             dc_netbios,
             realm,
@@ -720,14 +741,27 @@ pub async fn join_domain(
         let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
         steps.push("Serviço Samba Active Directory DC (RODC) inicializado e habilitado no systemd.".to_string());
 
-        if payload.setup_bind_hybrid.unwrap_or(false) && dns_backend == "SAMBA_INTERNAL" {
+        if payload.setup_bind_hybrid.unwrap_or(true) {
             let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
             let temp_named = "/tmp/named.conf.gen";
             let _ = fs::write(temp_named, named_conf);
             let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
             let _ = fs::remove_file(temp_named);
-            let _ = run_cmd_dry("systemctl enable --now named || true", sudo, false);
+            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
+            if !named_result.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
+                    data: None, dry_run: false, correlation_id: None,
+                }));
+            }
             let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
+            let restart = run_cmd_dry("systemctl restart samba || systemctl restart samba-dc", sudo, false);
+            if !restart.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                    success: false, message: format!("Ingresso concluído, mas falhou ao reiniciar Samba: {}", restart.stderr),
+                    data: None, dry_run: false, correlation_id: None,
+                }));
+            }
             steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
         }
 
@@ -781,14 +815,27 @@ pub async fn join_domain(
         let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
         steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
 
-        if payload.setup_bind_hybrid.unwrap_or(false) && dns_backend == "SAMBA_INTERNAL" {
+        if payload.setup_bind_hybrid.unwrap_or(true) {
             let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
             let temp_named = "/tmp/named.conf.gen";
             let _ = fs::write(temp_named, named_conf);
             let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
             let _ = fs::remove_file(temp_named);
-            let _ = run_cmd_dry("systemctl enable --now named || true", sudo, false);
+            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
+            if !named_result.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
+                    data: None, dry_run: false, correlation_id: None,
+                }));
+            }
             let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
+            let restart = run_cmd_dry("systemctl restart samba || systemctl restart samba-dc", sudo, false);
+            if !restart.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                    success: false, message: format!("Ingresso concluído, mas falhou ao reiniciar Samba: {}", restart.stderr),
+                    data: None, dry_run: false, correlation_id: None,
+                }));
+            }
             steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
         }
 

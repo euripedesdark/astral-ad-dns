@@ -52,36 +52,35 @@ pub fn sanitize_arg(s: &str) -> String {
     s.replace('\'', "").replace('"', "").replace(';', "").replace('&', "").replace('|', "")
 }
 
+/// Quote one argument without changing directory names or passwords.
+pub fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 /// Mascara credenciais e senhas nos comandos para proteger logs e auditoria.
 pub fn mask_passwords(cmd: &str) -> String {
     let mut masked = cmd.to_string();
-    let patterns = [
-        "--adminpass=",
-        "--newpassword=",
-        "--password=",
-        "-W ",
-    ];
-
-    for pat in patterns {
-        if let Some(pos) = masked.find(pat) {
-            let mut start = pos + pat.len();
-            let mut has_quote = false;
-            let mut quote_char = ' ';
-            if start < masked.len() {
-                let first = masked[start..].chars().next().unwrap();
-                if first == '\'' || first == '"' {
-                    has_quote = true;
-                    quote_char = first;
-                    start += 1;
+    for pattern in ["--adminpass=", "--newpassword=", "--password="] {
+        let mut offset = 0;
+        while let Some(relative) = masked[offset..].find(pattern) {
+            let start = offset + relative + pattern.len();
+            let mut quote = None;
+            let mut escaped = false;
+            let mut end = masked.len();
+            for (index, ch) in masked[start..].char_indices() {
+                if escaped { escaped = false; continue; }
+                if ch == '\\' && quote != Some('\'') { escaped = true; continue; }
+                if let Some(q) = quote {
+                    if ch == q { quote = None; }
+                } else if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                } else if ch.is_whitespace() {
+                    end = start + index;
+                    break;
                 }
             }
-            let remainder = &masked[start..];
-            let end = if has_quote {
-                remainder.find(quote_char).map(|p| start + p).unwrap_or(masked.len())
-            } else {
-                remainder.find(|c: char| c.is_whitespace()).map(|p| start + p).unwrap_or(masked.len())
-            };
             masked.replace_range(start..end, "********");
+            offset = start + 8;
         }
     }
     masked
@@ -149,8 +148,7 @@ pub fn run_cmd_dry(cmd: &str, sudo_pass: Option<&str>, dry_run: bool) -> Command
     let full_cmd = if is_root {
         cmd.to_string()
     } else if let Some(pass) = sudo_pass {
-        let safe_pass = pass.replace('\'', "");
-        format!("echo '{}' | sudo -S sh -c \"{}\"", safe_pass, cmd.replace('"', "\\\""))
+        format!("printf '%s\\n' {} | sudo -S -- sh -c {}", shell_quote(pass), shell_quote(cmd))
     } else {
         cmd.to_string()
     };
@@ -477,10 +475,21 @@ mod tests {
 
     #[test]
     fn test_mask_passwords() {
-        let cmd = "samba-tool domain provision --realm=SRVCLOUD.CLOUD --adminpass=Secret123 --dns-backend=BIND9_DLZ";
+        let cmd = "samba-tool domain provision --realm=SRVCLOUD.CLOUD --adminpass=Secret123 --dns-backend=SAMBA_INTERNAL";
         let masked = mask_passwords(cmd);
         assert!(!masked.contains("Secret123"));
         assert!(masked.contains("--adminpass=********"));
+    }
+
+    #[test]
+    fn quoted_passwords_remain_intact_but_are_fully_redacted() {
+        let secret = "P'ass & $value; senha";
+        let command = format!("printf '%s' {}", shell_quote(secret));
+        let result = run_cmd_dry(&command, None, false);
+        assert!(result.success);
+        assert_eq!(result.stdout, secret);
+        let masked = mask_passwords(&format!("samba-tool domain join TEST --password={} --server=dc", shell_quote(secret)));
+        assert_eq!(masked, "samba-tool domain join TEST --password=******** --server=dc");
     }
 
     #[test]

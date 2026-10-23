@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg};
+use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
 use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -186,7 +186,7 @@ pub async fn delete_group(
         );
     }
 
-    let cmd = format!("samba-tool group delete '{}'", sanitize_arg(&groupname));
+    let cmd = format!("samba-tool group delete {}", shell_quote(&groupname));
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
     let evt_id = config.audit.record(
