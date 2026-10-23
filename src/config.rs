@@ -1,4 +1,6 @@
 use std::env;
+use std::sync::Arc;
+use crate::audit::AuditTrail;
 
 #[derive(Clone, Debug)]
 pub struct AppConfig {
@@ -6,6 +8,7 @@ pub struct AppConfig {
     pub sudo_password: Option<String>,
     pub admin_password: Option<String>,
     pub web_dist_path: String,
+    pub audit: Arc<AuditTrail>,
 }
 
 impl AppConfig {
@@ -20,12 +23,14 @@ impl AppConfig {
             .or_else(|| env::var("ADMIN_PASSWORD").ok())
             .or_else(|| Some("Copa@@2026".to_string()));
         let web_dist_path = env::var("ASTRAL_WEB_DIST").unwrap_or_else(|_| "./web/dist".to_string());
+        let audit = Arc::new(AuditTrail::new(500));
 
         Self {
             bind_addr,
             sudo_password,
             admin_password,
             web_dist_path,
+            audit,
         }
     }
 }

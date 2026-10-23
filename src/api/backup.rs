@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::Json,
 };
@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::fs;
 use crate::config::AppConfig;
-use crate::system::run_safe_cmd;
-use crate::api::users::ApiResponse;
+use crate::system::run_cmd_dry;
+use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BackupArchive {
@@ -56,31 +56,52 @@ pub async fn list_backups(State(_config): State<Arc<AppConfig>>) -> Json<ApiResp
 
     Json(ApiResponse {
         success: true,
-        message: format!("Found {} backups", archives.len()),
+        message: format!("Encontrados {} backups", archives.len()),
         data: Some(archives),
+        dry_run: false,
+        correlation_id: None,
     })
 }
 
-pub async fn create_backup(State(config): State<Arc<AppConfig>>) -> (StatusCode, Json<ApiResponse<String>>) {
+pub async fn create_backup(
+    Query(q): Query<ActionQuery>,
+    State(config): State<Arc<AppConfig>>,
+) -> (StatusCode, Json<ApiResponse<String>>) {
     let sudo = config.sudo_password.as_deref();
     let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
     let backup_dir = "/var/backups/samba";
 
-    let _ = run_safe_cmd(&format!("mkdir -p {}", backup_dir), sudo);
+    let _ = run_cmd_dry(&format!("mkdir -p {}", backup_dir), sudo, q.dry_run);
 
     let cmd = format!(
         "samba-tool domain backup online --targetdir='{}' -U administrator --password='{}'",
         backup_dir, admin_pass
     );
 
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, q.dry_run);
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "BACKUP_CREATE",
+        "samba:backup",
+        q.dry_run,
+        res.success,
+        &format!("Geração de backup online do Active Directory (dry_run={})", q.dry_run),
+    );
+
     if res.success {
         (
             StatusCode::CREATED,
             Json(ApiResponse {
                 success: true,
-                message: "Active Directory online backup created successfully".to_string(),
+                message: if q.dry_run {
+                    format!("[SIMULAÇÃO] Backup online seria gravado no diretório: {}", backup_dir)
+                } else {
+                    "Backup online do Active Directory concluído com sucesso".to_string()
+                },
                 data: Some(res.stdout),
+                dry_run: q.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     } else {
@@ -88,8 +109,10 @@ pub async fn create_backup(State(config): State<Arc<AppConfig>>) -> (StatusCode,
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to create backup: {}", res.stderr),
+                message: format!("Falha ao criar backup do Samba: {}", res.stderr),
                 data: None,
+                dry_run: q.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     }

@@ -2,8 +2,10 @@ use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::fs;
+use std::time::Instant;
 use crate::config::AppConfig;
 use crate::system::{run_safe_cmd, check_service_active};
+use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NtpInfo {
@@ -32,6 +34,17 @@ pub struct StatusResponse {
     pub computers_count: usize,
     pub zones_count: usize,
     pub hostname: String,
+    pub overall_health: String, // "operational", "degraded", "unavailable"
+    pub last_updated: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CheckResultItem {
+    pub name: String,
+    pub command: String,
+    pub ok: bool,
+    pub output: String,
+    pub latency_ms: u64,
 }
 
 pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResponse> {
@@ -151,6 +164,18 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
     let host_res = run_safe_cmd("hostname -f 2>/dev/null || hostname", sudo);
     let hostname = host_res.stdout.trim().to_string();
 
+    let overall_health = if !ad_configured {
+        "not_provisioned".to_string()
+    } else if !samba_active {
+        "unavailable".to_string()
+    } else if !named_active || !chrony_active {
+        "degraded".to_string()
+    } else {
+        "operational".to_string()
+    };
+
+    let last_updated = chrono::Utc::now().to_rfc3339();
+
     Json(StatusResponse {
         ad_configured,
         realm,
@@ -168,5 +193,87 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         computers_count,
         zones_count,
         hostname,
+        overall_health,
+        last_updated,
+    })
+}
+
+/// Executa a bateria de checklist operacional recomendada pelo artigo
+pub async fn run_quick_checks(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<CheckResultItem>>> {
+    let sudo = config.sudo_password.as_deref();
+    let smb_content = fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
+    let realm = smb_content
+        .lines()
+        .find(|l| l.trim().to_lowercase().starts_with("realm"))
+        .and_then(|l| l.split_once('='))
+        .map(|(_, v)| v.trim().to_lowercase())
+        .unwrap_or_else(|| "srvcloud.cloud".to_string());
+
+    let mut results = Vec::new();
+
+    // 1. testparm -s
+    let t0 = Instant::now();
+    let r1 = run_safe_cmd("testparm -s 2>&1", sudo);
+    results.push(CheckResultItem {
+        name: "Validação de Configuração (testparm)".to_string(),
+        command: "testparm -s".to_string(),
+        ok: r1.success && !r1.stdout.contains("ERROR"),
+        output: if r1.success { "Sintaxe do smb.conf válida".to_string() } else { r1.stderr },
+        latency_ms: t0.elapsed().as_millis() as u64,
+    });
+
+    // 2. samba-tool dbcheck
+    let t0 = Instant::now();
+    let r2 = run_safe_cmd("samba-tool dbcheck --cross-ncs 2>&1", sudo);
+    results.push(CheckResultItem {
+        name: "Integridade da Base de Dados (dbcheck)".to_string(),
+        command: "samba-tool dbcheck --cross-ncs".to_string(),
+        ok: r2.success || !r2.stdout.contains("ERROR:"),
+        output: if r2.success { "Base de dados íntegra".to_string() } else { r2.stdout },
+        latency_ms: t0.elapsed().as_millis() as u64,
+    });
+
+    // 3. chronyc tracking
+    let t0 = Instant::now();
+    let r3 = run_safe_cmd("chronyc tracking 2>&1", sudo);
+    results.push(CheckResultItem {
+        name: "Sincronismo de Tempo (Chrony NTP)".to_string(),
+        command: "chronyc tracking".to_string(),
+        ok: r3.success && r3.stdout.contains("Reference ID"),
+        output: if r3.success { "Relógio sincronizado".to_string() } else { r3.stderr },
+        latency_ms: t0.elapsed().as_millis() as u64,
+    });
+
+    // 4. klist
+    let t0 = Instant::now();
+    let r4 = run_safe_cmd("klist 2>&1", sudo);
+    results.push(CheckResultItem {
+        name: "Ticket Kerberos Local (klist)".to_string(),
+        command: "klist".to_string(),
+        ok: r4.success,
+        output: if r4.success { "Tickets Kerberos ativos".to_string() } else { "Nenhum ticket Kerberos em cache".to_string() },
+        latency_ms: t0.elapsed().as_millis() as u64,
+    });
+
+    // 5. SRV Records (_ldap._tcp, _kerberos._tcp)
+    for srv in ["_ldap._tcp", "_kerberos._tcp", "_kerberos._udp", "_kpasswd._udp"] {
+        let t0 = Instant::now();
+        let cmd = format!("host -t SRV {}.{} 127.0.0.1 2>&1", srv, realm);
+        let rx = run_safe_cmd(&cmd, sudo);
+        results.push(CheckResultItem {
+            name: format!("Localizador de Serviço ({}.{})", srv, realm),
+            command: cmd,
+            ok: rx.success && rx.stdout.contains("has SRV record"),
+            output: if rx.success { "Registro SRV resolvido com sucesso".to_string() } else { rx.stdout },
+            latency_ms: t0.elapsed().as_millis() as u64,
+        });
+    }
+
+    Json(ApiResponse {
+        success: true,
+        message: format!("Checklist operacional concluído: {} itens verificados", results.len()),
+        data: Some(results),
+        dry_run: false,
+        correlation_id: None,
     })
 }

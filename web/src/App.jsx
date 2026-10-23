@@ -89,6 +89,22 @@ export default function App() {
 
         {/* Status Indicators & Language Switcher */}
         <div className="flex items-center gap-3">
+          {/* Overall Health Badge */}
+          {status && (
+            <div className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-mono font-semibold ${
+              status.overall_health === 'operational'
+                ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60'
+                : status.overall_health === 'degraded'
+                ? 'bg-amber-950/80 text-amber-300 border-amber-700/60'
+                : 'bg-rose-950/80 text-rose-300 border-rose-700/60'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                status.overall_health === 'operational' ? 'bg-emerald-400 animate-pulse' :
+                status.overall_health === 'degraded' ? 'bg-amber-400' : 'bg-rose-400'
+              }`} />
+              <span className="capitalize">{status.overall_health === 'operational' ? t.healthOperational : status.overall_health === 'degraded' ? t.healthDegraded : t.healthUnavailable}</span>
+            </div>
+          )}
           {/* Status Pills */}
           <div className="hidden lg:flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3 py-1.5 rounded-lg text-xs">
             <div className="flex items-center gap-1.5">
@@ -161,6 +177,8 @@ export default function App() {
           <NavItem active={activeTab === 'dns'} onClick={() => setActiveTab('dns')} icon={<Globe className="w-4 h-4" />} label={t.dns} badge={status?.zones_count} />
           <NavItem active={activeTab === 'bind'} onClick={() => setActiveTab('bind')} icon={<Network className="w-4 h-4" />} label={t.bind} />
           <NavItem active={activeTab === 'health'} onClick={() => setActiveTab('health')} icon={<Layers className="w-4 h-4" />} label={t.health} />
+          <NavItem active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} icon={<Activity className="w-4 h-4 text-emerald-400" />} label={t.diagnostics} />
+          <NavItem active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<Terminal className="w-4 h-4 text-indigo-400" />} label={t.audit} />
           <NavItem active={activeTab === 'backups'} onClick={() => setActiveTab('backups')} icon={<HardDrive className="w-4 h-4" />} label={t.backups} />
         </aside>
 
@@ -173,6 +191,8 @@ export default function App() {
           {activeTab === 'dns' && <DnsTab t={t} showToast={showToast} />}
           {activeTab === 'bind' && <BindTab t={t} showToast={showToast} />}
           {activeTab === 'health' && <HealthTab t={t} showToast={showToast} />}
+          {activeTab === 'diagnostics' && <DiagnosticsTab t={t} showToast={showToast} />}
+          {activeTab === 'audit' && <AuditTab t={t} showToast={showToast} />}
           {activeTab === 'backups' && <BackupsTab t={t} showToast={showToast} />}
         </main>
       </div>
@@ -215,6 +235,24 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
   const [testDomain, setTestDomain] = useState('google.com');
   const [benchmarking, setBenchmarking] = useState(false);
   const [benchResults, setBenchResults] = useState(null);
+  const [checklistResults, setChecklistResults] = useState(null);
+  const [checkingList, setCheckingList] = useState(false);
+
+  const runChecklist = async () => {
+    try {
+      setCheckingList(true);
+      const res = await customFetch('/api/checks');
+      if (res.ok) {
+        const json = await res.json();
+        setChecklistResults(json.data || []);
+        showToast(json.message);
+      }
+    } catch (e) {
+      showToast('Falha ao executar checklist operacional', 'error');
+    } finally {
+      setCheckingList(false);
+    }
+  };
 
   const runBenchmark = async () => {
     if (!testDomain.trim()) return;
@@ -424,6 +462,62 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           </div>
         )}
       </div>
+      {/* Operational Validation Checklist */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-emerald-400" />
+              <span>{t.checklistTitle}</span>
+            </h3>
+            <p className="text-xs text-slate-400">{t.checklistDesc}</p>
+          </div>
+          <button 
+            onClick={runChecklist}
+            disabled={checkingList}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${checkingList ? 'animate-spin' : ''}`} />
+            <span>{checkingList ? t.runningChecklist : t.runChecklist}</span>
+          </button>
+        </div>
+
+        {checklistResults && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between text-xs text-slate-400 pb-1">
+              <span>Status da Bateria:</span>
+              <span className="font-mono text-emerald-400 font-semibold">
+                {checklistResults.filter(c => c.ok).length} / {checklistResults.length} {t.checkSuccess}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {checklistResults.map((check, idx) => (
+                <div key={idx} className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                      {check.ok ? (
+                        <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      )}
+                      <span>{check.name}</span>
+                    </span>
+                    <span className={`px-2 py-0.5 rounded font-mono font-bold text-[10px] ${
+                      check.ok ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-amber-950 text-amber-400 border border-amber-800'
+                    }`}>
+                      {check.latency_ms} ms
+                    </span>
+                  </div>
+                  <div className="font-mono text-[11px] text-slate-400 bg-slate-900/80 p-2 rounded border border-slate-800/80 max-h-28 overflow-y-auto whitespace-pre-wrap">
+                    <span className="text-slate-500">$ {check.command}</span>
+                    <div className="text-slate-300 mt-1">{check.output}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -445,6 +539,7 @@ function MetricBox({ label, value, icon }) {
 // ==============================================================================
 function UsersTab({ t, showToast }) {
   const [users, setUsers] = useState([]);
+  const [dryRun, setDryRun] = useState(false);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -495,6 +590,7 @@ function UsersTab({ t, showToast }) {
           surname: surname || undefined,
           mail: email || undefined,
           description: description || undefined,
+          dry_run: dryRun,
         })
       });
       const data = await res.json();
@@ -768,6 +864,19 @@ function UsersTab({ t, showToast }) {
                   value={description} 
                   onChange={(e) => setDescription(e.target.value)} 
                   className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="bg-slate-950/80 border border-slate-800 rounded-lg p-3 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-sky-400">{t.dryRunOption}</div>
+                  <div className="text-[11px] text-slate-400">{t.dryRunOptionHelp}</div>
+                </div>
+                <input 
+                  type="checkbox" 
+                  checked={dryRun} 
+                  onChange={(e) => setDryRun(e.target.checked)} 
+                  className="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer"
                 />
               </div>
 
@@ -2303,8 +2412,469 @@ function BackupsTab({ t, showToast }) {
   );
 }
 
+
 // ==============================================================================
-// 9. ACTIVE DIRECTORY PROVISIONING WIZARD MODAL
+// 9. DIAGNOSTICS & FIREWALL AUDIT TAB
+// ==============================================================================
+function DiagnosticsTab({ t, showToast }) {
+  const [diagData, setDiagData] = useState(null);
+  const [loadingDiag, setLoadingDiag] = useState(false);
+  const [firewallData, setFirewallData] = useState(null);
+  const [loadingFw, setLoadingFw] = useState(false);
+  const [openingFw, setOpeningFw] = useState(false);
+  const [dryRunFw, setDryRunFw] = useState(false);
+
+  const fetchDiagnostics = async () => {
+    try {
+      setLoadingDiag(true);
+      const res = await customFetch('/api/diagnostics');
+      if (res.ok) {
+        const json = await res.json();
+        setDiagData(json.data);
+      }
+    } catch (e) {
+      showToast('Falha ao carregar diagnósticos de infraestrutura', 'error');
+    } finally {
+      setLoadingDiag(false);
+    }
+  };
+
+  const fetchFirewall = async () => {
+    try {
+      setLoadingFw(true);
+      const res = await customFetch('/api/firewall');
+      if (res.ok) {
+        const json = await res.json();
+        setFirewallData(json.data);
+      }
+    } catch (e) {
+      showToast('Falha ao carregar status do firewall', 'error');
+    } finally {
+      setLoadingFw(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDiagnostics();
+    fetchFirewall();
+  }, []);
+
+  const handleOpenPorts = async () => {
+    try {
+      setOpeningFw(true);
+      const res = await customFetch('/api/firewall/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: dryRunFw })
+      });
+      const json = await res.json();
+      showToast(json.message, json.success ? 'success' : 'error');
+      fetchFirewall();
+    } catch (e) {
+      showToast('Erro ao abrir portas do firewall', 'error');
+    } finally {
+      setOpeningFw(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header Banner */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Activity className="w-5 h-5 text-emerald-400" />
+            <h2 className="text-xl font-bold text-white tracking-tight">{t.diagnosticsTitle}</h2>
+          </div>
+          <p className="text-xs text-slate-400 max-w-xl">{t.diagnosticsDesc}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => { fetchDiagnostics(); fetchFirewall(); }}
+            disabled={loadingDiag || loadingFw}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+          >
+            <RefreshCw className={`w-4 h-4 ${loadingDiag || loadingFw ? 'animate-spin' : ''}`} />
+            <span>{loadingDiag ? t.refreshingDiagnostics : t.refreshDiagnostics}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-950 border border-emerald-800 flex items-center justify-center text-emerald-400">
+            <CheckCircle className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">{t.healthOperational}</div>
+            <div className="text-xl font-bold text-white font-mono">{diagData?.summary?.operational ?? 0}</div>
+          </div>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-amber-950 border border-amber-800 flex items-center justify-center text-amber-400">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">{t.healthDegraded}</div>
+            <div className="text-xl font-bold text-white font-mono">{diagData?.summary?.degraded ?? 0}</div>
+          </div>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-rose-950 border border-rose-800 flex items-center justify-center text-rose-400">
+            <XCircle className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">{t.healthUnavailable}</div>
+            <div className="text-xl font-bold text-white font-mono">{diagData?.summary?.unavailable ?? 0}</div>
+          </div>
+        </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-sky-950 border border-sky-800 flex items-center justify-center text-sky-400">
+            <Shield className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-400 uppercase font-semibold">Firewall AD</div>
+            <div className="text-xl font-bold text-white font-mono">
+              {firewallData ? `${firewallData.open_count}/${firewallData.total_ports}` : '-'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Diagnostics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {diagData?.checks?.map((check) => (
+          <div key={check.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-indigo-400">
+                  {check.category}
+                </span>
+                <h4 className="text-sm font-semibold text-white mt-1.5">{check.name}</h4>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-cyan-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                  {check.latency_ms} ms
+                </span>
+                <span className={`px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                  check.status === 'operational'
+                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                    : check.status === 'degraded'
+                    ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                    : check.status === 'unavailable'
+                    ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}>
+                  {check.status === 'operational' ? t.healthOperational :
+                   check.status === 'degraded' ? t.healthDegraded :
+                   check.status === 'unavailable' ? t.healthUnavailable : t.healthUnknown}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed bg-slate-950/60 p-3 rounded-lg border border-slate-800/80">
+              {check.message}
+            </p>
+
+            {check.possible_cause && (
+              <div className="bg-rose-950/40 border border-rose-800/60 rounded-lg p-2.5 text-xs text-rose-300">
+                <span className="font-bold">{t.possibleCause}: </span>
+                {check.possible_cause}
+              </div>
+            )}
+
+            {check.recommended_action && (
+              <div className="bg-sky-950/40 border border-sky-800/60 rounded-lg p-2.5 text-xs text-sky-300">
+                <span className="font-bold">{t.recommendedAction}: </span>
+                {check.recommended_action}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Firewall Section */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Shield className="w-4 h-4 text-sky-400" />
+              <span>{t.firewallTitle}</span>
+            </h3>
+            <p className="text-xs text-slate-400">{t.firewallDesc}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer text-xs text-sky-300">
+              <input 
+                type="checkbox" 
+                checked={dryRunFw} 
+                onChange={(e) => setDryRunFw(e.target.checked)} 
+                className="rounded border-slate-700 bg-slate-950 text-indigo-600 focus:ring-0"
+              />
+              <span>{t.dryRunOption}</span>
+            </label>
+            <button
+              onClick={handleOpenPorts}
+              disabled={openingFw}
+              className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>{openingFw ? t.openingPorts : t.openMissingPorts}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Safety Warning */}
+        <div className="bg-indigo-950/40 border border-indigo-800/60 rounded-lg p-3 text-xs text-indigo-300 flex items-start gap-2.5">
+          <Shield className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+          <span>
+            <strong>Garantia Estrita de Não Destruição:</strong> O backend do Astral AD valida todas as regras com tokens estritos e rejeita qualquer comando com <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-F</code>, <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">--flush</code>, <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-X</code> ou <code className="bg-slate-950 px-1 py-0.5 rounded text-amber-300">-D</code>. As portas necessárias são verificadas com <code className="bg-slate-950 px-1 py-0.5 rounded text-sky-300">iptables -C INPUT</code> e adicionadas exclusivamente com <code className="bg-slate-950 px-1 py-0.5 rounded text-emerald-300">iptables -I INPUT 1</code>.
+          </span>
+        </div>
+
+        {/* Ports Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-2.5 px-4">{t.portProtocol}</th>
+                <th className="py-2.5 px-4">{t.portNumber}</th>
+                <th className="py-2.5 px-4">{t.portService}</th>
+                <th className="py-2.5 px-4 text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono">
+              {firewallData?.ports?.map((p, idx) => (
+                <tr key={idx} className="hover:bg-slate-800/30 transition">
+                  <td className="py-2.5 px-4 font-bold text-slate-300 uppercase">{p.proto}</td>
+                  <td className="py-2.5 px-4 text-cyan-400 font-bold">{p.port}</td>
+                  <td className="py-2.5 px-4 text-slate-300 font-sans">{p.label}</td>
+                  <td className="py-2.5 px-4 text-right">
+                    {p.is_open ? (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold">
+                        {t.portOpen}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-950 text-rose-400 border border-rose-800 text-[10px] font-bold">
+                        {t.portClosed}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 10. OPERATIONAL AUDIT TRAIL TAB
+// ==============================================================================
+function AuditTab({ t, showToast }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [filterType, setFilterType] = useState('all');
+  const [search, setSearch] = useState('');
+  const [clearing, setClearing] = useState(false);
+
+  const fetchAudit = async () => {
+    try {
+      setLoading(true);
+      const res = await customFetch('/api/audit');
+      if (res.ok) {
+        const json = await res.json();
+        setEvents(json.data || []);
+      }
+    } catch (e) {
+      showToast('Falha ao carregar trilha de auditoria', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAudit();
+  }, []);
+
+  const handleClear = async () => {
+    if (!window.confirm('Deseja limpar todos os registros de auditoria em memória?')) return;
+    try {
+      setClearing(true);
+      const res = await customFetch('/api/audit/clear', { method: 'POST' });
+      const json = await res.json();
+      showToast(json.message);
+      fetchAudit();
+    } catch (e) {
+      showToast('Erro ao limpar histórico', 'error');
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const filteredEvents = events.filter((e) => {
+    if (filterType === 'dry_run' && !e.dry_run) return false;
+    if (filterType === 'real' && e.dry_run) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      const matchAction = e.action?.toLowerCase().includes(q);
+      const matchTarget = e.target?.toLowerCase().includes(q);
+      const matchOp = e.operator?.toLowerCase().includes(q);
+      const matchDetails = e.details?.toLowerCase().includes(q);
+      const matchId = e.id?.toLowerCase().includes(q);
+      if (!matchAction && !matchTarget && !matchOp && !matchDetails && !matchId) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Top Banner */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Terminal className="w-5 h-5 text-indigo-400" />
+            <h2 className="text-xl font-bold text-white tracking-tight">{t.auditTitle}</h2>
+          </div>
+          <p className="text-xs text-slate-400 max-w-xl">{t.auditDesc}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchAudit}
+            disabled={loading}
+            className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-semibold px-4 py-2 rounded-lg transition border border-slate-700"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>{t.refreshAudit}</span>
+          </button>
+          <button
+            onClick={handleClear}
+            disabled={clearing || events.length === 0}
+            className="flex items-center gap-1.5 bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 disabled:opacity-50 text-xs font-semibold px-4 py-2 rounded-lg transition border border-rose-800/60"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>{clearing ? t.clearingAudit : t.clearAudit}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Filter & Search Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 p-1 rounded-lg text-xs font-medium">
+          <button
+            onClick={() => setFilterType('all')}
+            className={`px-3 py-1.5 rounded-md transition ${filterType === 'all' ? 'bg-indigo-600 text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+          >
+            {t.filterAll} ({events.length})
+          </button>
+          <button
+            onClick={() => setFilterType('dry_run')}
+            className={`px-3 py-1.5 rounded-md transition ${filterType === 'dry_run' ? 'bg-sky-600 text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+          >
+            {t.filterDryRun} ({events.filter(e => e.dry_run).length})
+          </button>
+          <button
+            onClick={() => setFilterType('real')}
+            className={`px-3 py-1.5 rounded-md transition ${filterType === 'real' ? 'bg-emerald-600 text-white font-semibold' : 'text-slate-400 hover:text-white'}`}
+          >
+            {t.filterReal} ({events.filter(e => !e.dry_run).length})
+          </button>
+        </div>
+
+        <div className="relative w-full sm:w-64">
+          <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filtrar por ação, alvo, ID..."
+            className="w-full bg-slate-900 border border-slate-800 text-xs pl-9 pr-4 py-2 rounded-lg text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+      </div>
+
+      {/* Events Table */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-3 px-4">{t.eventTimestamp}</th>
+                <th className="py-3 px-4">{t.eventOperator}</th>
+                <th className="py-3 px-4">{t.eventAction}</th>
+                <th className="py-3 px-4">{t.eventTarget}</th>
+                <th className="py-3 px-4">{t.eventType}</th>
+                <th className="py-3 px-4">{t.eventStatus}</th>
+                <th className="py-3 px-4">{t.eventDetails}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60 font-mono text-[11px]">
+              {filteredEvents.map((evt) => (
+                <tr key={evt.id} className="hover:bg-slate-800/30 transition">
+                  <td className="py-3 px-4 text-slate-400 whitespace-nowrap">
+                    {new Date(evt.timestamp).toLocaleString()}
+                    <div className="text-[10px] text-slate-600 font-mono">{evt.id}</div>
+                  </td>
+                  <td className="py-3 px-4 font-sans font-semibold text-slate-300">
+                    <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800">
+                      {evt.operator || 'admin'}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 font-bold text-indigo-400">
+                    {evt.action}
+                  </td>
+                  <td className="py-3 px-4 text-cyan-300 font-sans font-medium">
+                    {evt.target}
+                  </td>
+                  <td className="py-3 px-4 font-sans">
+                    {evt.dry_run ? (
+                      <span className="px-2 py-0.5 rounded-full bg-sky-950 text-sky-400 border border-sky-800 text-[10px] font-bold">
+                        {t.dryRunBadge}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold">
+                        {t.realBadge}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 font-sans">
+                    {evt.success ? (
+                      <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                        <CheckCircle className="w-3.5 h-3.5" />
+                        <span>OK</span>
+                      </span>
+                    ) : (
+                      <span className="text-rose-400 font-semibold flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>FALHA</span>
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3 px-4 text-slate-300 font-sans max-w-xs truncate" title={evt.details}>
+                    {evt.details}
+                  </td>
+                </tr>
+              ))}
+              {filteredEvents.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
+                    {t.noAuditEvents}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ==============================================================================
+// 11. ACTIVE DIRECTORY PROVISIONING WIZARD MODAL
 // ==============================================================================
 function WizardModal({ onClose, t, showToast }) {
   const [step, setStep] = useState(1);

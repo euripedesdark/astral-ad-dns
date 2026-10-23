@@ -1,13 +1,13 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_safe_cmd, sanitize_arg};
-use crate::api::users::ApiResponse;
+use crate::system::{run_cmd_dry, sanitize_arg};
+use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DnsZone {
@@ -28,6 +28,8 @@ pub struct DnsRecord {
 #[derive(Deserialize, Debug)]
 pub struct CreateZoneRequest {
     pub zone_name: String,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -36,6 +38,8 @@ pub struct AddRecordRequest {
     pub record_type: String,
     pub data: String,
     pub create_ptr: Option<bool>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -43,6 +47,8 @@ pub struct DeleteRecordRequest {
     pub name: String,
     pub record_type: String,
     pub data: String,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 pub async fn list_zones(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<DnsZone>>> {
@@ -50,12 +56,14 @@ pub async fn list_zones(State(config): State<Arc<AppConfig>>) -> Json<ApiRespons
     let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
 
     let cmd = format!("samba-tool dns zonelist 127.0.0.1 -U administrator --password='{}'", admin_pass);
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, false);
     if !res.success {
         return Json(ApiResponse {
             success: false,
-            message: format!("Failed to list DNS zones: {}", res.stderr),
+            message: format!("Falha ao listar zonas DNS: {}", res.stderr),
             data: None,
+            dry_run: false,
+            correlation_id: None,
         });
     }
 
@@ -104,8 +112,10 @@ pub async fn list_zones(State(config): State<Arc<AppConfig>>) -> Json<ApiRespons
 
     Json(ApiResponse {
         success: true,
-        message: format!("Retrieved {} zones", zones.len()),
+        message: format!("Recuperadas {} zonas", zones.len()),
         data: Some(zones),
+        dry_run: false,
+        correlation_id: None,
     })
 }
 
@@ -121,12 +131,14 @@ pub async fn query_records(
         sanitize_arg(&zone),
         admin_pass
     );
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, false);
     if !res.success {
         return Json(ApiResponse {
             success: false,
-            message: format!("Failed to query records: {}", res.stderr),
+            message: format!("Falha ao consultar registros DNS: {}", res.stderr),
             data: None,
+            dry_run: false,
+            correlation_id: None,
         });
     }
 
@@ -149,26 +161,13 @@ pub async fn query_records(
 
         if let Some((rtype, rest)) = trimmed.split_once(':') {
             let rtype = rtype.trim().to_uppercase();
-            if ["A", "AAAA", "PTR", "CNAME", "NS", "SOA", "SRV", "TXT", "MX"].contains(&rtype.as_str()) {
-                let mut data = rest.trim().to_string();
-                let mut ttl = 900;
-
-                if let Some(idx) = data.find('(') {
-                    let meta = data[idx + 1..].trim_end_matches(')').to_string();
-                    data = data[..idx].trim().to_string();
-                    for meta_part in meta.split(',') {
-                        let mp = meta_part.trim();
-                        if let Some(t_str) = mp.strip_prefix("ttl=") {
-                            ttl = t_str.parse().unwrap_or(900);
-                        }
-                    }
-                }
-
+            if ["A", "AAAA", "PTR", "CNAME", "NS", "SOA", "MX", "SRV", "TXT"].contains(&rtype.as_str()) {
+                let data = rest.split('(').next().unwrap_or(rest).trim().to_string();
                 records.push(DnsRecord {
                     name: current_name.clone(),
                     record_type: rtype,
                     data,
-                    ttl,
+                    ttl: 900,
                 });
             }
         }
@@ -176,8 +175,10 @@ pub async fn query_records(
 
     Json(ApiResponse {
         success: true,
-        message: format!("Retrieved {} records for zone '{}'", records.len(), zone),
+        message: format!("Recuperados {} registros na zona '{}'", records.len(), zone),
         data: Some(records),
+        dry_run: false,
+        correlation_id: None,
     })
 }
 
@@ -188,30 +189,49 @@ pub async fn create_zone(
     let sudo = config.sudo_password.as_deref();
     let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
 
-    let clean_zone = sanitize_arg(payload.zone_name.trim());
-    if clean_zone.is_empty() {
+    let zone = sanitize_arg(payload.zone_name.trim());
+    if zone.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: "Zone name is required".to_string(),
+                message: "Nome da zona é obrigatório".to_string(),
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: None,
             }),
         );
     }
 
     let cmd = format!(
         "samba-tool dns zonecreate 127.0.0.1 '{}' -U administrator --password='{}'",
-        clean_zone, admin_pass
+        zone, admin_pass
     );
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "DNS_ZONE_CREATE",
+        &format!("zone:{}", zone),
+        payload.dry_run,
+        res.success,
+        &format!("Criação da zona DNS '{}'", zone),
+    );
+
     if res.success {
         (
             StatusCode::CREATED,
             Json(ApiResponse {
                 success: true,
-                message: format!("DNS Zone '{}' created successfully", clean_zone),
+                message: if payload.dry_run {
+                    format!("[SIMULAÇÃO] Simulação: a zona DNS '{}' seria criada", zone)
+                } else {
+                    format!("Zona DNS '{}' criada com sucesso", zone)
+                },
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     } else {
@@ -219,8 +239,10 @@ pub async fn create_zone(
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to create DNS zone: {}", res.stderr),
+                message: format!("Falha ao criar zona DNS: {}", res.stderr),
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     }
@@ -228,24 +250,56 @@ pub async fn create_zone(
 
 pub async fn delete_zone(
     Path(zone): Path<String>,
+    Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let sudo = config.sudo_password.as_deref();
     let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
+
+    // TRAVA DE SEGURANÇA: Não permitir exclusão de zonas vitais de Active Directory
+    if zone.starts_with("_msdcs.") || zone.eq_ignore_ascii_case("ForestDnsZones") || zone.eq_ignore_ascii_case("DomainDnsZones") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Operação bloqueada: a zona de infraestrutura interna '{}' não pode ser excluída", zone),
+                data: None,
+                dry_run: q.dry_run,
+                correlation_id: None,
+            }),
+        );
+    }
 
     let cmd = format!(
         "samba-tool dns zonedel 127.0.0.1 '{}' -U administrator --password='{}'",
         sanitize_arg(&zone),
         admin_pass
     );
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, q.dry_run);
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "DNS_ZONE_DELETE",
+        &format!("zone:{}", zone),
+        q.dry_run,
+        res.success,
+        &format!("Exclusão da zona DNS '{}'", zone),
+    );
+
     if res.success {
         (
             StatusCode::OK,
             Json(ApiResponse {
                 success: true,
-                message: format!("DNS Zone '{}' deleted successfully", zone),
+                message: if q.dry_run {
+                    format!("[SIMULAÇÃO] Simulação: a zona DNS '{}' seria excluída", zone)
+                } else {
+                    format!("Zona DNS '{}' excluída com sucesso", zone)
+                },
                 data: None,
+                dry_run: q.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     } else {
@@ -253,8 +307,10 @@ pub async fn delete_zone(
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to delete DNS zone: {}", res.stderr),
+                message: format!("Falha ao excluir zona DNS: {}", res.stderr),
                 data: None,
+                dry_run: q.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     }
@@ -272,6 +328,19 @@ pub async fn add_record(
     let rtype = sanitize_arg(payload.record_type.trim()).to_uppercase();
     let data = sanitize_arg(payload.data.trim());
 
+    if !["A", "AAAA", "PTR", "CNAME", "TXT", "MX", "SRV", "NS"].contains(&rtype.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: format!("Tipo de registro DNS inválido: '{}'", rtype),
+                data: None,
+                dry_run: payload.dry_run,
+                correlation_id: None,
+            }),
+        );
+    }
+
     let cmd = format!(
         "samba-tool dns add 127.0.0.1 '{}' '{}' '{}' '{}' -U administrator --password='{}'",
         sanitize_arg(&zone),
@@ -280,21 +349,34 @@ pub async fn add_record(
         data,
         admin_pass
     );
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "DNS_RECORD_ADD",
+        &format!("zone:{}:rec:{}:{}", zone, name, rtype),
+        payload.dry_run,
+        res.success,
+        &format!("Adição de registro DNS {} ({} -> {})", rtype, name, data),
+    );
+
     if !res.success {
         return (
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to add DNS record: {}", res.stderr),
+                message: format!("Falha ao adicionar registro DNS: {}", res.stderr),
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: Some(evt_id),
             }),
         );
     }
 
     // Auto PTR Reverse Record Creation
     let mut ptr_msg = String::new();
-    if rtype == "A" && payload.create_ptr.unwrap_or(false) {
+    if rtype == "A" && payload.create_ptr.unwrap_or(false) && !payload.dry_run {
         let octets: Vec<&str> = data.split('.').collect();
         if octets.len() == 4 {
             let rev_zone = format!("{}.{}.{}.in-addr.arpa", octets[2], octets[1], octets[0]);
@@ -307,13 +389,13 @@ pub async fn add_record(
 
             // Ensure reverse zone exists
             let check_zone_cmd = format!("samba-tool dns zonelist 127.0.0.1 -U administrator --password='{}'", admin_pass);
-            let check_res = run_safe_cmd(&check_zone_cmd, sudo);
+            let check_res = run_cmd_dry(&check_zone_cmd, sudo, false);
             if !check_res.stdout.contains(&rev_zone) {
                 let create_rev_cmd = format!(
                     "samba-tool dns zonecreate 127.0.0.1 '{}' -U administrator --password='{}'",
                     rev_zone, admin_pass
                 );
-                let _ = run_safe_cmd(&create_rev_cmd, sudo);
+                let _ = run_cmd_dry(&create_rev_cmd, sudo, false);
             }
 
             // Add PTR record
@@ -321,11 +403,9 @@ pub async fn add_record(
                 "samba-tool dns add 127.0.0.1 '{}' '{}' PTR '{}' -U administrator --password='{}'",
                 rev_zone, host_ip, fqdn, admin_pass
             );
-            let ptr_res = run_safe_cmd(&add_ptr_cmd, sudo);
+            let ptr_res = run_cmd_dry(&add_ptr_cmd, sudo, false);
             if ptr_res.success {
-                ptr_msg = format!(" + Reverse PTR record added in {}", rev_zone);
-            } else {
-                ptr_msg = format!(" (Reverse PTR creation failed: {})", ptr_res.stderr);
+                ptr_msg = format!(" + Registro reverso PTR criado em {}", rev_zone);
             }
         }
     }
@@ -334,8 +414,14 @@ pub async fn add_record(
         StatusCode::CREATED,
         Json(ApiResponse {
             success: true,
-            message: format!("Record '{}: {} -> {}' created successfully{}", rtype, name, data, ptr_msg),
+            message: if payload.dry_run {
+                format!("[SIMULAÇÃO] O registro '{}: {} -> {}' seria inserido na zona '{}'", rtype, name, data, zone)
+            } else {
+                format!("Registro '{}: {} -> {}' criado com sucesso{}", rtype, name, data, ptr_msg)
+            },
             data: None,
+            dry_run: payload.dry_run,
+            correlation_id: Some(evt_id),
         }),
     )
 }
@@ -356,14 +442,31 @@ pub async fn delete_record(
         sanitize_arg(&payload.data),
         admin_pass
     );
-    let res = run_safe_cmd(&cmd, sudo);
+    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "DNS_RECORD_DELETE",
+        &format!("zone:{}:rec:{}:{}", zone, payload.name, payload.record_type),
+        payload.dry_run,
+        res.success,
+        &format!("Exclusão do registro DNS {} ({})", payload.record_type, payload.name),
+    );
+
     if res.success {
         (
             StatusCode::OK,
             Json(ApiResponse {
                 success: true,
-                message: format!("Record '{}: {}' deleted successfully", payload.record_type, payload.name),
+                message: if payload.dry_run {
+                    format!("[SIMULAÇÃO] O registro '{}: {}' seria excluído da zona '{}'", payload.record_type, payload.name, zone)
+                } else {
+                    format!("Registro '{}: {}' excluído com sucesso", payload.record_type, payload.name)
+                },
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     } else {
@@ -371,8 +474,10 @@ pub async fn delete_record(
             StatusCode::BAD_REQUEST,
             Json(ApiResponse {
                 success: false,
-                message: format!("Failed to delete DNS record: {}", res.stderr),
+                message: format!("Falha ao excluir registro DNS: {}", res.stderr),
                 data: None,
+                dry_run: payload.dry_run,
+                correlation_id: Some(evt_id),
             }),
         )
     }

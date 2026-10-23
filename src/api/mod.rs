@@ -7,6 +7,9 @@ pub mod bind;
 pub mod health;
 pub mod backup;
 pub mod provision;
+pub mod firewall;
+pub mod diagnostics;
+pub mod audit;
 
 use axum::{
     routing::{get, post, delete},
@@ -19,6 +22,17 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
     Router::new()
         // Status & Overview
         .route("/api/status", get(status::get_status))
+        .route("/api/checks", get(status::run_quick_checks))
+
+        // Diagnóstico Completo de Conexão e Dependências
+        .route("/api/diagnostics", get(diagnostics::run_diagnostics))
+
+        // Histórico Operacional e Auditoria
+        .route("/api/audit", get(audit::list_audit_events).delete(audit::clear_audit_events))
+
+        // Gerenciamento Seguro de Firewall (Portas do AD)
+        .route("/api/firewall", get(firewall::get_firewall_status))
+        .route("/api/firewall/open", post(firewall::open_firewall_ports))
 
         // Users
         .route("/api/users", get(users::list_users).post(users::create_user))
