@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::run_safe_cmd;
+use crate::system::run_cmd_dry;
 use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -22,6 +22,8 @@ pub struct DrsReplicationStatus {
 #[derive(Deserialize, Debug)]
 pub struct DbCheckRequest {
     pub fix: Option<bool>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -33,7 +35,7 @@ pub struct HealthCommandResult {
 
 pub async fn get_drs_status(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<DrsReplicationStatus>> {
     let sudo = config.sudo_password.as_deref();
-    let res = run_safe_cmd("samba-tool drs showrepl", sudo);
+    let res = run_cmd_dry("samba-tool drs showrepl", sudo, false);
 
     let mut dsa_guid = String::new();
     let mut invocation_id = String::new();
@@ -70,7 +72,7 @@ pub async fn get_drs_status(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
 
     Json(ApiResponse {
         success: true,
-        message: "DRS replication status checked".to_string(),
+        message: "Status de replicação DRS verificado".to_string(),
         data: Some(DrsReplicationStatus {
             raw_output: res.stdout,
             dsa_guid,
@@ -79,6 +81,8 @@ pub async fn get_drs_status(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
             outbound_neighbors_count: outbound_count,
             has_errors,
         }),
+        dry_run: false,
+        correlation_id: None,
     })
 }
 
@@ -87,94 +91,126 @@ pub async fn run_dbcheck(
     Json(payload): Json<DbCheckRequest>,
 ) -> (StatusCode, Json<ApiResponse<HealthCommandResult>>) {
     let sudo = config.sudo_password.as_deref();
+    let d = payload.dry_run;
     let cmd = if payload.fix.unwrap_or(false) {
         "samba-tool dbcheck --cross-ncs --fix --yes"
     } else {
         "samba-tool dbcheck --cross-ncs"
     };
 
-    let res = run_safe_cmd(cmd, sudo);
+    let res = run_cmd_dry(cmd, sudo, d);
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "HEALTH_DBCHECK",
+        "samba:dbcheck",
+        d,
+        res.success,
+        &format!("Verificação de integridade da base LDB (fix={:?})", payload.fix.unwrap_or(false)),
+    );
+
     (
         StatusCode::OK,
         Json(ApiResponse {
             success: res.success,
-            message: if res.success { "Database check passed".to_string() } else { "Database check reported issues".to_string() },
+            message: if d {
+                "[SIMULAÇÃO] Simulação do comando dbcheck realizada".to_string()
+            } else if res.success {
+                "Verificação da base de dados concluída sem erros estruturais".to_string()
+            } else {
+                "A base de dados reportou itens que necessitam de atenção".to_string()
+            },
             data: Some(HealthCommandResult {
                 success: res.success,
                 stdout: res.stdout,
                 stderr: res.stderr,
             }),
+            dry_run: d,
+            correlation_id: Some(evt_id),
         }),
     )
 }
 
 pub async fn run_sysvolcheck(State(config): State<Arc<AppConfig>>) -> (StatusCode, Json<ApiResponse<HealthCommandResult>>) {
     let sudo = config.sudo_password.as_deref();
-    let res = run_safe_cmd("samba-tool ntacl sysvolcheck", sudo);
+    let res = run_cmd_dry("samba-tool ntacl sysvolcheck", sudo, false);
     (
         StatusCode::OK,
         Json(ApiResponse {
             success: res.success,
-            message: if res.success { "SYSVOL ACLs are consistent".to_string() } else { "SYSVOL ACL mismatch detected".to_string() },
+            message: if res.success { "ACLs do SYSVOL consistentes".to_string() } else { "Inconsistência de ACLs detectada no SYSVOL".to_string() },
             data: Some(HealthCommandResult {
                 success: res.success,
                 stdout: res.stdout,
                 stderr: res.stderr,
             }),
+            dry_run: false,
+            correlation_id: None,
         }),
     )
 }
 
 pub async fn run_sysvolreset(State(config): State<Arc<AppConfig>>) -> (StatusCode, Json<ApiResponse<HealthCommandResult>>) {
     let sudo = config.sudo_password.as_deref();
-    let res = run_safe_cmd("samba-tool ntacl sysvolreset", sudo);
+    let res = run_cmd_dry("samba-tool ntacl sysvolreset", sudo, false);
+
+    let evt_id = config.audit.record(
+        "admin",
+        None,
+        "SYSVOL_RESET",
+        "samba:sysvol",
+        false,
+        res.success,
+        "Restauração das ACLs padrão no volume SYSVOL",
+    );
+
     (
         StatusCode::OK,
         Json(ApiResponse {
             success: res.success,
-            message: if res.success { "SYSVOL ACLs reset successfully".to_string() } else { "Failed to reset SYSVOL ACLs".to_string() },
+            message: if res.success { "ACLs do SYSVOL restauradas com sucesso".to_string() } else { "Falha ao restaurar ACLs do SYSVOL".to_string() },
             data: Some(HealthCommandResult {
                 success: res.success,
                 stdout: res.stdout,
                 stderr: res.stderr,
             }),
+            dry_run: false,
+            correlation_id: Some(evt_id),
         }),
     )
 }
 
 pub async fn get_powershell_sync_script(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<String>> {
-    let _realm = config.admin_password.as_deref().unwrap_or("SRVCLOUD.CLOUD");
-    // Article Part 18.9 script
-    let script = r#"# ==============================================================================
+    let realm = config.admin_password.as_deref().unwrap_or("SRVCLOUD.CLOUD");
+    let script = format!(r#"# ==============================================================================
 # Samba AD DC to Windows Server DC2 SYSVOL Replication Script
-# Based on Euripedes Batista's Samba 4 AD Hardened Architecture Guide (Part 18.9)
+# Baseado na Arquitetura Euripedes Batista - Samba 4 AD Hardened (Part 18.9)
 # ==============================================================================
 param(
     [string]$PrimaryDC = "dc-erp.srvcloud.cloud",
-    [string]$Domain = "srvcloud.cloud",
+    [string]$Domain = "{}",
     [string]$LocalSysvol = "C:\Windows\SYSVOL\sysvol"
 )
 
 $ErrorActionPreference = "Stop"
 $LogPath = "C:\Scripts\Logs\sysvol_sync.log"
 
-function Write-Log {
+function Write-Log {{
     param([string]$Message)
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$Timestamp - $Message" | Out-File -FilePath $LogPath -Append
     Write-Host "$Timestamp - $Message"
-}
+}}
 
-try {
-    Write-Log "Starting SYSVOL pull synchronization from $PrimaryDC..."
+try {{
+    Write-Log "Iniciando sincronismo SYSVOL a partir de $PrimaryDC..."
     $Source = "\\$PrimaryDC\sysvol\$Domain"
     $Destination = "$LocalSysvol\$Domain"
 
-    if (-not (Test-Path $Destination)) {
+    if (-not (Test-Path $Destination)) {{
         New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    }
+    }}
 
-    # Robocopy options: Mirror, Copy Data/Attributes/Timestamps/Security, 3 retries
     $RobocopyArgs = @(
         $Source,
         $Destination,
@@ -190,19 +226,21 @@ try {
     & robocopy.exe @RobocopyArgs
     $ExitCode = $LASTEXITCODE
 
-    if ($ExitCode -le 7) {
-        Write-Log "SYSVOL sync completed successfully with code $ExitCode."
-    } else {
-        Write-Log "Robocopy reported warnings or errors (Code $ExitCode)."
-    }
-} catch {
-    Write-Log "FATAL ERROR during SYSVOL sync: $_"
-}
-"#;
+    if ($ExitCode -le 7) {{
+        Write-Log "Sincronismo SYSVOL concluído com sucesso (Código $ExitCode)."
+    }} else {{
+        Write-Log "Robocopy reportou avisos ou inconsistências (Código $ExitCode)."
+    }}
+}} catch {{
+    Write-Log "ERRO CRÍTICO durante sincronização SYSVOL: $_"
+}}
+"#, realm);
 
     Json(ApiResponse {
         success: true,
-        message: "Generated PowerShell SYSVOL sync script".to_string(),
-        data: Some(script.to_string()),
+        message: "Script PowerShell de sincronismo SYSVOL gerado com sucesso".to_string(),
+        data: Some(script),
+        dry_run: false,
+        correlation_id: None,
     })
 }
