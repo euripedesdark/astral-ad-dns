@@ -461,6 +461,71 @@ pub async fn provision_new_dc(
     )
 }
 
+// Keep simulation and execution on the same supported samba-tool command.
+fn join_command(realm: &str, role: &str, server: &str, name: &str, user: &str, password: &str) -> Result<String, String> {
+    if !matches!(role, "DC" | "RODC" | "MEMBER") {
+        return Err("Papel invalido: escolha DC, RODC ou MEMBER".into());
+    }
+    if name.is_empty() || name.len() > 15 || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err("Nome NetBIOS invalido: use de 1 a 15 letras, numeros, hifen ou sublinhado".into());
+    }
+    if realm.split('.').count() < 2 || !realm.split('.').all(|label| !label.is_empty() && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')) {
+        return Err("Realm invalido: informe o dominio DNS do AD".into());
+    }
+    if server.parse::<std::net::Ipv4Addr>().is_err() {
+        return Err("Informe um endereco IPv4 valido para o DC parceiro".into());
+    }
+    if user.trim().is_empty() || password.is_empty() {
+        return Err("Usuario e senha do administrador do dominio sao obrigatorios".into());
+    }
+    let mut command = format!(
+        "samba-tool domain join {} {} -U{} --password={} --server={} --realm={} --option={}",
+        shell_quote(realm), role, shell_quote(user), shell_quote(password),
+        shell_quote(server), shell_quote(realm), shell_quote(&format!("netbios name = {}", name)),
+    );
+    if role != "MEMBER" { command.push_str(" --dns-backend=SAMBA_INTERNAL"); }
+    // The domain supplies its NetBIOS domain; the DC level is selected by preflight.
+    Ok(command)
+}
+
+// Ordered AD functional levels, including domains older than the Samba DC default.
+fn functional_level(value: &str) -> Option<(u8, &'static str)> {
+    let value = value.trim().trim_start_matches("(Windows)").trim().replace(' ', "_").to_uppercase();
+    match value.as_str() {
+        "2000" => Some((0, "2000")), "2003" => Some((2, "2003")),
+        "2008" => Some((3, "2008")), "2008_R2" => Some((4, "2008_R2")),
+        "2012" => Some((5, "2012")), "2012_R2" => Some((6, "2012_R2")),
+        "2016" => Some((7, "2016")), _ => None,
+    }
+}
+
+fn domain_levels(output: &str) -> Result<(u8, &'static str), String> {
+    let field = |key: &str| output.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case(key) { functional_level(value) } else { None }
+    });
+    let domain = field("Domain function level").ok_or("Nivel funcional do dominio ausente ou nao suportado")?;
+    let forest = field("Forest function level").ok_or("Nivel funcional da floresta ausente ou nao suportado")?;
+    if forest.0 > domain.0 { return Err("Niveis inconsistentes: floresta acima do dominio".into()); }
+    Ok(domain)
+}
+
+fn with_dc_level(command: String, level: Option<&str>) -> String {
+    match level {
+        Some(level) => format!("{} --option={}", command, shell_quote(&format!("ad dc functional level = {}", level))),
+        None => command,
+    }
+}
+
+fn partner_name(info: &str) -> Option<&str> {
+    info.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim().eq_ignore_ascii_case("DC netbios name") && !value.trim().is_empty() {
+            Some(value.trim())
+        } else { None }
+    })
+}
+
 pub async fn join_domain(
     _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
@@ -534,11 +599,98 @@ pub async fn join_domain(
         .unwrap_or(&my_hostname)
         .to_uppercase();
 
-    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
-    let my_ip = ip_res.stdout.trim().to_string();
+    let raw_role = payload.domain_role.as_deref().unwrap_or("DC").trim().to_uppercase();
+    let domain_role = raw_role.as_str();
+    let mut join_cmd = match join_command(&realm, domain_role, target_dc_ip, &dc_netbios, &payload.admin_username, &payload.admin_password) {
+        Ok(command) => command,
+        Err(message) => return (StatusCode::BAD_REQUEST, Json(ApiResponse {
+            success: false, message, data: None, dry_run: d, correlation_id: None,
+        })),
+    };
+    // Validate CLI support before changing DNS or removing any local/remote state.
+    let help = run_cmd_dry("samba-tool domain join --help", sudo, false);
+    if !help.success || !format!("{}{}", help.stdout, help.stderr).contains("--option") {
+        return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+            success: false, message: "samba-tool domain join nao oferece --option; atualize os pacotes Samba antes do ingresso. Nenhuma limpeza foi executada.".into(),
+            data: None, dry_run: d, correlation_id: None,
+        }));
+    }
+    // Read-only compatibility checks must finish before cleanup or resolver changes.
+    let mut dc_level = None;
+    if domain_role != "MEMBER" {
+        let levels = run_cmd_dry(&format!(
+            "LC_ALL=C samba-tool domain level show -H {} -U{} --password={}",
+            shell_quote(&format!("ldap://{}", target_dc_ip)),
+            shell_quote(&payload.admin_username), shell_quote(&payload.admin_password)), sudo, false);
+        let remote = if levels.success { domain_levels(&levels.stdout) } else {
+            Err(format!("Nao foi possivel consultar os niveis do AD parceiro: {}", levels.stderr))
+        };
+        let remote = match remote {
+            Ok(level) => level,
+            Err(message) => return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+                success: false, message, data: None, dry_run: d, correlation_id: None,
+            })),
+        };
+        // Read the installed Samba's default without an old smb.conf changing the result.
+        let local = run_cmd_dry("testparm -s --parameter-name='ad dc functional level' /dev/null", sudo, false);
+        let local_level = functional_level(local.stdout.trim());
+        let local_level = match local_level.filter(|_| local.success) {
+            Some(level) => level,
+            None => return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+                success: false, message: "Nao foi possivel consultar o nivel de DC suportado pelo Samba local (testparm). Atualize/verifique os pacotes Samba; nenhuma limpeza foi executada.".into(),
+                data: None, dry_run: d, correlation_id: None,
+            })),
+        };
+        // Never advertise less than the domain requires or lower the installed default.
+        let selected = if remote.0 > local_level.0 { remote } else { local_level };
+        let probe = run_cmd_dry(&format!(
+            "testparm -s --parameter-name='ad dc functional level' --option={} /dev/null",
+            shell_quote(&format!("ad dc functional level = {}", selected.1))), sudo, false);
+        if !probe.success || functional_level(probe.stdout.trim()) != Some(selected) {
+            return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+                success: false, message: format!("O dominio exige nivel {} e o Samba local nao aceitou a configuracao de DC {}. Atualize o Samba antes do ingresso; nenhum nivel foi reduzido.", remote.1, selected.1),
+                data: None, dry_run: d, correlation_id: None,
+            }));
+        }
+        dc_level = Some(selected.1);
+        join_cmd = with_dc_level(join_cmd, dc_level);
+        steps.push(format!("Nivel funcional do dominio: {}; padrao do Samba local: {}; DC configurado para {}. Dominio/floresta preservados.", remote.1, local_level.1, selected.1));
+    }
+    let local_ips = run_cmd_dry("hostname -I", sudo, false);
+    if local_ips.stdout.split_whitespace().any(|ip| ip == target_dc_ip) || target_dc_ip.starts_with("127.") {
+        return (StatusCode::BAD_REQUEST, Json(ApiResponse {
+            success: false, message: "O DC parceiro deve ser outro servidor; o IP informado pertence a esta maquina.".into(),
+            data: None, dry_run: d, correlation_id: None,
+        }));
+    }
+    let route = run_cmd_dry(&format!("ip -4 route get {}", shell_quote(target_dc_ip)), sudo, false);
+    let words: Vec<_> = route.stdout.split_whitespace().collect();
+    let my_ip = words.windows(2).find(|pair| pair[0] == "src").map(|pair| pair[1])
+        .or_else(|| local_ips.stdout.split_whitespace().find(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok()))
+        .unwrap_or("").to_string();
+    if my_ip.is_empty() {
+        return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+            success: false, message: "Nao foi possivel identificar o IPv4 local para comunicar com o DC parceiro.".into(),
+            data: None, dry_run: d, correlation_id: None,
+        }));
+    }
+
 
     // 2. Limpeza prévia de banco de dados e remoção de registros órfãos no DC parceiro (se solicitado)
     if payload.clean_existing && !d {
+        if Path::new("/var/lib/samba/private/sam.ldb").exists() {
+            return (StatusCode::CONFLICT, Json(ApiResponse {
+                success: false, message: "Existe uma base AD local (sam.ldb). A limpeza de ingresso nao apaga um DC existente; use o fluxo explicito de despromocao/reset antes de tentar novamente.".into(),
+                data: None, dry_run: d, correlation_id: None,
+            }));
+        }
+        let partner = run_cmd_dry(&format!("samba-tool domain info {}", shell_quote(target_dc_ip)), sudo, false);
+        if !partner.success || partner_name(&partner.stdout).map_or(true, |name| name.eq_ignore_ascii_case(&dc_netbios)) {
+            return (StatusCode::CONFLICT, Json(ApiResponse {
+                success: false, message: "Limpeza recusada: nao foi possivel identificar um DC parceiro com nome diferente do servidor local.".into(),
+                data: None, dry_run: d, correlation_id: None,
+            }));
+        }
         // Tenta desprovisionar conta morta/órfã no DC parceiro se já existir
         let demote_cmd = format!(
             "samba-tool domain demote --remove-other-dead-server='{}' -H 'ldap://{}' -U '{}%{}'",
@@ -571,25 +723,15 @@ pub async fn join_domain(
 
     }
 
-    let raw_role = payload.domain_role.as_deref().unwrap_or("DC").trim().to_uppercase();
-    let domain_role = match raw_role.as_str() {
-        "RODC" => "RODC",
-        "MEMBER" => "MEMBER",
-        _ => "DC",
-    };
-
-    let dns_backend = "SAMBA_INTERNAL";
-
     if d {
+        let planned = with_dc_level(join_command(&realm, domain_role, target_dc_ip, &dc_netbios, &payload.admin_username, "********").expect("validated join"), dc_level);
+        steps.push(format!("[SIMULAÇÃO] Execução prevista: {}", planned));
         steps.push(format!("[SIMULAÇÃO] Verificação de portas de comunicação com o DC parceiro em {}", target_dc_ip));
         if domain_role == "MEMBER" {
-            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} MEMBER -U'{}' --password=******** --server={} --netbios-name={}", realm, payload.admin_username, target_dc_ip, dc_netbios));
             steps.push("[SIMULAÇÃO] Configuração de smb.conf para Servidor Membro (security = ADS), ativação de winbind e smbd".to_string());
         } else if domain_role == "RODC" {
-            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} RODC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend={}", realm, payload.admin_username, target_dc_ip, dc_netbios, dns_backend));
             steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) no AD e inicialização da replicação unidirecional RODC", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
         } else {
-            steps.push(format!("[SIMULAÇÃO] Execução prevista: samba-tool domain join {} DC -U'{}' --password=******** --server={} --netbios-name={} --dns-backend={}", realm, payload.admin_username, target_dc_ip, dc_netbios, dns_backend));
             steps.push(format!("[SIMULAÇÃO] Registro DNS A ({}.{} -> {}) e NS no AD", dc_netbios.to_lowercase(), realm.to_lowercase(), my_ip));
             steps.push("[SIMULAÇÃO] Inicialização da replicação DRS e sincronismo de diretório".to_string());
         }
@@ -621,33 +763,6 @@ pub async fn join_domain(
     }
 
     // 4. Execução real do join no domínio
-    let workgroup = realm.split('.').next().unwrap_or("SRVCLOUD");
-    let join_cmd = if domain_role == "MEMBER" {
-        format!(
-            "samba-tool domain join '{}' MEMBER -U{} --password={} --server='{}' --netbios-name='{}' --realm='{}' -W '{}'",
-            realm,
-            shell_quote(&payload.admin_username),
-            shell_quote(&payload.admin_password),
-            target_dc_ip,
-            dc_netbios,
-            realm,
-            workgroup
-        )
-    } else {
-        format!(
-            "samba-tool domain join '{}' {} -U{} --password={} --server='{}' --netbios-name='{}' --realm='{}' -W '{}' --dns-backend={} --option='ad dc functional level = 2016'",
-            realm,
-            domain_role,
-            shell_quote(&payload.admin_username),
-            shell_quote(&payload.admin_password),
-            target_dc_ip,
-            dc_netbios,
-            realm,
-            workgroup,
-            dns_backend
-        )
-    };
-
     let res = run_cmd_dry(&join_cmd, sudo, false);
     if !res.success {
         return (
@@ -664,6 +779,17 @@ pub async fn join_domain(
                 correlation_id: None,
             }),
         );
+    }
+
+    if let Some(level) = dc_level {
+        let configured = run_cmd_dry(&format!(
+            r"sed -i '/^[[:space:]]*ad dc functional level[[:space:]]*=/d; /\[global\]/a \    ad dc functional level = {}' /etc/samba/smb.conf", level), sudo, false);
+        if !configured.success {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
+                success: false, message: format!("O join concluiu, mas nao foi possivel persistir o nivel de DC {}. Nao repita limpeza: corrija smb.conf antes de iniciar Samba. {}", level, configured.stderr),
+                data: None, dry_run: false, correlation_id: None,
+            }));
+        }
     }
 
     // 5. Ajustes e serviços pós-join por papel
@@ -698,8 +824,8 @@ pub async fn join_domain(
     } else if domain_role == "RODC" {
         steps.push(format!("Ingressou com sucesso no domínio '{}' como Read-Only Domain Controller (RODC: {}).", realm, dc_netbios));
 
-        let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
-        steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
+        let _ = run_cmd_dry(&format!(r"sed -i '/\[global\]/a \    dns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
+        steps.push("Configurado forwarder DNS; nivel funcional herdado do dominio parceiro.".to_string());
 
         let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
         steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
@@ -748,8 +874,8 @@ pub async fn join_domain(
         // DC (Read-Write réplica)
         steps.push(format!("Ingressou com sucesso no domínio '{}' como Controlador de Domínio réplica ({}).", realm, dc_netbios));
 
-        let _ = run_cmd_dry(&format!("sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016\\n\\tdns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
-        steps.push("Configurado nível funcional 2016 e forwarder DNS no /etc/samba/smb.conf.".to_string());
+        let _ = run_cmd_dry(&format!(r"sed -i '/\[global\]/a \    dns forwarder = {}' /etc/samba/smb.conf", target_dc_ip), sudo, false);
+        steps.push("Configurado forwarder DNS; nivel funcional herdado do dominio parceiro.".to_string());
 
         let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf", sudo, false);
         steps.push("Configuração Kerberos (/etc/krb5.conf) sincronizada com realm do domínio.".to_string());
@@ -1318,6 +1444,56 @@ pub async fn configure_reverse_zone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_remote_levels_and_preserves_2016_for_replica() {
+        let levels = "Forest function level: (Windows) 2016\nDomain function level: (Windows) 2016\nLowest function level of a DC: (Windows) 2016";
+        assert_eq!(domain_levels(levels).unwrap(), (7, "2016"));
+        let command = with_dc_level(join_command("SRVCLOUD.CLOUD", "DC", "192.168.2.10", "DC2", "Administrator", "pw").unwrap(), Some("2016"));
+        assert!(command.contains("ad dc functional level = 2016"));
+        assert!(!command.contains("domain level raise"));
+        assert_eq!(domain_levels("Forest function level: (Windows) 2008 R2\nDomain function level: (Windows) 2012 R2").unwrap(), (6, "2012_R2"));
+        assert!(domain_levels("Forest function level: (Windows) 2025\nDomain function level: (Windows) 2025").is_err());
+        assert!(domain_levels("Forest function level: (Windows) 2016\nDomain function level: (Windows) 2012 R2").is_err());
+    }
+
+    #[test]
+    fn joins_use_supported_netbios_option_for_all_roles() {
+        for role in ["DC", "RODC", "MEMBER"] {
+            let command = join_command("SRVCLOUD.CLOUD", role, "192.168.2.10", "DC2", "Administrator", "pw '$() ; echo unsafe").unwrap();
+            // Parse the actual shell arguments without running samba-tool or password contents.
+            let output = std::process::Command::new("sh").args(["-c", &command.replacen("samba-tool", "printf '%s\\n'", 1)]).output().unwrap();
+            assert!(output.status.success());
+            let parsed = String::from_utf8(output.stdout).unwrap();
+            let args: Vec<_> = parsed.lines().collect();
+            assert!(args.contains(&"--option=netbios name = DC2"));
+            assert!(!parsed.contains("--netbios-name"));
+            assert!(!parsed.contains("functional level"));
+            assert!(!args.contains(&"-W"));
+            assert!(args.contains(&"--password=pw '$() ; echo unsafe"));
+            assert_eq!(args.contains(&"--dns-backend=SAMBA_INTERNAL"), role != "MEMBER");
+        }
+    }
+
+    #[test]
+    fn join_rejects_invalid_role_name_realm_and_partner_before_execution() {
+        for (realm, role, ip, name) in [
+            ("SRVCLOUD.CLOUD", "UNKNOWN", "192.168.2.10", "DC2"),
+            ("SRVCLOUD.CLOUD", "DC", "192.168.2.10", "DC2';id"),
+            ("SRVCLOUD.CLOUD", "DC", "192.168.2.10", "NAME-LONGER-THAN-FIFTEEN"),
+            ("SRVCLOUD.CLOUD;id", "DC", "192.168.2.10", "DC2"),
+            ("SRVCLOUD.CLOUD", "DC", "192.168.2.10;id", "DC2"),
+        ] {
+            assert!(join_command(realm, role, ip, name, "Administrator", "password").is_err());
+        }
+    }
+
+    #[test]
+    fn cleanup_requires_an_identifiable_different_partner() {
+        assert_eq!(partner_name("Domain : SRVCLOUD\nDC netbios name : DC-ERP\n"), Some("DC-ERP"));
+        assert_eq!(partner_name("DC netbios name :   "), None);
+        assert_eq!(partner_name("ERROR: no logon servers"), None);
+    }
 
     #[test]
     fn test_validate_provision_params() {

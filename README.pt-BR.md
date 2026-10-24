@@ -117,3 +117,34 @@ Acesse no navegador: `http://<SEU_IP>:8095/` (ou através da rota reversa `/ad/`
 ### 7. Verificação de Privilégios Linux (Wheel) para Usuários AD & BIND
 - **Checagem de Conformidade Wheel**: Atributo `has_wheel: bool` adicionado ao `UserItem` (`/api/users`) e `AuthenticatedOperator` (`/api/auth/*`), verificando se os administradores do Samba AD e operadores BIND possuem permissão no grupo `wheel` do host Linux (`getent group wheel`).
 - **Integração com o `auth-service`**: Validação cruzada com o `LinuxPrivilegeService` para garantir que administradores corporativos (`Administrator`, `Domain Admins`) sejam sincronizados com o sistema operacional e superusuários PostgreSQL permaneçam estritamente isolados da camada Linux.
+
+### Correcao do ingresso DC, RODC e MEMBER
+
+O ingresso usa `--option='netbios name = DC2'`, compatível com `samba-tool domain
+join`, em vez de `--netbios-name`. DC e RODC usam SAMBA_INTERNAL; MEMBER nao
+recebe backend DNS. O nome NetBIOS do dominio e descoberto pelo Samba, sem impor `-W` derivado
+do nome DNS. Para DC/RODC, o preflight consulta os niveis do dominio/floresta e
+o padrao local com `testparm`. Configura o DC com o maior entre o nivel exigido
+pelo dominio e o padrao local, verifica se a instalacao aceita a configuracao e
+persiste o valor em smb.conf. Em dominio 2016, a replica recebe 2016; nao ha
+rebaixamento nem elevacao automatica do dominio/floresta. Uma configuracao
+aceita nao garante suporte completo a todos os recursos de AD: isso depende
+da versao do Samba; o proprio join ainda faz suas verificacoes internas.
+O BIND permanece recursivo em 127.0.0.1:5353, sem DLZ.
+
+Antes de alterar o resolver ou limpar residuos, o sistema verifica a sintaxe e
+a disponibilidade de `--option`. A limpeza recusa uma base AD local existente
+(`sam.ldb`) e exige identificar o parceiro com nome diferente do servidor local.
+O IP para os registros DNS e escolhido pela rota ate o parceiro. Atualizar a
+console nao inicia Samba/BIND por dependencia da unit; o provisionamento continua
+sendo uma acao explicita no assistente.
+
+Para atualizar na pasta do repositorio e repetir o ingresso pelo assistente:
+
+```bash
+git pull --ff-only origin main
+python3 deploy_ad_dns.py --skip-git
+```
+
+Os testes locais validam os comandos e argumentos; a replicacao real deve ser
+verificada no dominio apos o ingresso (`samba-tool drs showrepl`).

@@ -226,8 +226,8 @@ def main():
 
     unit_content = f"""[Unit]
 Description=Astral Active Directory & Hybrid DNS Management Service
-After=network.target samba.service named.service chronyd.service
-Wants=samba.service named.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
