@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -136,6 +137,73 @@ def replace_options(content, options):
     raise OperationError('Bloco options incompleto.')
 
 
+def check_bind_runtime(root, main, service, run):
+    # A successful restart does not prove that the daemon loaded the file we edited.
+    expected = '/' + str(main.relative_to(root))
+    sysconfig = root / 'etc/sysconfig/named'
+    if sysconfig.exists():
+        for line in sysconfig.read_text().splitlines():
+            match = re.match(r'^\s*(?:export\s+)?NAMEDCONF\s*=\s*(.*)$', line)
+            if match:
+                words = shlex.split(match[1], comments=True)
+                configured = ' '.join(words)
+                if configured and configured != expected:
+                    raise OperationError(f'NAMEDCONF aponta para {configured}, mas o configurador selecionou {expected}; configuracao preservada.')
+    pid = run(['systemctl', 'show', service, '-p', 'MainPID', '--value']).strip()
+    command = root / 'proc' / pid / 'cmdline' if pid.isdigit() and int(pid) else None
+    if command and command.is_file():
+        args = [part.decode() for part in command.read_bytes().split(b'\0') if part]
+        if '-t' in args:
+            raise OperationError('BIND esta em chroot; a configuracao desse ambiente deve ser selecionada antes de alterar named.conf.')
+        if '-c' in args:
+            configured = args[args.index('-c') + 1]
+            expected = '/' + str(main.relative_to(root))
+            if configured != expected:
+                raise OperationError(f'O named ativo usa {configured}, mas o configurador selecionou {expected}; nenhum arquivo foi alterado.')
+    # Do not evict Avahi, resolved or another service from the requested port.
+    listeners = run(['ss', '-H', '-lntup', '( sport = :5353 )'])
+    for line in listeners.splitlines():
+        if line.strip() and not re.search(r'"named(?:-sdb)?"', line):
+            raise OperationError('Porta 5353 ocupada por outro processo; nenhum servico foi parado: ' + line)
+
+
+def port_labels(output, protocol):
+    labels = []
+    for line in output.splitlines():
+        match = re.match(r'^(\w+_port_t)\s+(tcp|udp)\s+(.+)$', line.strip())
+        if not match or match[2] != protocol:
+            continue
+        for item in match[3].split(','):
+            item = item.strip()
+            if item == '5353':
+                labels.append(match[1])
+    return labels
+
+
+def prepare_bind_selinux(root, run, undo):
+    if not (root / 'sys/fs/selinux/enforce').exists():
+        return []
+    if not shutil.which('semanage'):
+        raise OperationError('SELinux ativo: instale policycoreutils-python-utils (dnf install policycoreutils-python-utils) para autorizar o BIND na porta 5353. SELinux foi preservado.')
+    labels = run(['semanage', 'port', '-l'])
+    local = run(['semanage', 'port', '-l', '-C'])
+    steps = []
+    for protocol in ['tcp', 'udp']:
+        previous = port_labels(labels, protocol)
+        if previous == ['dns_port_t']:
+            continue
+        if len(previous) > 1:
+            raise OperationError('Politica SELinux ambigua para ' + protocol + '/5353; nenhuma politica global sera substituida.')
+        local_previous = port_labels(local, protocol)
+        action = '-m' if previous else '-a'
+        run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, '5353'])
+        # Removing a new local override restores the distribution policy (including mDNS).
+        undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, '5353']
+                    if local_previous else ['semanage', 'port', '-d', '-p', protocol, '5353'])
+        steps.append('SELinux: ' + protocol + '/5353 autorizado como dns_port_t para o BIND.')
+    return steps
+
+
 def wait_bind_ready(run, service, attempts=6):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
@@ -153,11 +221,18 @@ def wait_bind_ready(run, service, attempts=6):
     details = []
     for command in [
         ['systemctl', 'show', service, '-p', 'ActiveState', '-p', 'SubState', '-p', 'ExecStart'],
-        ['journalctl', '-u', service, '-n', '12', '--no-pager'],
+        ['journalctl', '-u', service, '-n', '80', '--no-pager'],
+        ['ss', '-H', '-lntup', '( sport = :5353 )'],
+        ['getenforce'],
+        ['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'recent', '-c', 'named'],
     ]:
         try:
-            details.append(run(command)[-1200:])
-        except OperationError:
+            output = run(command)
+            if command[0] == 'journalctl':
+                important = [line for line in output.splitlines() if re.search(r'denied|permission|listen|bind|address|error|failed', line, re.I)]
+                output = '\n'.join(important) or output
+            details.append(output[-1800:])
+        except (OperationError, OSError):
             pass
     raise OperationError('BIND recursivo LOCAL nao respondeu em TCP/UDP 127.0.0.1:5353; '
                          'este teste nao e o ingresso nem o DNS do DC parceiro na porta 53. '
@@ -179,7 +254,10 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     backup = config.with_name(config.name + '.pre-astral-' + uuid.uuid4().hex)
     was_active = False
     installed = False
+    selinux_undo = []
+    selinux_steps = []
     try:
+        check_bind_runtime(root, main, service, run)
         atomic_write(staged, candidate, (original_stat.st_mode & 0o777) if original_stat else 0o644)
         if original_stat:
             os.chown(staged, original_stat.st_uid, original_stat.st_gid)
@@ -196,13 +274,19 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         run(['named-checkconf', str(main)])
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
+        selinux_steps = prepare_bind_selinux(root, run, selinux_undo)
         run(['systemctl', 'restart', service])
         wait_bind_ready(run, service)
         run(['systemctl', 'enable', service])
-        return [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
+        return selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']
     except Exception as error:
         rollback_errors = []
+        for command in reversed(selinux_undo):
+            try:
+                run(command)
+            except Exception as failure:
+                rollback_errors.append('SELinux: ' + str(failure))
         if installed:
             try:
                 if original is None:

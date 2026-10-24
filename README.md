@@ -60,3 +60,20 @@ O teste do BIND aguarda brevemente a inicializacao e, se persistir a falha,
 coleta estado e logs da unit antes de restaurar a configuracao anterior.
 Os testes locais nao comprovam conectividade com o dominio ou o servico BIND
 do servidor de producao.
+
+
+### BIND ativo, mas sem listener 5353 no Fedora
+
+O configurador verifica conflitos na porta 5353 e o arquivo efetivamente usado
+pelo processo named/NAMEDCONF. Se outro processo (por exemplo, mDNS) ocupa a
+porta, preserva esse processo e informa o conflito. Nao desativa outros servicos.
+
+Com SELinux ativo, requer `policycoreutils-python-utils` e autoriza TCP/UDP 5353
+como `dns_port_t`, sem desabilitar SELinux. A porta fica dedicada ao BIND local;
+se a ativacao falhar, restaura os rotulos locais anteriores junto da configuracao.
+O diagnostico inclui erros de listener, estado dos sockets e eventos AVC quando
+a ferramenta de auditoria esta disponivel. Isso nao substitui a verificacao no
+host: servico ativo sozinho nao comprova DNS nem replicacao AD.
+
+Depois de atualizar este helper, aplique novamente pela aba **BIND 9 Recursivo**.
+Nao repita o ingresso ou a limpeza da base AD por uma falha dessa etapa opcional.

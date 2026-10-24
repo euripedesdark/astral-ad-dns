@@ -208,6 +208,88 @@ class OperationsTests(unittest.TestCase):
             with self.assertRaisesRegex(operations.OperationError, 'LOCAL.*5353.*named listener unavailable'):
                 operations.wait_bind_ready(run, 'named', attempts=2)
 
+    def selinux_fixture(self):
+        enforce = self.root / 'sys/fs/selinux/enforce'
+        enforce.parent.mkdir(parents=True)
+        enforce.write_text('1')
+        config = self.root / 'etc/named.conf'
+        config.parent.mkdir(exist_ok=True)
+        config.write_text('options { recursion no; };')
+        return config
+
+    def test_selinux_port_labels_cover_tcp_udp_and_have_precise_undo(self):
+        self.selinux_fixture()
+        calls, undo = [], []
+        def run(args):
+            calls.append(args)
+            if args == ['semanage', 'port', '-l']:
+                return 'dns_port_t tcp 53\nmdns_port_t udp 5353\n'
+            return ''
+        with patch.object(operations.shutil, 'which', return_value='/usr/sbin/semanage'):
+            steps = operations.prepare_bind_selinux(self.root, run, undo)
+        self.assertEqual(len(steps), 2)
+        self.assertIn(['semanage', 'port', '-a', '-t', 'dns_port_t', '-p', 'tcp', '5353'], calls)
+        self.assertIn(['semanage', 'port', '-m', '-t', 'dns_port_t', '-p', 'udp', '5353'], calls)
+        self.assertEqual(undo, [['semanage', 'port', '-d', '-p', 'tcp', '5353'], ['semanage', 'port', '-d', '-p', 'udp', '5353']])
+
+    def test_selinux_failure_undoes_previous_port_and_preserves_config(self):
+        config = self.selinux_fixture()
+        runner = FakeRunner(self.root)
+        def run(args):
+            if args == ['semanage', 'port', '-l']:
+                return 'mdns_port_t udp 5353\n'
+            if args[:3] == ['semanage', 'port', '-m']:
+                raise operations.OperationError('policy mutation failed')
+            return runner(args)
+        with patch.object(operations.shutil, 'which', return_value='/usr/sbin/semanage'):
+            with self.assertRaisesRegex(operations.OperationError, 'policy mutation failed'):
+                operations.configure_bind({'forwarders': ['9.9.9.9']}, self.root, run)
+        self.assertEqual(config.read_text(), 'options { recursion no; };')
+        self.assertIn(['semanage', 'port', '-d', '-p', 'tcp', '5353'], runner.calls)
+        self.assertFalse(any(args[0] == 'dig' for args in runner.calls))
+
+    def test_preexisting_local_selinux_label_is_restored_not_deleted(self):
+        self.selinux_fixture()
+        undo = []
+        def run(args):
+            if args == ['semanage', 'port', '-l']:
+                return 'dns_port_t tcp 5353\ncustom_port_t udp 5353\n'
+            if args == ['semanage', 'port', '-l', '-C']:
+                return 'custom_port_t udp 5353\n'
+            return ''
+        with patch.object(operations.shutil, 'which', return_value='/usr/sbin/semanage'):
+            operations.prepare_bind_selinux(self.root, run, undo)
+        self.assertEqual(undo, [['semanage', 'port', '-m', '-t', 'custom_port_t', '-p', 'udp', '5353']])
+
+    def test_foreign_5353_listener_is_preserved(self):
+        config = self.root / 'etc/named.conf'
+        config.parent.mkdir()
+        config.write_text('options { recursion no; };')
+        runner = FakeRunner(self.root)
+        def run(args):
+            if args[0] == 'ss':
+                return 'udp UNCONN 0 0 0.0.0.0:5353 0.0.0.0:* users:(("avahi-daemon",pid=1,fd=2))'
+            return runner(args)
+        with self.assertRaisesRegex(operations.OperationError, 'ocupada por outro processo'):
+            operations.configure_bind({'forwarders': ['9.9.9.9']}, self.root, run)
+        self.assertEqual(config.read_text(), 'options { recursion no; };')
+        self.assertFalse(any(args[:2] in [['systemctl', 'stop'], ['systemctl', 'restart']] for args in runner.calls))
+
+    def test_custom_namedconf_is_detected_before_modification(self):
+        sysconfig = self.root / 'etc/sysconfig/named'
+        sysconfig.parent.mkdir(parents=True)
+        sysconfig.write_text('NAMEDCONF="/etc/custom/named.conf"\n')
+        with self.assertRaisesRegex(operations.OperationError, 'NAMEDCONF aponta'):
+            operations.check_bind_runtime(self.root, self.root / 'etc/named.conf', 'named', FakeRunner(self.root))
+
+    def test_missing_diagnostic_tool_does_not_hide_bind_failure(self):
+        def run(args):
+            if args[0] == 'dig':
+                raise operations.OperationError('connection refused')
+            raise FileNotFoundError(args[0])
+        with self.assertRaisesRegex(operations.OperationError, 'LOCAL.*connection refused'):
+            operations.wait_bind_ready(run, 'named', attempts=1)
+
     def test_remote_demote_rechecks_identity_and_fsmo_on_target(self):
         request = {'target_name': 'SECONDARY', 'primary_hostname': 'primary.example.test',
                    'admin_username': 'administrator', 'admin_password': 'secret-test-only'}
