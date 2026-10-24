@@ -33,12 +33,13 @@ elif name == 'systemctl':
     sys.exit(1)
 elif name == 'samba-tool':
     if args == ['computer', 'list']:
-        print('DC-DESKTOP$\\nSECONDARY$\\nPRIMARY$')
+        print('DC-DESKTOP$\\nSECONDARY$\\nPRIMARY$\\nREADONLY$')
     elif args[:2] == ['computer', 'show']:
-        dc = args[2].rstrip('$') in ['SECONDARY', 'PRIMARY']
+        dc = args[2].rstrip('$') in ['SECONDARY', 'PRIMARY', 'READONLY']
+        readonly = args[2].rstrip('$') == 'READONLY'
         print('sAMAccountName: ' + args[2].rstrip('$') + '$')
-        print('userAccountControl: ' + ('532480' if dc else '4096'))
-        print('primaryGroupID: ' + ('516' if dc else '515'))
+        print('userAccountControl: ' + ('67112960' if readonly else '532480' if dc else '4096'))
+        print('primaryGroupID: ' + ('521' if readonly else '516' if dc else '515'))
         print('dNSHostName: 127.0.0.1')
     elif args == ['fsmo', 'show']:
         print('PdcEmulationMasterRole owner: CN=NTDS Settings,CN=PRIMARY,CN=Servers')
@@ -67,7 +68,7 @@ def main():
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         env = dict(os.environ, PATH=str(tmp) + os.pathsep + os.environ['PATH'],
-                   AUTH_TOKEN_SECRET='astral-regression-only-secret',
+                   AUTH_TOKEN_SECRET='astral-regression-only-secret', ASTRAL_PRIMARY_DC='SECONDARY',
                    AD_TEST_LOG=str(tmp / 'calls.jsonl'), ASTRAL_BIND_ADDR=f'127.0.0.1:{port}',
                    ASTRAL_WEB_DIST=str(ROOT / 'web/dist'))
         proc = subprocess.Popen([str(ROOT / 'target/debug/astral-ad-dns')], cwd=ROOT,
@@ -101,6 +102,11 @@ def main():
             assert data['data'][0]['is_dc'] is False, data
             assert data['data'][1]['is_dc'] is True, data
             assert data['data'][2]['is_local'] is True, data
+            assert data['data'][2]['is_primary'] is True, data
+            assert data['data'][3]['is_rodc'] is True, data
+            for target, action in [('PRIMARY', 'promote_primary'), ('READONLY', 'promote_primary'), ('SECONDARY', 'promote_writable')]:
+                assert request('POST', '/api/computers/' + target + '/transition', {'action': action, 'admin_username': 'test', 'admin_password': 'test'})[0] == 400
+            assert request('POST', '/api/computers/SECONDARY/transition', {'action': 'promote_primary', 'admin_username': 'test', 'admin_password': 'test'}, auth=False)[0] == 401
             assert request('DELETE', '/api/computers/DC-DESKTOP%24', auth=False)[0] == 401
             assert request('DELETE', '/api/computers/DC-DESKTOP%24')[0] == 200
             assert ['samba-tool', 'computer', 'delete', 'DC-DESKTOP'] in calls()

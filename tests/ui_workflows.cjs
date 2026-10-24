@@ -12,7 +12,7 @@ const data = {
  '/api/bind/status': { service_name: 'named', service_active: true, syntax_valid: true, listening_on_5353: true, loopback_only: true, forwarders: ['9.9.9.9'], warnings: [] },
  '/api/bind/logs': { success: true, data: [] },
  '/api/groups': { success: true, data: [{ name: "R&D's Group" }] },
- '/api/computers': { success: true, data: [{ name: 'PRIMARY$', is_dc: true, is_local: true, is_primary: true }, { name: 'SECONDARY$', is_dc: true, is_local: false, is_primary: false }] },
+ '/api/computers': { success: true, data: [{ name: 'PRIMARY$', is_dc: true, is_local: true, is_primary: true }, { name: 'SECONDARY$', is_dc: true, is_local: false, is_primary: false, is_rodc: false }, { name: 'READONLY$', is_dc: true, is_primary: false, is_local: false, is_rodc: true }] },
  '/api/backups': { success: true, data: [{ filename: 'domain.tar.bz2', size_human: '1 MB' }] },
  '/api/provision/preflight': { fqdn: 'dc.example.test', samba_installed: true },
  '/api/provision/verify-ad-dns': { success: true, data: {} },
@@ -39,7 +39,16 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
   assert(calls.some(([route, options]) => route === '/api/bind/forwarders' && JSON.parse(options.body).dry_run));
   await click([...document.querySelectorAll('aside button')].find(node => node.textContent.includes('Computadores & DCs')));
   assert(document.body.textContent.includes('Primário protegido'));
-  assert.equal([...document.querySelectorAll('button')].filter(node => node.textContent === 'Despromover').length, 1);
+  assert.equal([...document.querySelectorAll('button')].filter(node => node.textContent === 'Despromover').length, 2);
+  await click(button('Promover a principal'));
+  assert(document.querySelector('[aria-label="Promover secundário a principal"]'));
+  assert(document.body.textContent.includes('O antigo principal permanece ativo como secundário'));
+  await click(button('Cancelar'));
+  await click(button('Tornar gravável'));
+  assert(document.querySelector('[aria-label="Converter RODC em DC gravável secundário"]'));
+  assert(button('Executar transição').disabled);
+  assert(document.querySelector('[role="dialog"] input[type="checkbox"]'));
+  await click(button('Cancelar'));
   await click(button('Despromover'));
   assert(document.querySelector('[aria-label="Despromover DC secundário"]'));
   await click(button('Cancelar'));

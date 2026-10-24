@@ -377,9 +377,38 @@ def demote_controller(request):
             'A conta de computador remanescente pode ser excluída após atualizar a lista.']
 
 
+def transition_controller(request):
+    import shlex
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', request.get('ssh_user', 'root')):
+        raise OperationError('Usuário SSH inválido.')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]*', request.get('target_hostname', '')):
+        raise OperationError('Hostname de destino inválido.')
+    program = Path(__file__).with_name('dc_lifecycle.py').read_text()
+    if request.get('local'):
+        command = ['python3', '-c', program]
+    else:
+        remote = ['python3', '-c', program]
+        if request['ssh_user'] != 'root':
+            remote = ['sudo', '-n', '--'] + remote
+        command = ['ssh', '-T', '-oBatchMode=yes', '-oStrictHostKeyChecking=yes', '-oConnectTimeout=10',
+                   request['ssh_user'] + '@' + request['target_hostname'], shlex.join(remote)]
+    result = subprocess.run(command, input=json.dumps(request), text=True, capture_output=True, timeout=3600)
+    try:
+        response = json.loads(result.stdout)
+    except ValueError as error:
+        raise OperationError('Falha de conexão/transição no DC: ' + result.stderr[-2000:]) from error
+    if result.returncode or not response.get('success'):
+        raise OperationError(response.get('error', 'Transição não concluída.'))
+    if request['action'] == 'promote_primary' and not request.get('dry_run'):
+        # Fallback only: live FSMO queries remain authoritative.
+        state = Path('/var/lib/astral-ad-dns/primary-dc.json')
+        atomic_write(state, json.dumps({'name': request['target_name'], 'hostname': request['target_hostname']}))
+    return response.get('steps', [])
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['restore', 'bind', 'demote'])
+    parser.add_argument('operation', choices=['restore', 'bind', 'demote', 'transition'])
     parser.add_argument('--request')
     parser.add_argument('--request-stdin', action='store_true')
     args = parser.parse_args()
@@ -389,7 +418,7 @@ def main():
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            steps = {'restore': restore_domain, 'bind': configure_bind, 'demote': demote_controller}[args.operation](request)
+            steps = {'restore': restore_domain, 'bind': configure_bind, 'demote': demote_controller, 'transition': transition_controller}[args.operation](request)
         print(json.dumps({'success': True, 'steps': steps}, ensure_ascii=False))
     except Exception as error:
         print(json.dumps({'success': False, 'error': str(error)}, ensure_ascii=False))

@@ -16,6 +16,7 @@ import ConfirmationDialog, { confirmAction } from './components/ConfirmationDial
 import GpoTab from './components/GpoTab';
 import BackupProvisioning from './components/BackupProvisioning';
 import DemoteControllerModal from './components/DemoteControllerModal';
+import ControllerTransitionModal from './components/ControllerTransitionModal';
 
 
 const API_BASE = typeof window !== "undefined" && window.location.pathname.startsWith("/ad")
@@ -1868,6 +1869,7 @@ function GroupsTab({ t, showToast }) {
 // 4. COMPUTERS TAB
 // ==============================================================================
 function ComputersTab({ t, showToast }) {
+  const [transition, setTransition] = useState(null);
   const [demoteComputer, setDemoteComputer] = useState(null);
   const [computers, setComputers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2007,12 +2009,12 @@ function ComputersTab({ t, showToast }) {
                 <span className={`text-[10px] px-2 py-0.5 rounded font-sans ${
                   comp.is_dc ? 'bg-amber-950 text-amber-300 border border-amber-800' : 'text-slate-400'
                 }`}>
-                  {comp.is_dc ? t.domainController : t.workstation}
+                  {comp.is_rodc ? "RODC · Somente leitura" : comp.is_dc ? t.domainController : t.workstation}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap justify-end items-center gap-1 max-w-40">
               <button
                 type="button"
                 onClick={() => setSelectedPropertiesComp(comp.name)}
@@ -2022,6 +2024,7 @@ function ComputersTab({ t, showToast }) {
                 <Info className="w-3.5 h-3.5" />
               </button>
 
+              {comp.is_dc && !comp.is_primary && <button onClick={() => setTransition({ computer: comp, action: comp.is_rodc ? 'promote_writable' : 'promote_primary' })} className="text-[10px] text-cyan-300 px-2 py-1 rounded bg-cyan-950">{comp.is_rodc ? 'Tornar gravável' : 'Promover a principal'}</button>}
               {comp.is_dc && !comp.is_primary && <button onClick={() => setDemoteComputer(comp)} className="text-[10px] text-amber-300 px-2 py-1 rounded bg-amber-950">Despromover</button>}
               {!comp.is_local && !comp.is_primary && (
                 <button 
@@ -2074,6 +2077,7 @@ function ComputersTab({ t, showToast }) {
         </div>
       )}
 
+      {transition && <ControllerTransitionModal {...transition} customFetch={customFetch} showToast={showToast} onClose={() => setTransition(null)} onSuccess={fetchComputers} />}
       {demoteComputer && <DemoteControllerModal computer={demoteComputer} customFetch={customFetch} showToast={showToast} onClose={() => setDemoteComputer(null)} onSuccess={fetchComputers} />}
       {/* Computer Properties Modal */}
       {selectedPropertiesComp && (

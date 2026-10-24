@@ -70,6 +70,7 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         // Computers
         .route("/api/computers", get(computers::list_computers).post(computers::create_computer))
         .route("/api/computers/{computername}", delete(computers::delete_computer))
+        .route("/api/computers/{computername}/transition", post(computers::transition_controller))
         .route("/api/computers/{computername}/demote", post(computers::demote_controller))
         .route("/api/computers/{computername}/properties", get(computers::get_computer_properties))
 

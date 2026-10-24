@@ -71,3 +71,18 @@ node tests/ui_workflows.cjs
 ```
 
 These tests exercise staging, rollback, archive rejection, recursive DNS failures, demotion identity/FSMO guards and the UI with simulated services/DOM. Real Samba/BIND/SSH integration must still be tested in a lab before production recovery.
+
+## Controller promotion and primary handover
+
+The Computers & DCs tab now distinguishes RODCs and writable DCs:
+
+- **Promover a principal** is offered for writable secondary controllers. It checks both controllers' identity, realm, inbound replication and all seven FSMO owners, then transfers roles to the selected DC, leaving PDC until last. The previous primary stays online as a writable secondary; this operation does not run domain demotion or remove its account. Each role is checked after transfer, and the real naming contexts discovered from DRS are replicated to the previous primary and console observer before success is reported. There is no automatic seizure. If a distributed transfer fails partway, the error lists the roles already confirmed on the target instead of claiming an atomic rollback.
+- **Tornar gravável** is offered for RODCs. It validates replication and BIND, takes a native online domain backup from the writable partner, saves the target configuration and a stopped local replica snapshot, demotes the RODC and joins it again as `DC` with `SAMBA_INTERNAL`. The new data tree is staged, SYSVOL is downloaded from the writable partner over signed SMB, paths/ACLs are updated, and writable status plus replication are checked before success. The primary's FSMO ownership remains unchanged.
+
+Both actions provide a validation-only plan, require a console administrator and domain credentials, and use the previously configured SSH access for remote controllers. RODC conversion requires an explicit interruption/rejoin confirmation. The target needs Samba tooling and `smbclient`, and enough disk space for the domain backup, replica snapshot and newly joined database.
+
+After an RODC demotion starts, the previous replica identity must not be restarted as a rollback. A failed rejoin keeps the service stopped and reports the preserved backup/work tree so an operator can inspect metadata and resume joining the controller. The pre-conversion domain backup is a recovery artifact, while the local replica snapshot is retained for inspection; it is not a replacement for rejoining the domain.
+
+Primary discovery now prefers live PDC emulator ownership. A successfully verified handover records a fallback in `/var/lib/astral-ad-dns/primary-dc.json`; `ASTRAL_PRIMARY_DC` is only the bootstrap fallback when live discovery and the recorded fallback are unavailable. An old environment setting therefore cannot pin the previous principal after a verified handover.
+
+The new `samba-ad-dc/dc_lifecycle.py` must be deployed with `ad_operations.py`. The updated nginx snippet allows a long-running `/computers/{name}/transition` request. No transition has been run against a real domain by the repository tests; lab verification is required before production use.

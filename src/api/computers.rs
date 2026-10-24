@@ -15,6 +15,7 @@ pub struct ComputerItem {
     pub is_dc: bool,
     pub is_local: bool,
     pub is_primary: bool,
+    pub is_rodc: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -46,12 +47,22 @@ fn fsmo_primary(output: &str) -> Option<String> {
 }
 
 fn configured_primary(sudo: Option<&str>) -> Option<String> {
+    let result = run_cmd_dry("samba-tool fsmo show", sudo, false);
+    if result.success {
+        if let Some(primary) = fsmo_primary(&result.stdout) { return Some(primary); }
+    }
+    if let Ok(content) = std::fs::read_to_string("/var/lib/astral-ad-dns/primary-dc.json") {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(name) = value["name"].as_str() { return Some(name.to_uppercase()); }
+        }
+    }
     std::env::var("ASTRAL_PRIMARY_DC").ok().filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().trim_end_matches('$').split('.').next().unwrap_or("").to_uppercase())
-        .or_else(|| {
-            let result = run_cmd_dry("samba-tool fsmo show", sudo, false);
-            if result.success { fsmo_primary(&result.stdout) } else { None }
-        })
+}
+
+fn is_rodc(ldif: &str) -> bool {
+    ldif_value(ldif, "primaryGroupID") == "521" ||
+        ldif_value(ldif, "userAccountControl").parse::<u32>().unwrap_or(0) & 0x4000000 != 0
 }
 
 fn local_netbios(sudo: Option<&str>) -> String {
@@ -259,6 +270,7 @@ pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
             ComputerItem {
                 name: name.to_string(),
                 is_dc: is_domain_controller(&details.stdout),
+                is_rodc: is_rodc(&details.stdout),
                 is_local: clean.eq_ignore_ascii_case(&local),
                 is_primary: primary.as_deref().map(|p| clean.eq_ignore_ascii_case(p)).unwrap_or(false),
             }
@@ -472,6 +484,60 @@ pub async fn demote_controller(
     match result {
         Ok(steps) => (StatusCode::OK, Json(ApiResponse { success: true, message: "DC secundário despromovido.".into(), data: Some(steps), dry_run: false, correlation_id: Some(id) })),
         Err(error) => fail(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TransitionRequest {
+    pub admin_username: String,
+    pub admin_password: String,
+    pub action: String,
+    #[serde(default)] pub dry_run: bool,
+    #[serde(default)] pub rejoin_confirmed: bool,
+}
+
+pub async fn transition_controller(
+    operator: crate::auth::Administrator,
+    Path(computername): Path<String>,
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<TransitionRequest>,
+) -> (StatusCode, Json<ApiResponse<Vec<String>>>) {
+    let sudo = config.sudo_password.as_deref();
+    let fail = |message: String| (StatusCode::BAD_REQUEST, Json(ApiResponse::<Vec<String>> {
+        success: false, message, data: None, dry_run: payload.dry_run, correlation_id: None,
+    }));
+    if !["promote_primary", "promote_writable"].contains(&payload.action.as_str()) {
+        return fail("Transição inválida.".into());
+    }
+    let name = computername.trim_end_matches('$').to_uppercase();
+    let Some(primary) = configured_primary(sudo) else { return fail("Principal não identificado.".into()); };
+    if name == primary { return fail("Selecione um DC secundário; o alvo já é principal.".into()); }
+    let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&name)), sudo, false);
+    if !details.success || !is_domain_controller(&details.stdout) { return fail("Alvo não é um DC válido.".into()); }
+    if (payload.action == "promote_primary" && is_rodc(&details.stdout)) || (payload.action == "promote_writable" && !is_rodc(&details.stdout)) {
+        return fail("Tipo de DC incompatível com a transição solicitada.".into());
+    }
+    if payload.admin_username.trim().is_empty() || payload.admin_password.is_empty() {
+        return fail("Credenciais administrativas são obrigatórias.".into());
+    }
+    let partner = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&primary)), sudo, false);
+    if !partner.success || is_rodc(&partner.stdout) { return fail("Principal gravável não encontrado.".into()); }
+    let realm = run_cmd_dry("testparm -s --parameter-name=realm 2>/dev/null", sudo, false).stdout.trim().to_uppercase();
+    let local_name = local_netbios(sudo);
+    let observer = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&local_name)), sudo, false);
+    let request = serde_json::json!({
+        "action": payload.action, "target_name": name, "target_hostname": ldif_value(&details.stdout, "dNSHostName"),
+        "primary_name": primary, "primary_hostname": ldif_value(&partner.stdout, "dNSHostName"), "realm": realm,
+        "observer_hostname": ldif_value(&observer.stdout, "dNSHostName"), "local": name == local_name,
+        "ssh_user": std::env::var("ASTRAL_DC_SSH_USER").unwrap_or_else(|_| "root".into()),
+        "admin_username": payload.admin_username, "admin_password": payload.admin_password,
+        "dry_run": payload.dry_run, "rejoin_confirmed": payload.rejoin_confirmed,
+    });
+    let result = run_ad_operation("transition", &request, sudo);
+    let id = config.audit.record(&operator.0.username, None, "DC_TRANSITION", &name, payload.dry_run, result.is_ok(), &payload.action);
+    match result {
+        Ok(steps) => (StatusCode::OK, Json(ApiResponse { success: true, message: if payload.dry_run { "Plano de transição validado.".into() } else { "Transição do controlador concluída e validada.".into() }, data: Some(steps), dry_run: payload.dry_run, correlation_id: Some(id) })),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: payload.dry_run, correlation_id: Some(id) })),
     }
 }
 
