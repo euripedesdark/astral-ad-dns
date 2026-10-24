@@ -86,3 +86,23 @@ After an RODC demotion starts, the previous replica identity must not be restart
 Primary discovery now prefers live PDC emulator ownership. A successfully verified handover records a fallback in `/var/lib/astral-ad-dns/primary-dc.json`; `ASTRAL_PRIMARY_DC` is only the bootstrap fallback when live discovery and the recorded fallback are unavailable. An old environment setting therefore cannot pin the previous principal after a verified handover.
 
 The new `samba-ad-dc/dc_lifecycle.py` must be deployed with `ad_operations.py`. The updated nginx snippet allows a long-running `/computers/{name}/transition` request. No transition has been run against a real domain by the repository tests; lab verification is required before production use.
+
+## AD forensic checks and HTML5 reports
+
+The **Forense AD** tab implements the capture → comparison → critical-change review → report flow from Euripedes Batista de Paiva Junior's *Practical Guide: Manual Active Directory Forensic Analysis (Windows and Samba AD)* (`samba-foresic.pdf`). The generated report credits the guide and its source URL.
+
+1. Create an initial reference capture, optionally naming the maintenance/incident context.
+2. Select that reference and capture the current state to compare it.
+3. Follow the asynchronous task in the console, open the persistent HTML5 report in the same screen, and export HTML5 or JSON when needed.
+
+The collector uses native local Samba/LDAP tools with an explicit metadata attribute list, captures the directory naming contexts, DNS zones, GPO metadata, FSMO/replication status, SYSVOL POSIX ACLs, available `security.NTACL` hashes, policy file hashes, time-sync observations and tool/system versions. It records collection intervals and administrative analyst identity. It does not request password hashes, password history, supplemental credentials or Kerberos keys, and does not execute restoration, ACL repair, password changes or clock resynchronization. The local evidence store is the only intentional write target of the collection workflow.
+
+Comparisons use object GUIDs, unfolded/base64-aware LDIF and normalized multi-value attributes, so an object rename is a modification rather than a deletion/recreation. Reports include added/removed/not-observed/modified objects, changed AD permission descriptors, new account deactivations, sensitive account/group changes, DNS/GPO changes and SYSVOL content/ACL changes. Privileged-account inventory includes direct/nested sensitive group membership and explicitly labels the historical `adminCount` marker. AD timestamps are rendered in UTC while evidence retains original values.
+
+Incomplete object collection, unconfirmed domain identity, a changed host, or a changed naming-context scope prevents directory differences from being inferred. Incomplete SYSVOL collection similarly prevents false file/ACL differences. Missing tools, access failures and unconfirmed NTP synchronization are displayed as limitations. Changes observed between captures do not establish authorship, compromise or an exact deletion timestamp. Replicated Windows AD changes visible in the local Samba directory are covered; remote Windows Security Event Logs and Windows host snapshots are not collected by this local Samba workflow.
+
+Snapshots, raw metadata evidence, JSON reports, HTML5 reports and SHA-256 manifests persist in `/var/lib/astral-ad-dns/forensics/`, with restricted directory/file access. The collector `samba-ad-dc/ad_forensics.py` must be deployed with the other helpers. All forensic API routes require an administrator session, use no-store responses, and reject invalid report identifiers. HTML is escaped, served with a restrictive CSP and shown in a sandboxed frame. Stored evidence is checked against its manifest before comparison or report display. The manifests provide local integrity checks, not a digital signature or independently timestamped chain of custody.
+
+Capture tasks run in the background so a long scan does not depend on an HTTP proxy timeout. Reports and snapshots survive service restarts; in-memory task status does not, so use the persistent history after restarting. Evidence is retained until an administrator manages the storage; the console does not automatically delete forensic records.
+
+Tests cover LDIF folding/base64/GUID identity, safe HTML rendering, incomplete collection, domain/scope separation, nested privileges, tamper detection, protected report access, background job completion and embedded HTML5 display. Run the existing Python discovery, API regression and UI workflow commands to exercise them. Real-domain capture still requires validation with the deployed Samba tools and permissions.

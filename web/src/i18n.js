@@ -1,5 +1,6 @@
 export const translations = {
   pt: {
+    forensics: "Forense AD",
     donate: "Doações",
     donateTitle: "Apoie o Astral AD & Hybrid DNS",
     autoReconcilePorts: "Auto-Reconciliar Portas Ativas",
@@ -309,6 +310,7 @@ export const translations = {
   },
   
   en: {
+    forensics: "AD Forensics",
     donate: "Donate",
     donateTitle: "Support Astral AD & Hybrid DNS",
     autoReconcilePorts: "Auto-Reconcile Active Ports",
@@ -607,6 +609,7 @@ export const translations = {
   },
 
   es: {
+    forensics: "Análisis forense AD",
     donate: "Donar",
     donateTitle: "Apoyar Astral AD & Hybrid DNS",
     autoReconcilePorts: "Auto-Reconciliar Puertos Activos",
@@ -905,6 +908,7 @@ export const translations = {
   },
 
   fr: {
+    forensics: "Analyse forensique AD",
     donate: "Faire un don",
     donateTitle: "Soutenir Astral AD & Hybrid DNS",
     autoReconcilePorts: "Auto-Réconcilier les Ports Actifs",

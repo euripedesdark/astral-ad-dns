@@ -13,6 +13,7 @@ pub mod provision;
 pub mod firewall;
 pub mod diagnostics;
 pub mod audit;
+pub mod forensics;
 
 use axum::{
     routing::{get, post, delete},
@@ -40,6 +41,13 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
 
         // Diagnóstico Completo de Conexão e Dependências
         .route("/api/diagnostics", get(diagnostics::run_diagnostics))
+
+        // Forense AD: coleta assíncrona, evidências persistentes e relatórios HTML5.
+        .route("/api/forensics", get(forensics::overview))
+        .route("/api/forensics/captures", post(forensics::start_capture))
+        .route("/api/forensics/jobs/{id}", get(forensics::job_status))
+        .route("/api/forensics/reports/{id}", get(forensics::report))
+        .route("/api/forensics/reports/{id}/html", get(forensics::report_html))
 
         // Histórico Operacional e Auditoria
         .route("/api/audit", get(audit::list_audit_events).delete(audit::clear_audit_events))

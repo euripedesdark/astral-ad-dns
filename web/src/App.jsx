@@ -14,6 +14,7 @@ import RestoreBackupModal from './components/RestoreBackupModal';
 import OUTab from './components/OUTab';
 import ConfirmationDialog, { confirmAction } from './components/ConfirmationDialog';
 import GpoTab from './components/GpoTab';
+import ForensicsTab from './components/ForensicsTab';
 import BackupProvisioning from './components/BackupProvisioning';
 import DemoteControllerModal from './components/DemoteControllerModal';
 import ControllerTransitionModal from './components/ControllerTransitionModal';
@@ -531,6 +532,7 @@ function Application() {
           <NavItem active={activeTab === 'bind'} onClick={() => setActiveTab('bind')} icon={<Network className="w-4 h-4" />} label={t.bind} />
           <NavItem active={activeTab === 'health'} onClick={() => setActiveTab('health')} icon={<Layers className="w-4 h-4" />} label={t.health} />
           <NavItem active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} icon={<Activity className="w-4 h-4 text-emerald-400" />} label={t.diagnostics} />
+          <NavItem active={activeTab === 'forensics'} onClick={() => setActiveTab('forensics')} icon={<Shield className="w-4 h-4 text-cyan-400" />} label={t.forensics || 'Forense AD'} />
           <NavItem active={activeTab === 'audit'} onClick={() => setActiveTab('audit')} icon={<Terminal className="w-4 h-4 text-indigo-400" />} label={t.audit} />
           <NavItem active={activeTab === 'backups'} onClick={() => setActiveTab('backups')} icon={<HardDrive className="w-4 h-4" />} label={t.backups} />
           <NavItem active={activeTab === 'terminal'} onClick={() => setActiveTab('terminal')} icon={<Terminal className="w-4 h-4 text-emerald-400" />} label={t.terminal || "Terminal"} />
@@ -548,6 +550,7 @@ function Application() {
           {activeTab === 'bind' && <BindTab t={t} showToast={showToast} />}
           {activeTab === 'health' && <HealthTab t={t} showToast={showToast} />}
           {activeTab === 'diagnostics' && <DiagnosticsTab t={t} showToast={showToast} />}
+          {activeTab === 'forensics' && <ForensicsTab customFetch={customFetch} showToast={showToast} />}
           {activeTab === 'audit' && <AuditTab t={t} showToast={showToast} />}
           {activeTab === 'backups' && <BackupsTab t={t} showToast={showToast} />}
           {activeTab === 'terminal' && <TerminalTab t={t} operator={operator} showToast={showToast} customFetch={customFetch} />}

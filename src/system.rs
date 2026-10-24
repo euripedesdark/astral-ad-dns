@@ -512,7 +512,7 @@ mod tests {
 }
 
 /// Locate the operation helper beside the installed binary or in the source tree.
-pub fn run_ad_operation(operation: &str, request: &serde_json::Value, sudo: Option<&str>) -> Result<Vec<String>, String> {
+pub fn run_ad_operation_value(operation: &str, request: &serde_json::Value, sudo: Option<&str>) -> Result<serde_json::Value, String> {
     let mut candidates = Vec::new();
     if let Ok(directory) = std::env::var("ASTRAL_SCRIPTS_DIR") {
         candidates.push(std::path::PathBuf::from(directory).join("ad_operations.py"));
@@ -548,5 +548,10 @@ pub fn run_ad_operation(operation: &str, request: &serde_json::Value, sudo: Opti
     if !result.success || value["success"] != true {
         return Err(value["error"].as_str().unwrap_or("Falha na operação AD/DNS").to_string());
     }
+    Ok(value)
+}
+
+pub fn run_ad_operation(operation: &str, request: &serde_json::Value, sudo: Option<&str>) -> Result<Vec<String>, String> {
+    let value = run_ad_operation_value(operation, request, sudo)?;
     Ok(value["steps"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default())
 }

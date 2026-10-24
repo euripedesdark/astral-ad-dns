@@ -13,6 +13,8 @@ const data = {
  '/api/bind/logs': { success: true, data: [] },
  '/api/groups': { success: true, data: [{ name: "R&D's Group" }] },
  '/api/computers': { success: true, data: [{ name: 'PRIMARY$', is_dc: true, is_local: true, is_primary: true }, { name: 'SECONDARY$', is_dc: true, is_local: false, is_primary: false, is_rodc: false }, { name: 'READONLY$', is_dc: true, is_primary: false, is_local: false, is_rodc: true }] },
+ '/api/forensics': { success: true, data: { snapshots: [{ id: 'snp_' + 'a'.repeat(32), label: 'Reference', status: 'complete' }], reports: [{ id: 'rep_' + 'b'.repeat(32), created_at: '2026-10-23', analyst: 'tester', status: 'partial' }] } },
+ ['/api/forensics/reports/rep_' + 'b'.repeat(32)]: { success: true, data: { id: 'rep_' + 'b'.repeat(32), snapshot: { status: 'partial' } } },
  '/api/backups': { success: true, data: [{ filename: 'domain.tar.bz2', size_human: '1 MB' }] },
  '/api/provision/preflight': { fqdn: 'dc.example.test', samba_installed: true },
  '/api/provision/verify-ad-dns': { success: true, data: {} },
@@ -20,7 +22,7 @@ const data = {
 global.fetch = async (url, options = {}) => {
   const route = url.replace(/^\/ad/, '');
   calls.push([route, options]);
-  return { ok: true, json: async () => data[route] || { success: true, message: 'OK', data: [] } };
+  return { ok: true, text: async () => '<!doctype html><html><body>Forensic test report</body></html>', json: async () => data[route] || { success: true, message: 'OK', data: [] } };
 };
 const bundle = path.resolve(__dirname, '../web/node_modules/.cache/ad-app.cjs');
 require('../web/node_modules/esbuild').buildSync({ entryPoints: [path.resolve(__dirname, '../web/src/App.jsx')], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', external: ['react'] });
@@ -52,6 +54,15 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
   await click(button('Despromover'));
   assert(document.querySelector('[aria-label="Despromover DC secundário"]'));
   await click(button('Cancelar'));
+  await click(button('Forense AD'));
+  assert(document.querySelector('[aria-label="Snapshot de referência"]'));
+  await click(button('Ver HTML5'));
+  const frame = document.querySelector('iframe[title="Relatório forense HTML5"]');
+  assert(frame);
+  assert.equal(frame.getAttribute('sandbox'), '');
+  assert(frame.getAttribute('srcdoc').includes('Forensic test report'));
+  assert(document.body.textContent.includes('Coleta parcial'));
+  assert(button('Exportar HTML5'));
   await click(button('Backups'));
   assert(document.querySelector('input[type="file"]'));
   const selector = document.querySelector('[aria-label="Backup para recuperação"]');

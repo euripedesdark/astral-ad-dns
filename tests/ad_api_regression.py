@@ -71,6 +71,18 @@ def main():
                    AUTH_TOKEN_SECRET='astral-regression-only-secret', ASTRAL_PRIMARY_DC='SECONDARY',
                    AD_TEST_LOG=str(tmp / 'calls.jsonl'), ASTRAL_BIND_ADDR=f'127.0.0.1:{port}',
                    ASTRAL_WEB_DIST=str(ROOT / 'web/dist'))
+        helpers = tmp / 'helpers'
+        helpers.mkdir()
+        (helpers / 'ad_operations.py').write_text("""import json, sys
+request = json.load(sys.stdin)
+action = request.get('action')
+if action == 'overview': data = {'snapshots': [], 'reports': []}
+elif action == 'html': data = {'html': '<!doctype html><html><body>Forensic test report</body></html>'}
+elif action == 'report': data = {'id': request['report_id']}
+else: data = {'snapshot_id': 'snp_' + 'a' * 32, 'report_id': 'rep_' + 'b' * 32, 'status': 'partial', 'summary': {}}
+print(json.dumps({'success': True, 'data': data}))
+""")
+        env['ASTRAL_SCRIPTS_DIR'] = str(helpers)
         proc = subprocess.Popen([str(ROOT / 'target/debug/astral-ad-dns')], cwd=ROOT,
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         def token(admin=True):
@@ -147,6 +159,25 @@ def main():
                 'dns_backend': 'BIND9_DLZ', 'dry_run': False})
             assert status == 400, result
             assert len(calls()) == before
+            assert request('GET', '/api/forensics', auth=False)[0] == 401
+            assert request('GET', '/api/forensics')[1]['data']['reports'] == []
+            assert request('POST', '/api/forensics/captures', {'baseline_id': '../invalid'})[0] == 400
+            code, started = request('POST', '/api/forensics/captures', {'label': 'HTTP regression'})
+            assert code == 202, started
+            job_id = started['data']['id']
+            for _ in range(100):
+                _, state = request('GET', '/api/forensics/jobs/' + job_id)
+                if state['data']['status'] != 'running': break
+                time.sleep(.05)
+            assert state['data']['status'] == 'completed', state
+            report_id = state['data']['result']['report_id']
+            assert request('GET', '/api/forensics/reports/' + report_id)[0] == 200
+            req = urllib.request.Request(f'http://127.0.0.1:{port}/api/forensics/reports/{report_id}/html', headers={'Authorization': 'Bearer ' + token()})
+            with urllib.request.urlopen(req, timeout=5) as html:
+                assert 'text/html' in html.headers['Content-Type']
+                assert 'sandbox' in html.headers['Content-Security-Policy']
+                assert html.headers['Cache-Control'] == 'no-store'
+                assert b'<!doctype html>' in html.read()
             print('PASS: computer/DC detection and deletion, local DC protection, DC metadata cleanup, '
                   'group/OU special characters, recursive OU opt-in, protected objects, dry-run and DLZ rejection')
         finally:
