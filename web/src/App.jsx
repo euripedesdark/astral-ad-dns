@@ -3753,9 +3753,9 @@ function WizardModal({ onClose, t, showToast }) {
   // Form
   const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
   const [workgroup, setWorkgroup] = useState('SRVCLOUD');
-  const [adminPassword, setAdminPassword] = useState('Copa@@2026');
-  const [setupBind, setSetupBind] = useState(true);
-  const [targetDcIp, setTargetDcIp] = useState('192.168.2.10');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [setupBind, setSetupBind] = useState(false);
+  const [targetDcIp, setTargetDcIp] = useState('');
   const [targetAdmin, setTargetAdmin] = useState('administrator');
   const [dcNetbiosName, setDcNetbiosName] = useState('DC2');
   const [cleanExisting, setCleanExisting] = useState(false);
@@ -3772,12 +3772,12 @@ function WizardModal({ onClose, t, showToast }) {
 
   const checkAdDns = async () => {
     try {
-      const res = await customFetch('/api/provision/verify-ad-dns');
+      const res = await customFetch('/api/provision/verify-ad-dns?' + new URLSearchParams({ realm, target_dc_ip: targetDcIp.trim() }));
       if (res.ok) {
         const data = await res.json();
         setDnsCheck(data);
         if (data.hostname) {
-          setDcNetbiosName(data.hostname.toUpperCase());
+          setDcNetbiosName(current => !current || current === 'DC2' ? data.hostname.toUpperCase() : current);
         }
       }
     } catch (e) {
@@ -3859,7 +3859,20 @@ function WizardModal({ onClose, t, showToast }) {
     checkAdDns();
   }, []);
 
+  useEffect(() => {
+    const timer = setTimeout(checkAdDns, 350);
+    return () => clearTimeout(timer);
+  }, [realm, targetDcIp]);
+
   const handleStartProvision = async () => {
+    if (mode !== 'new' && !targetDcIp.trim()) {
+      showToast('Informe o IP do DC parceiro para consultar o AD na porta 53.', 'error');
+      return;
+    }
+    if (!adminPassword) {
+      showToast('Informe a senha do administrador do dominio.', 'error');
+      return;
+    }
     setExecuting(true);
     setCompletedSteps([]);
     setErrorMsg(null);
@@ -3896,7 +3909,7 @@ function WizardModal({ onClose, t, showToast }) {
       const data = await res.json();
       if (res.ok) {
         setCompletedSteps(data.data?.steps_completed || []);
-        showToast(data.message);
+        showToast(data.message, data.data?.steps_completed?.some(item => item.startsWith('[AVISO]')) ? 'warning' : 'success');
       } else {
         setErrorMsg(data.message || 'Falha no provisionamento');
         setCompletedSteps(data.data?.steps_completed || []);
@@ -4142,7 +4155,9 @@ function WizardModal({ onClose, t, showToast }) {
                     <input 
                       type="text" 
                       value={targetDcIp} 
-                      onChange={(e) => setTargetDcIp(e.target.value)} 
+                      onChange={(e) => setTargetDcIp(e.target.value)}
+                      placeholder="Informe o IPv4 do DC existente"
+                      required
                       className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 font-mono focus:border-indigo-500 focus:outline-none"
                     />
                   </div>
@@ -4206,7 +4221,7 @@ function WizardModal({ onClose, t, showToast }) {
                         </span>
                       </div>
                       <p className="text-slate-400 text-[10px]">
-                        Configura o /etc/resolv.conf exclusivamente com o DNS do AD ({targetDcIp}) e 127.0.0.1 (sem DNS externo; encaminhado via BIND/Samba).
+                        Consulta diretamente o DNS do DC parceiro informado ({targetDcIp || "IP obrigatorio"}:53). O BIND local em 127.0.0.1:5353 e opcional e nao e usado para descobrir o AD.
                       </p>
                     </div>
                   )}
@@ -4244,7 +4259,7 @@ function WizardModal({ onClose, t, showToast }) {
                         <span>{t.bindHybridOption}</span>
                       </label>
                       <span className="text-[10px] text-slate-400 block pl-6">
-                        Samba gerencia a porta 53 para o domínio AD e encaminha recursão externa para o BIND 9 na porta 5353.
+                        O ingresso usa o IP do DC parceiro na porta 53. Esta opcao configura recursao local adicional em 127.0.0.1:5353; so sera ativada depois de validada.
                       </span>
                     </div>
                   )}
@@ -4308,8 +4323,8 @@ function WizardModal({ onClose, t, showToast }) {
 
               <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5 font-mono text-[11px]">
                 {completedSteps.map((st, i) => (
-                  <div key={i} className="flex items-center gap-2 text-emerald-400">
-                    <CheckCircle className="w-3.5 h-3.5 shrink-0" />
+                  <div key={i} className={`flex items-center gap-2 ${st.startsWith("[AVISO]") ? "text-amber-400" : "text-emerald-400"}`}>
+                    {st.startsWith("[AVISO]") ? <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> : <CheckCircle className="w-3.5 h-3.5 shrink-0" />}
                     <span>{st}</span>
                   </div>
                 ))}

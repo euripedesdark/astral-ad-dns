@@ -183,9 +183,30 @@ class OperationsTests(unittest.TestCase):
         runner = FakeRunner(self.root)
         def failing_dns(args):
             return 'status: SERVFAIL' if args[0] == 'dig' else runner(args)
-        with self.assertRaises(operations.OperationError):
+        with patch.object(operations.time, 'sleep'), self.assertRaises(operations.OperationError):
             operations.configure_bind({'forwarders': ['9.9.9.9']}, self.root, failing_dns)
         self.assertEqual(config.read_text(), 'options { recursion no; };')
+
+    def test_bind_waits_for_listener_after_restart(self):
+        calls = []
+        def run(args):
+            calls.append(args)
+            if args[0] == 'dig' and len(calls) == 1:
+                raise operations.OperationError('connection refused')
+            return 'status: NOERROR'
+        with patch.object(operations.time, 'sleep'):
+            operations.wait_bind_ready(run, 'named')
+        self.assertEqual(len(calls), 3)
+        self.assertIn('+tcp', calls[-1])
+
+    def test_bind_failure_identifies_local_service_and_collects_diagnostics(self):
+        def run(args):
+            if args[0] == 'dig':
+                raise operations.OperationError('connection refused')
+            return 'named listener unavailable'
+        with patch.object(operations.time, 'sleep'):
+            with self.assertRaisesRegex(operations.OperationError, 'LOCAL.*5353.*named listener unavailable'):
+                operations.wait_bind_ready(run, 'named', attempts=2)
 
     def test_remote_demote_rechecks_identity_and_fsmo_on_target(self):
         request = {'target_name': 'SECONDARY', 'primary_hostname': 'primary.example.test',

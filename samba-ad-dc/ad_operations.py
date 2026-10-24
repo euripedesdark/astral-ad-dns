@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import uuid
+import time
 
 
 class OperationError(RuntimeError):
@@ -135,6 +136,34 @@ def replace_options(content, options):
     raise OperationError('Bloco options incompleto.')
 
 
+def wait_bind_ready(run, service, attempts=6):
+    """Wait for the local recursive listener, separately from AD discovery on :53."""
+    last_error = 'listener ainda indisponivel'
+    for attempt in range(attempts):
+        try:
+            for transport in [[], ['+tcp']]:
+                reply = run(['dig', '@127.0.0.1', '-p', '5353', '.', 'SOA', '+tries=1', '+time=1'] + transport)
+                if 'status: NOERROR' not in reply:
+                    raise OperationError('BIND respondeu sem NOERROR: ' + reply[-400:])
+            return
+        except OperationError as error:
+            last_error = str(error)
+            if attempt + 1 < attempts:
+                time.sleep(0.25)
+    details = []
+    for command in [
+        ['systemctl', 'show', service, '-p', 'ActiveState', '-p', 'SubState', '-p', 'ExecStart'],
+        ['journalctl', '-u', service, '-n', '12', '--no-pager'],
+    ]:
+        try:
+            details.append(run(command)[-1200:])
+        except OperationError:
+            pass
+    raise OperationError('BIND recursivo LOCAL nao respondeu em TCP/UDP 127.0.0.1:5353; '
+                         'este teste nao e o ingresso nem o DNS do DC parceiro na porta 53. '
+                         + last_error + ('; diagnostico: ' + ' '.join(details) if any(details) else ''))
+
+
 def configure_bind(request, root=Path('/'), run=checked_run):
     forwarders = normalize_forwarders(request.get('forwarders', []))
     config, main, service, directory = bind_paths(root)
@@ -168,10 +197,7 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
         run(['systemctl', 'restart', service])
-        for transport in [[], ['+tcp']]:
-            reply = run(['dig', '@127.0.0.1', '-p', '5353', '.', 'SOA', '+tries=1', '+time=3'] + transport)
-            if 'status: NOERROR' not in reply:
-                raise OperationError('BIND iniciou, mas a resolução recursiva não retornou NOERROR.')
+        wait_bind_ready(run, service)
         run(['systemctl', 'enable', service])
         return [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']

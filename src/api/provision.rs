@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{State, Query},
     http::StatusCode,
     response::Json,
 };
@@ -309,17 +309,15 @@ pub async fn provision_new_dc(
         }
     }
 
-    // 3. Configuração do BIND 9 Híbrido (porta 5353)
-    let forwarder = if payload.setup_bind_hybrid.unwrap_or(true) {
-        "127.0.0.1:5353".to_string()
-    } else {
-        payload.dns_forwarder.unwrap_or_else(|| "8.8.8.8".to_string())
-    };
+    // Only point Samba to local BIND after its TCP/UDP health check succeeds.
+    let mut forwarder = payload.upstream_forwarders.as_ref().and_then(|values| values.iter().find(|value| value.parse::<std::net::IpAddr>().map_or(false, |ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()))).cloned()
+        .or_else(|| payload.dns_forwarder.clone().filter(|value| value.parse::<std::net::IpAddr>().map_or(false, |ip| !ip.is_loopback())))
+        .unwrap_or_else(|| "8.8.8.8".into());
     if payload.setup_bind_hybrid.unwrap_or(true) {
         let request = serde_json::json!({"forwarders": payload.upstream_forwarders.clone().unwrap_or_else(|| vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]), "dry_run": d});
         match run_ad_operation("bind", &request, sudo) {
-            Ok(bind_steps) => steps.extend(bind_steps),
-            Err(error) => return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: d, correlation_id: None })),
+            Ok(bind_steps) => { steps.extend(bind_steps); forwarder = "127.0.0.1:5353".into(); },
+            Err(error) => steps.push(format!("[AVISO] BIND local pendente; o novo AD usara encaminhamento externo {}. {}", forwarder, error)),
         }
     }
 
@@ -449,7 +447,7 @@ pub async fn provision_new_dc(
         StatusCode::CREATED,
         Json(ApiResponse {
             success: true,
-            message: "Controlador de Domínio Samba Active Directory provisionado com sucesso!".to_string(),
+            message: if steps.iter().any(|step| step.starts_with("[AVISO]")) { "Controlador de dominio provisionado com avisos; BIND local pendente (veja etapas).".into() } else { "Controlador de Dominio Samba Active Directory provisionado com sucesso!".into() },
             data: Some(ProvisionResult {
                 steps_completed: steps,
                 error: None,
@@ -472,8 +470,9 @@ fn join_command(realm: &str, role: &str, server: &str, name: &str, user: &str, p
     if realm.split('.').count() < 2 || !realm.split('.').all(|label| !label.is_empty() && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')) {
         return Err("Realm invalido: informe o dominio DNS do AD".into());
     }
-    if server.parse::<std::net::Ipv4Addr>().is_err() {
-        return Err("Informe um endereco IPv4 valido para o DC parceiro".into());
+    let server_ip = server.parse::<std::net::Ipv4Addr>().map_err(|_| "Informe um endereco IPv4 valido para o DC parceiro")?;
+    if server_ip.is_loopback() || server_ip.is_unspecified() || server_ip.is_multicast() || server_ip.is_broadcast() {
+        return Err("O DC parceiro deve ter um IPv4 remoto valido; localhost nao e permitido".into());
     }
     if user.trim().is_empty() || password.is_empty() {
         return Err("Usuario e senha do administrador do dominio sao obrigatorios".into());
@@ -486,6 +485,40 @@ fn join_command(realm: &str, role: &str, server: &str, name: &str, user: &str, p
     if role != "MEMBER" { command.push_str(" --dns-backend=SAMBA_INTERNAL"); }
     // The domain supplies its NetBIOS domain; the DC level is selected by preflight.
     Ok(command)
+}
+
+fn ad_srv_command(realm: &str, partner: &str) -> String {
+    format!("dig @{} -p 53 {} SRV +noall +answer +tries=1 +time=3",
+        shell_quote(partner), shell_quote(&format!("_ldap._tcp.dc._msdcs.{}", realm.to_lowercase())))
+}
+
+fn has_srv_answer(output: &str) -> bool {
+    output.lines().any(|line| !line.starts_with(';') && line.split_whitespace().any(|word| word == "SRV"))
+}
+
+// Optional recursion must never turn a completed AD join into a failed join.
+fn finish_join_bind(partner: &str, setup: Result<Vec<String>, String>, activate: impl FnOnce() -> Result<(), String>) -> Vec<String> {
+    let mut steps = match setup {
+        Ok(steps) => steps,
+        Err(error) => return vec![format!("[AVISO] Ingresso no AD concluido; BIND local pendente. DNS permanece no DC parceiro {}:53. Nao repita limpeza/join por este erro. {}", partner, error)],
+    };
+    match activate() {
+        Ok(()) => steps.push("BIND recursivo local validado em TCP/UDP 127.0.0.1:5353; Samba recarregado.".into()),
+        Err(error) => steps.push(format!("[AVISO] Join concluido; ativacao do encaminhamento BIND pendente. {}", error)),
+    }
+    steps
+}
+
+fn configure_join_bind(partner: &str, sudo: Option<&str>) -> Vec<String> {
+    let request = serde_json::json!({"forwarders": ["8.8.8.8", "1.1.1.1"]});
+    finish_join_bind(partner, run_ad_operation("bind", &request, sudo), || {
+        let previous = fs::read_to_string("/etc/samba/smb.conf").map_err(|error| format!("smb.conf nao pode ser lido; encaminhamento DNS preservado: {}", error))?;
+        let changed = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", sudo, false);
+        if changed.success { return Ok(()); }
+        let restore = run_cmd_dry(&format!("printf '%s' {} > /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", shell_quote(&previous)), sudo, false);
+        Err(format!("{}. {}", changed.stderr,
+            if restore.success { "Configuracao Samba anterior restaurada; DNS do parceiro preservado" } else { "Restauracao/reinicio falhou; verifique smb.conf e o servico Samba antes de qualquer nova tentativa de join" }))
+    })
 }
 
 // Ordered AD functional levels, including domains older than the Samba DC default.
@@ -615,6 +648,15 @@ pub async fn join_domain(
             data: None, dry_run: d, correlation_id: None,
         }));
     }
+    let partner_dns = run_cmd_dry(&ad_srv_command(&realm, target_dc_ip), sudo, false);
+    if !partner_dns.success || !has_srv_answer(&partner_dns.stdout) {
+        return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse {
+            success: false,
+            message: format!("O DNS do DC parceiro {}:53 nao respondeu com registros SRV do dominio {}. Confira o IP do AD, dominio e acesso TCP/UDP 53. Nenhuma limpeza ou alteracao de resolver foi executada. {}", target_dc_ip, realm, partner_dns.stderr),
+            data: None, dry_run: d, correlation_id: None,
+        }));
+    }
+    steps.push(format!("DNS do AD validado diretamente no DC parceiro {}:53 (registros SRV).", target_dc_ip));
     // Read-only compatibility checks must finish before cleanup or resolver changes.
     let mut dc_level = None;
     if domain_role != "MEMBER" {
@@ -710,8 +752,8 @@ pub async fn join_domain(
     if !d {
     // 3. Configurar e verificar previamente o DNS do AD no DC2 (sem DNS externo como Google)
     // Para ingressar no domínio, o DC2 DEVE consultar exclusivamente o DNS do AD.
-    crate::system::configure_ad_dns_resolver(&realm, Some(target_dc_ip), sudo);
-    steps.push(format!("Resolver local (/etc/resolv.conf) apontado exclusivamente para o DNS do AD ({}) e 127.0.0.1.", target_dc_ip));
+    crate::system::configure_partner_dns_resolver(&realm, target_dc_ip, sudo);
+    steps.push(format!("Resolver local (/etc/resolv.conf) apontado exclusivamente para o DC parceiro {}:53 durante o ingresso.", target_dc_ip));
 
     // Testa se o DNS do AD resolve os registros de serviço do domínio
     let srv_res = run_cmd_dry(&format!("host -t srv _ldap._tcp.dc._msdcs.{} 2>/dev/null", realm.to_lowercase()), sudo, false);
@@ -851,16 +893,8 @@ pub async fn join_domain(
         let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
         steps.push("Serviço Samba Active Directory DC (RODC) inicializado e habilitado no systemd.".to_string());
 
-        if payload.setup_bind_hybrid.unwrap_or(true) {
-            let request = serde_json::json!({"forwarders": ["8.8.8.8", "1.1.1.1"]});
-            if let Err(error) = run_ad_operation("bind", &request, sudo) {
-                return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: false, correlation_id: None }));
-            }
-            let changed = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", sudo, false);
-            if !changed.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse { success: false, message: changed.stderr, data: None, dry_run: false, correlation_id: None }));
-            }
-            steps.push("BIND recursivo validado em TCP/UDP 127.0.0.1:5353 e Samba recarregado.".into());
+        if payload.setup_bind_hybrid.unwrap_or(false) {
+            steps.extend(configure_join_bind(target_dc_ip, sudo));
         }
 
         let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
@@ -913,16 +947,8 @@ pub async fn join_domain(
         let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
         steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
 
-        if payload.setup_bind_hybrid.unwrap_or(true) {
-            let request = serde_json::json!({"forwarders": ["8.8.8.8", "1.1.1.1"]});
-            if let Err(error) = run_ad_operation("bind", &request, sudo) {
-                return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: false, correlation_id: None }));
-            }
-            let changed = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", sudo, false);
-            if !changed.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse { success: false, message: changed.stderr, data: None, dry_run: false, correlation_id: None }));
-            }
-            steps.push("BIND recursivo validado em TCP/UDP 127.0.0.1:5353 e Samba recarregado.".into());
+        if payload.setup_bind_hybrid.unwrap_or(false) {
+            steps.extend(configure_join_bind(target_dc_ip, sudo));
         }
 
         let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
@@ -948,7 +974,7 @@ pub async fn join_domain(
         StatusCode::OK,
         Json(ApiResponse {
             success: true,
-            message: "Ingresso no domínio e sincronização DNS concluídos com sucesso!".to_string(),
+            message: if steps.iter().any(|step| step.starts_with("[AVISO]")) { "Ingresso no AD concluido com avisos nas etapas opcionais; consulte os detalhes antes de repetir qualquer operacao.".into() } else { "Ingresso no dominio concluido com sucesso!".into() },
             data: Some(ProvisionResult {
                 steps_completed: steps,
                 error: None,
@@ -1050,6 +1076,7 @@ pub async fn reset_samba_state(
 /// Endpoint de diagnóstico e verificação do status do DNS do AD no DC2
 pub async fn verify_ad_dns_status(
     State(config): State<Arc<AppConfig>>,
+    Query(parameters): Query<std::collections::HashMap<String, String>>,
 ) -> Json<AdDnsVerification> {
     let sudo = config.sudo_password.as_deref();
 
@@ -1060,51 +1087,29 @@ pub async fn verify_ad_dns_status(
     let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
     let local_ip = ip_res.stdout.trim().to_string();
 
-    let partner_dc_ip = "192.168.2.10".to_string();
-    let realm = "SRVCLOUD.CLOUD".to_string();
-
+    let partner_dc_ip = parameters.get("target_dc_ip").cloned().unwrap_or_default().trim().to_string();
+    let realm = parameters.get("realm").cloned().unwrap_or_default().trim().to_uppercase();
+    let valid = partner_dc_ip.parse::<std::net::Ipv4Addr>().map_or(false, |ip| !ip.is_loopback() && !ip.is_unspecified())
+        && realm.split('.').count() >= 2 && realm.split('.').all(|label| !label.is_empty() && label.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-'));
     let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-    let mut nameservers = Vec::new();
-    for line in resolv_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("nameserver") {
-            if let Some(ns) = trimmed.split_whitespace().nth(1) {
-                nameservers.push(ns.to_string());
-            }
-        }
-    }
-
-    let resolv_conf_configured = nameservers.contains(&"192.168.2.10".to_string()) || nameservers.contains(&"127.0.0.1".to_string());
-
-    // Teste de resolução SRV do Active Directory
-    let srv_res = run_cmd_dry("host -t srv _ldap._tcp.dc._msdcs.srvcloud.cloud 2>/dev/null", sudo, false);
-    let ad_srv_resolves = srv_res.success;
-    let ad_srv_target = if ad_srv_resolves {
-        srv_res.stdout.lines().find(|l| l.contains("SRV")).and_then(|l| l.split_whitespace().last()).map(|s| s.trim_end_matches('.').to_string())
-    } else {
-        None
-    };
-
+    let nameservers: Vec<String> = resolv_content.lines().filter_map(|line| {
+        let mut words = line.split_whitespace();
+        if words.next() == Some("nameserver") { words.next().map(str::to_string) } else { None }
+    }).collect();
+    let resolv_conf_configured = valid && nameservers.contains(&partner_dc_ip);
+    let srv_res = if valid { Some(run_cmd_dry(&ad_srv_command(&realm, &partner_dc_ip), sudo, false)) } else { None };
+    let ad_srv_resolves = srv_res.as_ref().map_or(false, |reply| reply.success && has_srv_answer(&reply.stdout));
+    let ad_srv_target = srv_res.as_ref().filter(|_| ad_srv_resolves).and_then(|reply| reply.stdout.lines().find(|line| has_srv_answer(line)))
+        .and_then(|line| line.split_whitespace().last()).map(|name| name.trim_end_matches('.').to_string());
     let samba_tool_installed = run_cmd_dry("which samba-tool 2>/dev/null", sudo, false).success;
+    let dc2_a_record_in_ad = valid && run_cmd_dry(&format!("dig @{} {} A +short +tries=1 +time=3", shell_quote(&partner_dc_ip), shell_quote(&format!("{}.{}", hostname, realm.to_lowercase()))), sudo, false)
+        .stdout.lines().any(|ip| ip.trim() == local_ip);
+    let dc2_ns_record_in_ad = valid && run_cmd_dry(&format!("dig @{} {} NS +short +tries=1 +time=3", shell_quote(&partner_dc_ip), shell_quote(&realm.to_lowercase())), sudo, false)
+        .stdout.lines().any(|name| name.trim().trim_end_matches('.').eq_ignore_ascii_case(&format!("{}.{}", hostname, realm.to_lowercase())));
 
-    // Consulta se o DC2 está registrado na zona DNS do AD
-    let q_a = format!("samba-tool dns query {} {} {} A -U administrator%Copa@@2026 2>/dev/null", partner_dc_ip, realm.to_lowercase(), hostname);
-    let dc2_a_record_in_ad = if samba_tool_installed {
-        let r = run_cmd_dry(&q_a, sudo, false);
-        r.success && r.stdout.contains(&local_ip)
-    } else {
-        false
-    };
-
-    let q_ns = format!("samba-tool dns query {} {} @ NS -U administrator%Copa@@2026 2>/dev/null", partner_dc_ip, realm.to_lowercase());
-    let dc2_ns_record_in_ad = if samba_tool_installed {
-        let r = run_cmd_dry(&q_ns, sudo, false);
-        r.success && r.stdout.contains(&hostname)
-    } else {
-        false
-    };
-
-    let message = if ad_srv_resolves && dc2_a_record_in_ad {
+    let message = if !valid {
+        "Informe o IP do DC parceiro e o dominio para testar diretamente o DNS do AD na porta 53.".into()
+    } else if ad_srv_resolves && dc2_a_record_in_ad {
         format!("DNS do AD operacional no DC2: registros A e NS autoritativos ativos na zona {}.", realm.to_lowercase())
     } else if ad_srv_resolves {
         format!("Resolução DNS do AD ativa no DC2, mas registro A de {} ainda não foi adicionado ao AD.", hostname)
@@ -1137,10 +1142,18 @@ pub async fn sync_ad_dns_dc(
     let sudo = config.sudo_password.as_deref();
     let mut steps = Vec::new();
 
-    let realm = payload.realm.unwrap_or_else(|| "SRVCLOUD.CLOUD".to_string()).trim().to_uppercase();
-    let target_dc_ip = payload.target_dc_ip.unwrap_or_else(|| "192.168.2.10".to_string());
-    let admin_user = payload.admin_username.unwrap_or_else(|| "administrator".to_string());
-    let admin_pass = payload.admin_password.unwrap_or_else(|| "Copa@@2026".to_string());
+    let realm = payload.realm.unwrap_or_default().trim().to_uppercase();
+    let target_dc_ip = payload.target_dc_ip.unwrap_or_default().trim().to_string();
+    let admin_user = payload.admin_username.unwrap_or_default();
+    let admin_pass = payload.admin_password.unwrap_or_default();
+    if let Err(message) = join_command(&realm, "MEMBER", &target_dc_ip, "DNS-SYNC", &admin_user, &admin_pass) {
+        return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message, data: None, dry_run: false, correlation_id: None }));
+    }
+    let partner_dns = run_cmd_dry(&ad_srv_command(&realm, &target_dc_ip), sudo, false);
+    if !partner_dns.success || !has_srv_answer(&partner_dns.stdout) {
+        return (StatusCode::PRECONDITION_FAILED, Json(ApiResponse { success: false,
+            message: format!("O DNS do AD {}:53 nao respondeu com SRV para {}; sincronizacao nao executada.", target_dc_ip, realm), data: None, dry_run: false, correlation_id: None }));
+    }
 
     let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
     let hostname = host_res.stdout.trim().to_lowercase();
@@ -1446,6 +1459,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unavailable_optional_bind_keeps_partner_and_never_activates_loopback() {
+        let steps = finish_join_bind("192.168.2.10", Err("connection refused".into()), || panic!("must not switch Samba forwarder"));
+        assert!(steps[0].starts_with("[AVISO]"));
+        assert!(steps[0].contains("192.168.2.10:53"));
+        let activated = std::cell::Cell::new(false);
+        let steps = finish_join_bind("192.168.2.10", Ok(vec![]), || { activated.set(true); Ok(()) });
+        assert!(activated.get());
+        assert!(!steps.iter().any(|step| step.starts_with("[AVISO]")));
+    }
+
+    #[test]
+    fn ad_discovery_targets_partner_port_53_not_local_bind() {
+        let command = ad_srv_command("SRVCLOUD.CLOUD", "192.168.2.10");
+        assert!(command.contains("@'192.168.2.10' -p 53"));
+        assert!(!command.contains("127.0.0.1"));
+        assert!(!command.contains("5353"));
+        assert!(!has_srv_answer(";; status: NXDOMAIN\n"));
+        assert!(has_srv_answer("_ldap._tcp.dc._msdcs.srvcloud.cloud. 900 IN SRV 0 100 389 dc-erp.srvcloud.cloud."));
+    }
+
+    #[test]
     fn detects_remote_levels_and_preserves_2016_for_replica() {
         let levels = "Forest function level: (Windows) 2016\nDomain function level: (Windows) 2016\nLowest function level of a DC: (Windows) 2016";
         assert_eq!(domain_levels(levels).unwrap(), (7, "2016"));
@@ -1483,6 +1517,8 @@ mod tests {
             ("SRVCLOUD.CLOUD", "DC", "192.168.2.10", "NAME-LONGER-THAN-FIFTEEN"),
             ("SRVCLOUD.CLOUD;id", "DC", "192.168.2.10", "DC2"),
             ("SRVCLOUD.CLOUD", "DC", "192.168.2.10;id", "DC2"),
+            ("SRVCLOUD.CLOUD", "DC", "127.0.0.1", "DC2"),
+            ("SRVCLOUD.CLOUD", "DC", "0.0.0.0", "DC2"),
         ] {
             assert!(join_command(realm, role, ip, name, "Administrator", "password").is_err());
         }

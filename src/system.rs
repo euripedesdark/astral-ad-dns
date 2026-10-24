@@ -431,6 +431,14 @@ pub fn disable_systemd_resolved_and_protect_dns(realm: &str, sudo_pass: Option<&
 }
 
 pub fn configure_ad_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, sudo_pass: Option<&str>) -> CommandResult {
+    configure_dns_resolver(realm, partner_dc_ip, true, sudo_pass)
+}
+
+pub fn configure_partner_dns_resolver(realm: &str, partner_dc_ip: &str, sudo_pass: Option<&str>) -> CommandResult {
+    configure_dns_resolver(realm, Some(partner_dc_ip), false, sudo_pass)
+}
+
+fn configure_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, include_local: bool, sudo_pass: Option<&str>) -> CommandResult {
     let _ = run_cmd_dry("systemctl stop systemd-resolved 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("systemctl disable systemd-resolved 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("chattr -i /etc/resolv.conf 2>/dev/null || true", sudo_pass, false);
@@ -444,7 +452,7 @@ pub fn configure_ad_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, sudo_
             conf.push_str(&format!("nameserver {}\\n", p));
         }
     }
-    conf.push_str("nameserver 127.0.0.1\\n");
+    if include_local { conf.push_str("nameserver 127.0.0.1\\n"); }
 
     let write_cmd = format!("sh -c 'printf \"{}\" > /etc/resolv.conf && chattr +i /etc/resolv.conf'", conf);
     run_cmd_dry(&write_cmd, sudo_pass, false)

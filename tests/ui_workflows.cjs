@@ -16,7 +16,7 @@ const data = {
  '/api/forensics': { success: true, data: { snapshots: [{ id: 'snp_' + 'a'.repeat(32), label: 'Reference', status: 'complete' }], reports: [{ id: 'rep_' + 'b'.repeat(32), created_at: '2026-10-23', analyst: 'tester', status: 'partial' }] } },
  ['/api/forensics/reports/rep_' + 'b'.repeat(32)]: { success: true, data: { id: 'rep_' + 'b'.repeat(32), snapshot: { status: 'partial' } } },
  '/api/backups': { success: true, data: [{ filename: 'domain.tar.bz2', size_human: '1 MB' }] },
- '/api/provision/preflight': { fqdn: 'dc.example.test', samba_installed: true },
+ '/api/provision/preflight': { fqdn: 'dc.example.test', samba_installed: true, ports_open: [] },
  '/api/provision/verify-ad-dns': { success: true, data: {} },
 };
 global.fetch = async (url, options = {}) => {
@@ -70,6 +70,16 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
   await click(button('Configurar recuperação'));
   assert(document.body.textContent.includes('Confirmo que os DCs do domínio original'));
   assert([...document.querySelectorAll('button')].find(node => node.textContent.includes('Simular Restauração')).disabled);
+  await click(button('Assistente AD'));
+  await click(button('Avançar'));
+  await click(button('Avançar'));
+  const partnerIp = document.querySelector('input[placeholder="Informe o IPv4 do DC existente"]');
+  assert(partnerIp && partnerIp.value === '', 'AD partner must be entered, not hardcoded');
+  const bindOption = [...document.querySelectorAll('label')].find(label => label.textContent.includes('BIND') && label.querySelector('input[type="checkbox"]'));
+  assert(bindOption && !bindOption.querySelector('input').checked, 'local BIND must be optional');
+  await click(button('Iniciar Provisionamento'));
+  assert(!calls.some(([route]) => route === '/api/provision/join-dc'), 'must not join without the partner IP');
+  assert(document.body.textContent.includes('Informe o IP do DC parceiro'));
   await act(async () => root.unmount());
   console.log('PASS: BIND renders/plan, primary DC protection, secondary demotion form and backup recovery/import UI');
   process.exit(0);

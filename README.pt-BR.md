@@ -148,3 +148,24 @@ python3 deploy_ad_dns.py --skip-git
 
 Os testes locais validam os comandos e argumentos; a replicacao real deve ser
 verificada no dominio apos o ingresso (`samba-tool drs showrepl`).
+
+
+### DNS do AD e BIND local no ingresso
+
+O assistente exige o IP do DC parceiro. O preflight consulta diretamente
+`dig @IP_DO_AD -p 53 _ldap._tcp.dc._msdcs.DOMINIO SRV`; localhost nao e aceito
+como parceiro. Durante o ingresso, o resolver consulta somente esse parceiro.
+O diagnostico da tela usa IP/dominio informados, sem credenciais embutidas.
+
+`127.0.0.1:5353` e somente o BIND recursivo local opcional. A opcao vem
+desmarcada e nao participa da descoberta do AD. O encaminhamento para esse
+listener so e ativado depois de validar UDP/TCP. Falha apos o join aparece
+como aviso nas etapas, preservando o encaminhamento para o parceiro; nao e
+motivo para limpar a base ou repetir o join. Em um novo dominio, uma falha do
+BIND opcional mantem um forwarder externo valido em vez de apontar para um
+listener local indisponivel.
+
+O teste do BIND aguarda brevemente a inicializacao e, se persistir a falha,
+coleta estado e logs da unit antes de restaurar a configuracao anterior.
+Os testes locais nao comprovam conectividade com o dominio ou o servico BIND
+do servidor de producao.
