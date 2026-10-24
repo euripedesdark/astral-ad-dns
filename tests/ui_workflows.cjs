@@ -22,6 +22,8 @@ const data = {
 global.fetch = async (url, options = {}) => {
   const route = url.replace(/^\/ad/, '');
   calls.push([route, options]);
+  if (route === '/api/provision/join-dc') return {ok:true,json:async()=>({success:true,data:{job_id:'c'.repeat(32)}})};
+  if (route === '/api/provision/jobs/'+'c'.repeat(32)) return {ok:true,json:async()=>({success:true,data:{state:'finished',result:{success:true,message:'Provisionamento concluido',steps_completed:['Backup automatico verificado','Catalogo global confirmado'],backup_path:'/var/backups/astral-ad-dns/provision/test'}}})};
   return { ok: true, text: async () => '<!doctype html><html><body>Forensic test report</body></html>', json: async () => data[route] || { success: true, message: 'OK', data: [] } };
 };
 const bundle = path.resolve(__dirname, '../web/node_modules/.cache/ad-app.cjs');
@@ -80,7 +82,25 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
   await click(button('Iniciar Provisionamento'));
   assert(!calls.some(([route]) => route === '/api/provision/join-dc'), 'must not join without the partner IP');
   assert(document.body.textContent.includes('Informe o IP do DC parceiro'));
+  const tlsOption=[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Configurar certificado LDAPS'));
+  await click(tlsOption.querySelector('input'));
+  assert.equal(document.querySelector('[aria-label="Porta da CA"]').value,'8443');
+  assert(document.body.textContent.includes('escolhe outra livre e abre automaticamente'));
+  await click(tlsOption.querySelector('input'));
+  const {Simulate}=require('../web/node_modules/react-dom/test-utils');
+  await act(async()=>{
+    Simulate.change(partnerIp,{target:{value:'192.0.2.10'}});
+    Simulate.change(document.querySelector('input[type="password"]'),{target:{value:'test-only-password'}});
+  });
+  await click(button('Iniciar Provisionamento'));
+  assert(calls.some(([route])=>route==='/api/provision/jobs/'+'c'.repeat(32)));
+  const posted=calls.find(([route])=>route==='/api/provision/join-dc');
+  assert.deepEqual(JSON.parse(posted[1].body).upstream_forwarders,['8.8.8.8','1.1.1.1']);
+  assert(document.body.textContent.includes('Catalogo global confirmado'));
+  assert(document.body.textContent.includes('/var/backups/astral-ad-dns/provision/test'));
+  assert.equal(localStorage.getItem('astral.provision.job'),null);
+
   await act(async () => root.unmount());
-  console.log('PASS: BIND renders/plan, primary DC protection, secondary demotion form and backup recovery/import UI');
+  console.log('PASS: BIND, DC protection/transitions, backup recovery, required partner IP, automatic CA port controls and asynchronous web provisioning');
   process.exit(0);
 })().catch(error => { console.error(error); process.exit(1); });

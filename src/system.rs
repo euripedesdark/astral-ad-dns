@@ -250,7 +250,6 @@ pub fn required_ports_for_services(services: &EnabledServices) -> Vec<PortRule> 
         ports.push(r("tcp", "3269", "Global Catalog SSL"));
         ports.push(r("tcp", "49152:65535", "RPC Dinâmico TCP (High Ports)"));
         ports.push(r("udp", "49152:65535", "RPC Dinâmico UDP (High Ports)"));
-        ports.push(r("tcp", "8443", "Smallstep Step-CA PKI (TCP)"));
     }
 
     // Portas de DNS (se Samba AD ou BIND 9 estiverem ativos)
@@ -326,9 +325,12 @@ pub fn open_port_safe(rule: &PortRule, sudo_pass: Option<&str>, dry_run: bool) -
         };
     }
 
+    let chain = run_safe_cmd("iptables -S INPUT", sudo_pass).stdout;
+    let first = chain.lines().find(|line| line.starts_with("-A INPUT ")).unwrap_or("");
+    let position = if first.trim() == "-A INPUT -j ts-input" { 2 } else { 1 };
     let add_cmd = format!(
-        "iptables -I INPUT 1 -p {} -m {} --dport {} -j ACCEPT && (iptables-save > /etc/sysconfig/iptables 2>/dev/null || true)",
-        rule.proto, rule.proto, rule.port
+        "iptables -I INPUT {} -p {} -m {} --dport {} -j ACCEPT && (iptables-save > /etc/sysconfig/iptables 2>/dev/null || true)",
+        position, rule.proto, rule.proto, rule.port
     );
 
     run_cmd_dry(&add_cmd, sudo_pass, dry_run)

@@ -77,3 +77,16 @@ host: servico ativo sozinho nao comprova DNS nem replicacao AD.
 
 Depois de atualizar este helper, aplique novamente pela aba **BIND 9 Recursivo**.
 Nao repita o ingresso ou a limpeza da base AD por uma falha dessa etapa opcional.
+
+
+## Provisionamento web com backup e reingresso
+
+O assistente agora oferece **Reingresso com backup automático** e **Reaplicar
+configuração**, com histórico/download dos backups e acompanhamento assíncrono.
+Instala dependências por gerenciador da distribuição, trata iptables, NTP, BIND,
+catálogo global e TLS/Step-CA selecionados na tela. A porta da nova CA é escolhida
+automaticamente se a preferida estiver ocupada, com regras TCP/UDP persistentes.
+As rotas Nginx e o auth-service são preservados. Um alvo com FSMO não é limpo.
+
+[Fluxo completo, comparação com fedoradc-SSL(3).py e limites de recuperação](docs/provisionamento-web.md).
+Este fluxo substitui as antigas instruções de limpeza manual do ingresso.

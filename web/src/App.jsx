@@ -3758,8 +3758,21 @@ function WizardModal({ onClose, t, showToast }) {
   const [targetDcIp, setTargetDcIp] = useState('');
   const [targetAdmin, setTargetAdmin] = useState('administrator');
   const [dcNetbiosName, setDcNetbiosName] = useState('DC2');
+  const [rejoin, setRejoin] = useState(false);
+  const [configurationOnly, setConfigurationOnly] = useState(false);
+  const [upstreamText, setUpstreamText] = useState('8.8.8.8, 1.1.1.1');
+  const [globalCatalog, setGlobalCatalog] = useState(true);
+  const [lastResult, setLastResult] = useState(null);
+  const [history, setHistory] = useState([]);
   const [cleanExisting, setCleanExisting] = useState(false);
-  const [resettingSamba, setResettingSamba] = useState(false);
+  const [setupStepCa, setSetupStepCa] = useState(false);
+  const [initializeCa, setInitializeCa] = useState(true);
+  const [caUrl, setCaUrl] = useState('');
+  const [caPort, setCaPort] = useState(8443);
+  const [caCertHours, setCaCertHours] = useState(8760);
+  const [caFingerprint, setCaFingerprint] = useState('');
+  const [certPassword, setCertPassword] = useState('');
+  const [networkInterface, setNetworkInterface] = useState('');
 
   // Execution
   const [executing, setExecuting] = useState(false);
@@ -3782,34 +3795,6 @@ function WizardModal({ onClose, t, showToast }) {
       }
     } catch (e) {
       console.error(e);
-    }
-  };
-
-  const handleResetSamba = async () => {
-    if (!await confirmAction("Deseja limpar todos os dados residuais do Samba local e desprovisionar eventuais registros órfãos deste DC no parceiro?")) return;
-    setResettingSamba(true);
-    try {
-      const res = await customFetch('/api/provision/reset-samba', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          netbios_name: dcNetbiosName,
-          target_dc_ip: targetDcIp,
-          admin_username: targetAdmin,
-          admin_password: adminPassword,
-        })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message || 'Configuração do Samba resetada com sucesso!');
-        await checkAdDns();
-      } else {
-        showToast(data.message || 'Erro ao resetar Samba', 'error');
-      }
-    } catch (e) {
-      showToast('Falha na comunicação com o servidor', 'error');
-    } finally {
-      setResettingSamba(false);
     }
   };
 
@@ -3864,15 +3849,59 @@ function WizardModal({ onClose, t, showToast }) {
     return () => clearTimeout(timer);
   }, [realm, targetDcIp]);
 
+  const followProvisionJob = async (id) => {
+    for (;;) {
+      const response = await customFetch('/api/provision/jobs/' + encodeURIComponent(id));
+      const envelope = await response.json();
+      if (!response.ok) throw new Error(envelope.message || 'Nao foi possivel consultar a operacao. Verifique os backups antes de repetir.');
+      const job = envelope.data;
+      if (job.state === 'finished') {
+        localStorage.removeItem('astral.provision.job');
+        return job.result;
+      }
+      if (job.state === 'interrupted') throw new Error('Servico reiniciado durante a operacao. Consulte o historico/backup antes de retomar.');
+      setCompletedSteps([...(job.steps_completed || []), 'Etapa atual: ' + (job.phase || 'preparacao')]);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  };
+
+  useEffect(() => {
+    customFetch('/api/provision/history').then(response => response.json()).then(data => setHistory(Array.isArray(data.data) ? data.data : [])).catch(() => {});
+    const id = localStorage.getItem('astral.provision.job');
+    if (id) {
+      setExecuting(true); setStep(4);
+      followProvisionJob(id).then(result => {
+        setLastResult(result); setCompletedSteps(result.steps_completed || []);
+        if (!result.success) setErrorMsg(result.message || result.error);
+      }).catch(error => setErrorMsg(error.message)).finally(() => setExecuting(false));
+    }
+  }, []);
+
   const handleStartProvision = async () => {
-    if (mode !== 'new' && !targetDcIp.trim()) {
+    const pending = localStorage.getItem('astral.provision.job');
+    if (pending) {
+      setStep(4); setExecuting(true);
+      try {
+        const result = await followProvisionJob(pending);
+        setLastResult(result); setCompletedSteps(result.steps_completed || []);
+        setErrorMsg(result.success ? null : result.message || result.error);
+      } catch (error) { setErrorMsg(error.message); }
+      finally { setExecuting(false); }
+      return;
+    }
+    if (mode !== 'new' && !configurationOnly && !targetDcIp.trim()) {
       showToast('Informe o IP do DC parceiro para consultar o AD na porta 53.', 'error');
       return;
     }
+    if (setupStepCa && mode !== 'join_member' && !certPassword) { showToast('Informe a senha da PKI.', 'error'); return; }
     if (!adminPassword) {
       showToast('Informe a senha do administrador do dominio.', 'error');
       return;
     }
+    const upstreams = upstreamText.split(/[\s,;]+/).filter(Boolean);
+    if (!upstreams.length) { showToast('Informe pelo menos um forwarder DNS.', 'error'); return; }
+    if (rejoin && !configurationOnly && !await confirmAction('Executar backup automatico, despromover quando necessario, limpar o estado local e ingressar no papel selecionado? O primario/FSMO sera protegido.')) return;
+    setLastResult(null);
     setExecuting(true);
     setCompletedSteps([]);
     setErrorMsg(null);
@@ -3882,9 +3911,20 @@ function WizardModal({ onClose, t, showToast }) {
       const endpoint = mode === 'new' ? '/api/provision/new-dc' : '/api/provision/join-dc';
       const domainRole = mode === 'join_rodc' ? 'RODC' : mode === 'join_member' ? 'MEMBER' : 'DC';
       const payload = mode === 'new' ? {
+        netbios_name: dcNetbiosName,
+        upstream_forwarders: upstreams,
+        global_catalog: globalCatalog,
+        setup_step_ca: setupStepCa && mode !== 'join_member',
+        initialize_ca: mode === 'new' && setupStepCa && initializeCa,
+        ca_url: caUrl,
+        ca_port: Number(caPort),
+        ca_cert_hours: Number(caCertHours),
+        ca_fingerprint: caFingerprint,
+        cert_password: certPassword,
+        network_interface: networkInterface,
         realm,
         workgroup,
-        hostname_fqdn: preflight?.fqdn || 'dc1.srvcloud.cloud',
+        hostname_fqdn: dcNetbiosName.toLowerCase() + '.' + realm.toLowerCase(),
         admin_password: adminPassword,
         dns_backend: dnsBackend,
         dns_forwarder: setupBind ? '127.0.0.1:5353' : '8.8.8.8',
@@ -3899,6 +3939,18 @@ function WizardModal({ onClose, t, showToast }) {
         dns_backend: mode === 'join_member' ? 'NONE' : dnsBackend,
         setup_bind_hybrid: setupBind,
         clean_existing: cleanExisting,
+        rejoin,
+        reapply_configuration: configurationOnly,
+        upstream_forwarders: upstreams,
+        global_catalog: globalCatalog,
+        setup_step_ca: setupStepCa && mode !== 'join_member',
+        initialize_ca: mode === 'new' && setupStepCa && initializeCa,
+        ca_url: caUrl,
+        ca_port: Number(caPort),
+        ca_cert_hours: Number(caCertHours),
+        ca_fingerprint: caFingerprint,
+        cert_password: certPassword,
+        network_interface: networkInterface,
       };
 
       const res = await customFetch(endpoint, {
@@ -3906,8 +3958,16 @@ function WizardModal({ onClose, t, showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (res.ok) {
+      let data = await res.json();
+      let succeeded = res.ok;
+      if (res.ok && data.data?.job_id) {
+        localStorage.setItem('astral.provision.job', data.data.job_id);
+        const result = await followProvisionJob(data.data.job_id);
+        setLastResult(result);
+        succeeded = result.success;
+        data = { message: result.message || result.error, data: result };
+      }
+      if (succeeded) {
         setCompletedSteps(data.data?.steps_completed || []);
         showToast(data.message, data.data?.steps_completed?.some(item => item.startsWith('[AVISO]')) ? 'warning' : 'success');
       } else {
@@ -3915,7 +3975,7 @@ function WizardModal({ onClose, t, showToast }) {
         setCompletedSteps(data.data?.steps_completed || []);
       }
     } catch (e) {
-      setErrorMsg('Erro de comunicação com o servidor');
+      setErrorMsg(e.message || 'Erro de comunicacao com o servidor; consulte o historico antes de repetir.');
     } finally {
       setExecuting(false);
     }
@@ -4107,6 +4167,7 @@ function WizardModal({ onClose, t, showToast }) {
             <strong>Provisionar / recuperar a partir de backup</strong><p className="text-xs text-slate-400 mt-1">Importar backup Samba e recuperar o domínio em um host preparado.</p>
           </button>}
           {step === 3 && mode === 'from_backup' && <BackupProvisioning customFetch={customFetch} showToast={showToast} />}
+          {step === 2 && history.length > 0 && <details className="p-3 border border-slate-700 rounded"><summary>Backups e operacoes anteriores ({history.length})</summary>{history.map(item => <div className="text-xs py-2" key={item.id}><p>{item.created_at} · {item.target_name} · {item.target_role} · {item.phase} · {item.id}</p>{item.archive_sha256 && <a className="underline text-cyan-300" href={API_BASE + "/provision/backups/" + item.id + "/download"}>Baixar backup anterior (contem segredos do dominio)</a>}<button className="mt-1 px-2 py-1 rounded bg-indigo-700" onClick={() => {setMode(item.target_role === 'RODC' ? 'join_rodc' : item.target_role === 'MEMBER' ? 'join_member' : 'join_dc');setRealm(item.realm);setDcNetbiosName(item.target_name);setTargetDcIp(item.partner || '');setUpstreamText((item.forwarders || []).join(', '));setSetupBind(!!item.setup_bind_hybrid);setGlobalCatalog(item.global_catalog !== false);setRejoin(true);setConfigurationOnly(!!item.joined);setCleanExisting(false);setStep(3);}}>Retomar com estes parametros</button></div>)}</details>}
           {/* STEP 3: PARAMETERS */}
           {step === 3 && mode !== 'from_backup' && (
             <div className="space-y-3">
@@ -4266,6 +4327,32 @@ function WizardModal({ onClose, t, showToast }) {
                 </div>
               )}
 
+              <div className="space-y-3 border-t border-slate-800 pt-3">
+                <label className="block text-slate-300">Forwarders DNS (IPv4/IPv6 separados por virgula)
+                  <input aria-label="Forwarders DNS do provisionamento" value={upstreamText} onChange={event => setUpstreamText(event.target.value)} className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                </label>
+                <label className="block text-slate-300">Interface de rede (opcional)
+                  <input aria-label="Interface de rede Samba" value={networkInterface} onChange={event => setNetworkInterface(event.target.value)} placeholder="Ex.: enp3s0; vazio usa as interfaces atuais" className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                </label>
+                {mode !== 'join_member' && <>
+                  <label className="flex gap-2"><input type="checkbox" checked={setupStepCa} onChange={event => setSetupStepCa(event.target.checked)} />Configurar certificado LDAPS e renovacao via Step-CA</label>
+                  {setupStepCa && <div className="space-y-2 pl-4">
+                    {mode === 'new' && <label className="flex gap-2"><input type="checkbox" checked={initializeCa} onChange={event => setInitializeCa(event.target.checked)} />Inicializar CA neste novo dominio (preserva qualquer CA existente)</label>}
+                    <label className="block">Porta preferida da nova CA (escolhe outra livre e abre automaticamente)<input type="number" min="1024" max="65535" aria-label="Porta da CA" value={caPort} onChange={event => setCaPort(event.target.value)} className="ml-2 bg-slate-950 border border-slate-700 p-2 rounded" /></label>
+                    <label className="block">Validade solicitada do certificado (horas)<input type="number" min="1" max="8760" aria-label="Validade do certificado" value={caCertHours} onChange={event => setCaCertHours(event.target.value)} className="ml-2 bg-slate-950 border border-slate-700 p-2 rounded" /></label>
+                    <input aria-label="URL da CA" value={caUrl} onChange={event => setCaUrl(event.target.value)} placeholder="URL HTTPS da CA; vazio usa a CA local" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                    <input aria-label="Fingerprint SHA256 da CA" value={caFingerprint} onChange={event => setCaFingerprint(event.target.value)} placeholder="Fingerprint SHA256 para CA remota" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                    <input type="password" aria-label="Senha da PKI" value={certPassword} onChange={event => setCertPassword(event.target.value)} placeholder="Senha da PKI (nao e salva no navegador)" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                  </div>}
+                </>}
+                <p className="text-xs text-slate-400">Pacotes ausentes, NTP, iptables e persistencia das regras sao tratados automaticamente. O BIND local usa estes forwarders quando selecionado.</p>
+                {mode !== 'new' && <>
+                  <label className="flex gap-2"><input type="checkbox" checked={rejoin} onChange={event => setRejoin(event.target.checked)} />Reingresso com backup automatico, despromocao e limpeza antes do novo papel</label>
+                  <label className="flex gap-2"><input type="checkbox" checked={configurationOnly} onChange={event => setConfigurationOnly(event.target.checked)} />Reaplicar configuracao sem refazer o ingresso</label>
+                </>}
+                {mode !== 'join_member' && <label className="flex gap-2"><input type="checkbox" checked={globalCatalog} onChange={event => setGlobalCatalog(event.target.checked)} />Ativar e verificar catalogo global (3268/3269)</label>}
+              </div>
+
               {/* Opções de Limpeza de Estado Anterior */}
               <div className="pt-2 border-t border-slate-800 space-y-2">
                 <label className="flex items-center gap-2 cursor-pointer text-slate-200">
@@ -4275,21 +4362,9 @@ function WizardModal({ onClose, t, showToast }) {
                     onChange={(e) => setCleanExisting(e.target.checked)} 
                     className="rounded bg-slate-950 border-slate-700 text-indigo-600"
                   />
-                  <span className="font-medium text-amber-300">Limpar dados residuais anteriores e remover conta órfã no DC parceiro</span>
+                  <span className="font-medium text-amber-300">Permitir remover somente a conta orfa deste servidor se a despromocao normal falhar</span>
                 </label>
 
-                <div className="flex items-center justify-between bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px]">
-                  <span className="text-slate-400">Resetar dados locais do Samba:</span>
-                  <button
-                    type="button"
-                    onClick={handleResetSamba}
-                    disabled={resettingSamba}
-                    className="px-2.5 py-1 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded text-[11px] font-medium transition flex items-center gap-1"
-                  >
-                    {resettingSamba ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                    <span>Limpar / Resetar Samba</span>
-                  </button>
-                </div>
               </div>
 
               {mode === 'new' && (
@@ -4321,6 +4396,9 @@ function WizardModal({ onClose, t, showToast }) {
                 </div>
               )}
 
+              {lastResult?.ca_url && <a className="text-cyan-300 underline" href={lastResult.ca_url} target="_blank" rel="noopener noreferrer">CA configurada: {lastResult.ca_url}</a>}
+              {lastResult?.backup_path && <p className="text-xs text-slate-300 break-all">Backup automatico: {lastResult.backup_path}</p>}
+              {!executing && lastResult && !lastResult.success && <button className="px-3 py-2 rounded bg-indigo-600" onClick={() => { setRejoin(true); setConfigurationOnly(!!lastResult.joined); setStep(3); }}>Retomar pela interface</button>}
               <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5 font-mono text-[11px]">
                 {completedSteps.map((st, i) => (
                   <div key={i} className={`flex items-center gap-2 ${st.startsWith("[AVISO]") ? "text-amber-400" : "text-emerald-400"}`}>

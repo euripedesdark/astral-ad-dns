@@ -33,6 +33,9 @@ jobs:
       - name: Run Cargo tests
         run: cargo test --verbose
 
+      - name: Test provisioning transactions
+        run: python3 -m unittest discover -s tests -v
+
       - name: Build release binary
         run: cargo build --release --bin astral-ad-dns
 
@@ -55,3 +58,6 @@ jobs:
           cd web
           npm install
           npm run build
+
+      - name: Test web workflows
+        run: node tests/ui_workflows.cjs

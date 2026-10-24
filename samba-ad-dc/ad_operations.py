@@ -66,7 +66,7 @@ def validate_archive(path):
 
 
 def bind_paths(root):
-    if (root / 'etc/bind').is_dir():
+    if (root / 'etc/bind').is_dir() or (root / 'etc/debian_version').exists():
         return root / 'etc/bind/named.conf.options', root / 'etc/bind/named.conf', 'bind9', '/var/cache/bind'
     return root / 'etc/named.conf', root / 'etc/named.conf', 'named', '/var/named'
 
@@ -241,6 +241,10 @@ def wait_bind_ready(run, service, attempts=6):
 
 def configure_bind(request, root=Path('/'), run=checked_run):
     forwarders = normalize_forwarders(request.get('forwarders', []))
+    package_steps = []
+    if root == Path('/') and not request.get('dry_run'):
+        from provision_system import install_dependencies
+        install_dependencies(root,run,True,package_steps,required_commands=['named','named-checkconf','dig','ip','semanage'])
     config, main, service, directory = bind_paths(root)
     original_stat = config.stat() if config.exists() else None
     original = config.read_bytes() if config.exists() else None
@@ -278,7 +282,7 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         run(['systemctl', 'restart', service])
         wait_bind_ready(run, service)
         run(['systemctl', 'enable', service])
-        return selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
+        return package_steps + selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']
     except Exception as error:
         rollback_errors = []
@@ -518,7 +522,7 @@ def transition_controller(request):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['restore', 'bind', 'demote', 'transition', 'forensic'])
+    parser.add_argument('operation', choices=['restore', 'bind', 'demote', 'transition', 'forensic', 'provision'])
     parser.add_argument('--request')
     parser.add_argument('--request-stdin', action='store_true')
     args = parser.parse_args()
@@ -540,6 +544,11 @@ def main():
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.operation == 'provision':
+                from provision_workflow import execute
+                data = execute(request)
+                print(json.dumps({'success': True, 'data': data}, ensure_ascii=False))
+                return
             steps = {'restore': restore_domain, 'bind': configure_bind, 'demote': demote_controller, 'transition': transition_controller}[args.operation](request)
         print(json.dumps({'success': True, 'steps': steps}, ensure_ascii=False))
     except Exception as error:

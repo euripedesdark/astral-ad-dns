@@ -225,7 +225,7 @@ def promote_writable(request, root=Path('/'), run=run_command):
             raise TransitionError('Workgroup NetBIOS inválido.')
         write_file(bootstrap, '[global]\n realm = ' + request['realm'] + '\n workgroup = ' + workgroup + '\n')
         run(['samba-tool', 'domain', 'join', request['realm'], 'DC',
-             '--server=' + request['primary_hostname'], '--netbios-name=' + request['target_name'],
+             '--server=' + request['primary_hostname'], '--option=netbios name = ' + request['target_name'],
              '--dns-backend=SAMBA_INTERNAL', '--option=ad dc functional level = 2016', '--targetdir=' + str(stage), '-s', str(bootstrap)] + credentials(request))
         generated = stage / 'etc/smb.conf'
         if not generated.is_file() or not (stage / 'private/sam.ldb').is_file():
