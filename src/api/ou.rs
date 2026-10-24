@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
+use crate::system::{run_cmd_dry, shell_quote};
 use crate::api::users::ApiResponse;
 
 #[derive(Deserialize, Default)]
@@ -94,6 +94,7 @@ pub async fn list_ous(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<
 }
 
 pub async fn create_ou(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<CreateOuRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
@@ -115,7 +116,7 @@ pub async fn create_ou(
 
     // Se parent_dn não for fornecido, obtém o base DN do domínio
     let full_ou_dn = if let Some(parent) = payload.parent_dn.filter(|p| !p.trim().is_empty()) {
-        format!("OU={},{}", sanitize_arg(ou_name), parent.trim())
+        format!("OU={},{}", ou_name, parent.trim())
     } else {
         // Detecta base DN a partir do realm
         let ldb_res = run_cmd_dry("samba-tool domain info 127.0.0.1 2>/dev/null | grep -i 'Domain' | awk '{print $NF}'", sudo, false);
@@ -125,12 +126,12 @@ pub async fn create_ou(
         } else {
             "DC=srvcloud,DC=cloud".to_string()
         };
-        format!("OU={},{}", sanitize_arg(ou_name), default_base_dn)
+        format!("OU={},{}", ou_name, default_base_dn)
     };
 
-    let mut cmd = format!("samba-tool ou create '{}'", full_ou_dn);
+    let mut cmd = format!("samba-tool ou create {}", shell_quote(&full_ou_dn));
     if let Some(desc) = payload.description.as_deref().filter(|d| !d.trim().is_empty()) {
-        cmd.push_str(&format!(" --description='{}'", sanitize_arg(desc)));
+        cmd.push_str(&format!(" --description={}", shell_quote(desc)));
     }
 
     let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
@@ -174,6 +175,7 @@ pub async fn create_ou(
 }
 
 pub async fn delete_ou(
+    _operator: crate::auth::Administrator,
     Path(ou_dn): Path<String>,
     Query(q): Query<DeleteOuQuery>,
     State(config): State<Arc<AppConfig>>,
@@ -194,6 +196,17 @@ pub async fn delete_ou(
         );
     }
 
+    if q.recursive {
+        let private = run_cmd_dry("testparm -s --parameter-name='private dir' 2>/dev/null", sudo, false);
+        let database = format!("{}/sam.ldb", private.stdout.trim().trim_end_matches('/'));
+        let check = run_cmd_dry(&format!("ldbsearch -H {} -b {} {} dn", shell_quote(&database), shell_quote(&ou_dn),
+            shell_quote("(|(isCriticalSystemObject=TRUE)(userAccountControl:1.2.840.113556.1.4.803:=8192)(primaryGroupID=521))")), sudo, false);
+        if !private.success || !check.success || check.stdout.lines().any(|line| line.starts_with("dn:")) {
+            return (StatusCode::FORBIDDEN, Json(ApiResponse { success: false,
+                message: "Exclusão recursiva bloqueada: há DC/objeto estrutural na OU ou não foi possível validar seus objetos.".into(),
+                data: None, dry_run: false, correlation_id: None }));
+        }
+    }
     let cmd = format!("samba-tool ou delete {}{}", shell_quote(&ou_dn),
         if q.recursive { " --force-subtree-delete" } else { "" });
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);

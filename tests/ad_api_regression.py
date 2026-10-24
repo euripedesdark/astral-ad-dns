@@ -4,6 +4,9 @@ Run: cargo build --locked --bin astral-ad-dns && python3 tests/ad_api_regression
 Never talks to an AD or changes the host's firewall/services.
 """
 import json
+import base64
+import hashlib
+import hmac
 import os
 from pathlib import Path
 import socket
@@ -23,7 +26,7 @@ args = sys.argv[1:]
 with open(os.environ['AD_TEST_LOG'], 'a') as f:
     f.write(json.dumps([name, *args]) + '\\n')
 if name == 'testparm':
-    print('PRIMARY')
+    print('/mock/private' if any('private dir' in arg for arg in args) else 'PRIMARY')
 elif name == 'hostname':
     print('primary' if args == ['-s'] else '192.0.2.10')
 elif name == 'systemctl':
@@ -38,6 +41,7 @@ elif name == 'samba-tool':
         print('primaryGroupID: ' + ('516' if dc else '515'))
         print('dNSHostName: 127.0.0.1')
     elif args == ['fsmo', 'show']:
+        print('PdcEmulationMasterRole owner: CN=NTDS Settings,CN=PRIMARY,CN=Servers')
         print('SchemaMasterRole owner: CN=NTDS Settings,CN=' + Path(os.environ['AD_TEST_LOG']).with_name('fsmo').read_text() + ',CN=Servers')
     elif args[:2] == ['ou', 'list']:
         print("OU=R&D's Lab,DC=example,DC=test")
@@ -57,20 +61,26 @@ def main():
         executable.chmod(0o755)
         (tmp / 'fsmo').write_text('PRIMARY')
         for name in ['testparm', 'hostname', 'systemctl', 'samba-tool', 'iptables',
-                     'ip6tables', 'ss', 'firewall-cmd', 'nft']:
+                     'ip6tables', 'ss', 'firewall-cmd', 'nft', 'ldbsearch']:
             (tmp / name).symlink_to(executable)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
         env = dict(os.environ, PATH=str(tmp) + os.pathsep + os.environ['PATH'],
+                   AUTH_TOKEN_SECRET='astral-regression-only-secret',
                    AD_TEST_LOG=str(tmp / 'calls.jsonl'), ASTRAL_BIND_ADDR=f'127.0.0.1:{port}',
                    ASTRAL_WEB_DIST=str(ROOT / 'web/dist'))
         proc = subprocess.Popen([str(ROOT / 'target/debug/astral-ad-dns')], cwd=ROOT,
                                 env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        def request(method, path, payload=None):
+        def token(admin=True):
+            encode = lambda value: base64.urlsafe_b64encode(json.dumps(value, separators=(',', ':')).encode()).rstrip(b'=')
+            parts = [encode({'alg': 'HS256', 'typ': 'JWT'}), encode({'sub': 'tester', 'username': 'tester', 'provider': 'AD', 'is_admin': admin, 'has_wheel': admin, 'exp': int(time.time()) + 300})]
+            signature = base64.urlsafe_b64encode(hmac.new(b'astral-regression-only-secret', b'.'.join(parts), hashlib.sha256).digest()).rstrip(b'=')
+            return b'.'.join(parts + [signature]).decode()
+        def request(method, path, payload=None, auth=True):
             req = urllib.request.Request(f'http://127.0.0.1:{port}' + path,
                 data=json.dumps(payload).encode() if payload is not None else None,
-                headers={'Content-Type': 'application/json'}, method=method)
+                headers={'Content-Type': 'application/json', **({'Authorization': 'Bearer ' + token()} if auth else {})}, method=method)
             try:
                 response = urllib.request.urlopen(req, timeout=5)
             except urllib.error.HTTPError as error:
@@ -91,9 +101,11 @@ def main():
             assert data['data'][0]['is_dc'] is False, data
             assert data['data'][1]['is_dc'] is True, data
             assert data['data'][2]['is_local'] is True, data
+            assert request('DELETE', '/api/computers/DC-DESKTOP%24', auth=False)[0] == 401
             assert request('DELETE', '/api/computers/DC-DESKTOP%24')[0] == 200
             assert ['samba-tool', 'computer', 'delete', 'DC-DESKTOP'] in calls()
             assert request('DELETE', '/api/computers/PRIMARY%24')[0] == 403
+            assert request('POST', '/api/computers/PRIMARY%24/demote', {'admin_username': 'test', 'admin_password': 'test'})[0] == 400
             assert request('DELETE', '/api/computers/SECONDARY%24')[0] == 409
             (tmp / 'fsmo').write_text('SECONDARY')
             assert request('DELETE', '/api/computers/SECONDARY%24?remove_dead_dc=true')[0] == 409
@@ -112,7 +124,7 @@ def main():
             assert request('DELETE', '/api/ou/OU%3DDomain%20Controllers%2CDC%3Dexample%2CDC%3Dtest?recursive=true')[0] == 403
             before = len(calls())
             assert request('DELETE', path + '?recursive=true&dry_run=true')[0] == 200
-            assert len(calls()) == before, 'Dry run executed a mutation'
+            assert all(call[0] in ['testparm', 'ldbsearch'] for call in calls()[before:]), 'Dry run executed a mutation'
             # Backend rejection occurs before filesystem or service changes.
             for role in ['DC', 'RODC']:
                 before = len(calls())

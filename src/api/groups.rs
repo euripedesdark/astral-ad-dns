@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
+use crate::system::{run_cmd_dry, shell_quote};
 use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -74,7 +74,7 @@ pub async fn get_group_members(
     State(config): State<Arc<AppConfig>>,
 ) -> Json<ApiResponse<Vec<String>>> {
     let sudo = config.sudo_password.as_deref();
-    let cmd = format!("samba-tool group listmembers '{}'", sanitize_arg(&groupname));
+    let cmd = format!("samba-tool group listmembers {}", shell_quote(&groupname));
     let res = run_cmd_dry(&cmd, sudo, false);
     if !res.success {
         return Json(ApiResponse {
@@ -103,6 +103,7 @@ pub async fn get_group_members(
 }
 
 pub async fn create_group(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<CreateGroupRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
@@ -120,9 +121,9 @@ pub async fn create_group(
         );
     }
 
-    let mut cmd = format!("samba-tool group add '{}'", sanitize_arg(&payload.groupname));
+    let mut cmd = format!("samba-tool group add {}", shell_quote(&payload.groupname));
     if let Some(desc) = payload.description {
-        cmd.push_str(&format!(" --description='{}'", sanitize_arg(&desc)));
+        cmd.push_str(&format!(" --description={}", shell_quote(&desc)));
     }
 
     let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
@@ -166,6 +167,7 @@ pub async fn create_group(
 }
 
 pub async fn delete_group(
+    _operator: crate::auth::Administrator,
     Path(groupname): Path<String>,
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
@@ -186,6 +188,17 @@ pub async fn delete_group(
         );
     }
 
+    let details = run_cmd_dry(&format!("samba-tool group show {}", shell_quote(&groupname)), sudo, false);
+    let structural = details.stdout.lines().any(|line| {
+        let lower = line.to_lowercase();
+        lower == "iscriticalsystemobject: true" || (lower.starts_with("objectsid: s-1-5-32-"))
+    });
+    if !details.success || structural {
+        return (StatusCode::FORBIDDEN, Json(ApiResponse {
+            success: false, message: "Grupo estrutural protegido ou consulta do grupo falhou.".into(),
+            data: None, dry_run: q.dry_run, correlation_id: None,
+        }));
+    }
     let cmd = format!("samba-tool group delete {}", shell_quote(&groupname));
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
@@ -229,15 +242,16 @@ pub async fn delete_group(
 }
 
 pub async fn add_group_member(
+    _operator: crate::auth::Administrator,
     Path(groupname): Path<String>,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<GroupMemberRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let sudo = config.sudo_password.as_deref();
     let cmd = format!(
-        "samba-tool group addmembers '{}' '{}'",
-        sanitize_arg(&groupname),
-        sanitize_arg(&payload.username)
+        "samba-tool group addmembers {} {}",
+        shell_quote(&groupname),
+        shell_quote(&payload.username)
     );
     let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
 
@@ -281,15 +295,16 @@ pub async fn add_group_member(
 }
 
 pub async fn remove_group_member(
+    _operator: crate::auth::Administrator,
     Path((groupname, username)): Path<(String, String)>,
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
     let sudo = config.sudo_password.as_deref();
     let cmd = format!(
-        "samba-tool group removemembers '{}' '{}'",
-        sanitize_arg(&groupname),
-        sanitize_arg(&username)
+        "samba-tool group removemembers {} {}",
+        shell_quote(&groupname),
+        shell_quote(&username)
     );
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 

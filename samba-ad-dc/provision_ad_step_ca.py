@@ -195,9 +195,9 @@ def desativar_systemd_resolved():
 
 def configuracao_iptables_completa():
     print("\n--- CONFIGURANDO IPTABLES PARA AD DC + PKI ---")
-    for port in [53, 88, 135, 139, 389, 445, 464, 636, 8443, 3268, 3269, 5353, 1433, 1521, 8095]:
+    for port in [53, 88, 135, 139, 389, 445, 464, 636, 8443, 3268, 3269, 1433, 1521, 8095]:
         run_command(["sudo", "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", str(port), "-j", "ACCEPT"], check=False)
-    for port in [53, 88, 123, 137, 138, 389, 464, 1433, 1521, 5353]:
+    for port in [53, 88, 123, 137, 138, 389, 464, 1433, 1521]:
         run_command(["sudo", "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", str(port), "-j", "ACCEPT"], check=False)
     run_command(["sudo", "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "49152:65535", "-j", "ACCEPT"], check=False)
     run_command(["sudo", "iptables", "-I", "INPUT", "1", "-p", "udp", "--dport", "49152:65535", "-j", "ACCEPT"], check=False)

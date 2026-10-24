@@ -9,7 +9,7 @@ use std::fs;
 use std::time::Instant;
 use regex::Regex;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, check_service_active, sanitize_arg};
+use crate::system::{run_cmd_dry, check_service_active, shell_quote, run_ad_operation};
 use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,6 +19,10 @@ pub struct BindStatus {
     pub forwarders: Vec<String>,
     pub config_path: String,
     pub recursion: bool,
+    pub syntax_valid: bool,
+    pub loopback_only: bool,
+    pub service_name: String,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -50,189 +54,46 @@ pub struct TestQueryResponse {
     pub results: Vec<QueryBenchmark>,
 }
 
+fn bind_config() -> (&'static str, &'static str, &'static str) {
+    if std::path::Path::new("/etc/bind").is_dir() {
+        ("/etc/bind/named.conf.options", "/etc/bind/named.conf", "bind9")
+    } else { ("/etc/named.conf", "/etc/named.conf", "named") }
+}
+
 pub async fn get_bind_status(State(config): State<Arc<AppConfig>>) -> Json<BindStatus> {
     let sudo = config.sudo_password.as_deref();
-    let service_active = check_service_active("named", sudo);
-
-    let listen_res = run_cmd_dry("ss -lntu | grep 5353", sudo, false);
-    let listening_on_5353 = listen_res.stdout.contains("5353");
-
-    let mut forwarders = Vec::new();
-    let mut recursion = true;
-    let config_path = "/etc/named.conf".to_string();
-
-    if let Ok(content) = fs::read_to_string(&config_path) {
-        let re = Regex::new(r"forwarders\s*\{([^}]+)\};").unwrap();
-        if let Some(caps) = re.captures(&content) {
-            let list_str = &caps[1];
-            forwarders = list_str
-                .split(';')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-        if content.contains("recursion no;") {
-            recursion = false;
-        }
-    }
-
-    Json(BindStatus {
-        service_active,
-        listening_on_5353,
-        forwarders,
-        config_path,
-        recursion,
-    })
+    let (config_path, main, service) = bind_config();
+    let service_active = check_service_active(service, sudo);
+    let content = fs::read_to_string(config_path).unwrap_or_default();
+    let forwarders = Regex::new(r"forwarders\s*\{([^}]+)\};").unwrap().captures(&content)
+        .map(|caps| caps[1].split(';').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+    let listen_res = run_cmd_dry("ss -H -lntu '( sport = :5353 )'", sudo, false);
+    let listeners: Vec<_> = listen_res.stdout.lines().filter_map(|line| line.split_whitespace().nth(4)).collect();
+    let tcp = listen_res.stdout.lines().any(|line| line.starts_with("tcp") && line.contains("127.0.0.1:5353"));
+    let udp = listen_res.stdout.lines().any(|line| line.starts_with("udp") && line.contains("127.0.0.1:5353"));
+    let loopback_only = !listeners.is_empty() && listeners.iter().all(|v| *v == "127.0.0.1:5353");
+    let syntax_valid = run_cmd_dry(&format!("named-checkconf {}", shell_quote(main)), sudo, false).success;
+    let mut warnings = Vec::new();
+    if !syntax_valid { warnings.push("Configuração BIND inválida ou named-checkconf indisponível.".into()); }
+    if !loopback_only { warnings.push("A porta 5353 deve escutar somente em 127.0.0.1.".into()); }
+    if !tcp || !udp { warnings.push("Verifique listeners TCP e UDP na porta 5353.".into()); }
+    Json(BindStatus { service_active, listening_on_5353: tcp && udp, forwarders, config_path: config_path.into(),
+        recursion: Regex::new(r"recursion\s+yes\s*;").unwrap().is_match(&content), syntax_valid, loopback_only,
+        service_name: service.into(), warnings })
 }
 
 pub async fn update_forwarders(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<UpdateForwardersRequest>,
-) -> (StatusCode, Json<ApiResponse<()>>) {
-    let sudo = config.sudo_password.as_deref();
-    let config_path = "/etc/named.conf";
-
-    // Pré-validação de cada endereço IP
-    for fwd in &payload.forwarders {
-        let f = fwd.trim();
-        if !f.is_empty() && f.parse::<std::net::Ipv4Addr>().is_err() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ApiResponse {
-                    success: false,
-                    message: format!("Endereço IP de forwarder inválido: '{}'", f),
-                    data: None,
-                    dry_run: payload.dry_run,
-                    correlation_id: None,
-                }),
-            );
-        }
+) -> (StatusCode, Json<ApiResponse<Vec<String>>>) {
+    let request = serde_json::json!({"forwarders": payload.forwarders, "dry_run": payload.dry_run});
+    let result = run_ad_operation("bind", &request, config.sudo_password.as_deref());
+    let id = config.audit.record(&_operator.0.username, None, "BIND_HYBRID_CONFIGURE", "bind:hybrid", payload.dry_run, result.is_ok(), "Configuração BIND recursiva validada com rollback");
+    match result {
+        Ok(steps) => (StatusCode::OK, Json(ApiResponse { success: true, message: "BIND híbrido: operação concluída.".into(), data: Some(steps), dry_run: payload.dry_run, correlation_id: Some(id) })),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: payload.dry_run, correlation_id: Some(id) })),
     }
-
-    let content = match fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse {
-                    success: false,
-                    message: format!("Falha ao ler {}: {}", config_path, e),
-                    data: None,
-                    dry_run: payload.dry_run,
-                    correlation_id: None,
-                }),
-            );
-        }
-    };
-
-    let fwd_str = payload
-        .forwarders
-        .iter()
-        .map(|f| format!(" {};", f.trim()))
-        .collect::<Vec<_>>()
-        .join("");
-
-    let new_block = format!("forwarders {{{} }};", fwd_str);
-    let re = Regex::new(r"forwarders\s*\{[^}]*\};").unwrap();
-    let new_content = if re.is_match(&content) {
-        re.replace(&content, &new_block).to_string()
-    } else {
-        content.replace("options {", &format!("options {{\n    {}", new_block))
-    };
-
-    let temp_path = "/tmp/named.conf.test";
-    if let Err(e) = fs::write(temp_path, &new_content) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Falha ao escrever configuração de teste: {}", e),
-                data: None,
-                dry_run: payload.dry_run,
-                correlation_id: None,
-            }),
-        );
-    }
-
-    let check_cmd = format!("named-checkconf {}", temp_path);
-    let check_res = run_cmd_dry(&check_cmd, sudo, false);
-    if !check_res.success {
-        let _ = fs::remove_file(temp_path);
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Validação com named-checkconf falhou: {}", check_res.stderr),
-                data: None,
-                dry_run: payload.dry_run,
-                correlation_id: None,
-            }),
-        );
-    }
-
-    if payload.dry_run {
-        let _ = fs::remove_file(temp_path);
-        let evt_id = config.audit.record(
-            "admin",
-            None,
-            "BIND_FORWARDERS_UPDATE",
-            "named:forwarders",
-            true,
-            true,
-            &format!("[SIMULAÇÃO] named-checkconf aprovado para forwarders: {:?}", payload.forwarders),
-        );
-        return (
-            StatusCode::OK,
-            Json(ApiResponse {
-                success: true,
-                message: format!("[SIMULAÇÃO] Sintaxe validada pelo named-checkconf. O novo bloco seria aplicado: {}", new_block),
-                data: None,
-                dry_run: true,
-                correlation_id: Some(evt_id),
-            }),
-        );
-    }
-
-    let _ = run_cmd_dry(&format!("cp -f {} {}.bak", config_path, config_path), sudo, false);
-    let write_cmd = format!("cp -f {} {}", temp_path, config_path);
-    let write_res = run_cmd_dry(&write_cmd, sudo, false);
-    let _ = fs::remove_file(temp_path);
-
-    if !write_res.success {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Falha ao gravar {}: {}", config_path, write_res.stderr),
-                data: None,
-                dry_run: false,
-                correlation_id: None,
-            }),
-        );
-    }
-
-    let _ = run_cmd_dry("systemctl reload named 2>/dev/null || systemctl restart named", sudo, false);
-
-    let evt_id = config.audit.record(
-        "admin",
-        None,
-        "BIND_FORWARDERS_UPDATE",
-        "named:forwarders",
-        false,
-        true,
-        &format!("Forwarders do BIND 9 atualizados: {:?}", payload.forwarders),
-    );
-
-    (
-        StatusCode::OK,
-        Json(ApiResponse {
-            success: true,
-            message: format!("Forwarders atualizados e named.service recarregado com sucesso: {:?}", payload.forwarders),
-            data: None,
-            dry_run: false,
-            correlation_id: Some(evt_id),
-        }),
-    )
 }
 
 pub async fn test_query(
@@ -241,19 +102,27 @@ pub async fn test_query(
 ) -> Json<TestQueryResponse> {
     let sudo = config.sudo_password.as_deref();
     let rtype = payload.record_type.unwrap_or_else(|| "A".to_string()).to_uppercase();
-    let domain = sanitize_arg(payload.domain.trim());
+    let domain = payload.domain.trim().to_string();
+    if domain.len() > 253 || domain.is_empty() || !domain.chars().all(|ch| ch.is_ascii_alphanumeric() || ".-_".contains(ch))
+        || !["A", "AAAA", "SRV", "SOA", "NS", "MX", "TXT", "CNAME", "PTR"].contains(&rtype.as_str()) {
+        return Json(TestQueryResponse { domain, record_type: rtype, results: vec![] });
+    }
 
-    let targets = vec![
+    let mut targets = vec![
         ("127.0.0.1#53", "Samba Internal DNS (Porta 53)", "127.0.0.1", "53"),
         ("127.0.0.1#5353", "BIND Hybrid Recursive Forwarder (Porta 5353)", "127.0.0.1", "5353"),
-        ("8.8.8.8#53", "Upstream Public DNS (Google 8.8.8.8)", "8.8.8.8", "53"),
+
     ];
 
+    let content = fs::read_to_string(bind_config().0).unwrap_or_default();
+    let upstream: Vec<String> = Regex::new(r"forwarders\s*\{([^}]+)\};").unwrap().captures(&content)
+        .map(|caps| caps[1].split(';').filter_map(|f| f.trim().parse::<std::net::IpAddr>().ok().map(|ip| ip.to_string())).collect()).unwrap_or_default();
+    for ip in &upstream { targets.push((ip.as_str(), "Upstream configurado", ip.as_str(), "53")); }
     let mut results = Vec::new();
 
     for (target_label, desc, ip, port) in targets {
         let start = Instant::now();
-        let cmd = format!("dig @{} -p {} '{}' '{}' +stats +time=2", ip, port, domain, rtype);
+        let cmd = format!("dig @{} -p {} {} {} +stats +time=2 +tries=1", ip, port, shell_quote(&domain), shell_quote(&rtype));
         let res = run_cmd_dry(&cmd, sudo, false);
         let elapsed = start.elapsed().as_millis() as u64;
 
@@ -263,6 +132,9 @@ pub async fn test_query(
         if res.success {
             let mut in_answer = false;
             for line in res.stdout.lines() {
+                if let Some(captures) = Regex::new(r"status: ([A-Z]+)").unwrap().captures(line) {
+                    status = captures[1].to_string();
+                }
                 if line.contains("status: NOERROR") {
                     status = "NOERROR".to_string();
                 } else if line.contains("status: NXDOMAIN") {
@@ -299,10 +171,11 @@ pub async fn test_query(
 pub async fn get_bind_logs(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<String>>> {
     let sudo = config.sudo_password.as_deref();
     let query_log = "/var/log/named/query.log";
+    let service = bind_config().2;
     let cmd = if std::path::Path::new(query_log).exists() {
         format!("tail -n 80 {}", query_log)
     } else {
-        "journalctl -u named -n 80 --no-pager".to_string()
+        format!("journalctl -u {} -n 80 --no-pager", service)
     };
 
     let res = run_cmd_dry(&cmd, sudo, false);
@@ -318,6 +191,7 @@ pub async fn get_bind_logs(State(config): State<Arc<AppConfig>>) -> Json<ApiResp
 }
 
 pub async fn service_action(
+    _operator: crate::auth::Administrator,
     Path(action): Path<String>,
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
@@ -337,7 +211,10 @@ pub async fn service_action(
         );
     }
 
-    let cmd = format!("systemctl {} named", action);
+    let (_, main, service) = bind_config();
+    let cmd = if action == "stop" { format!("systemctl stop {}", service) } else {
+        format!("named-checkconf {} && systemctl {} {}", shell_quote(main), action, service)
+    };
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
     let evt_id = config.audit.record(

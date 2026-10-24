@@ -885,3 +885,20 @@ mod tests {
         assert!(claims.has_wheel);
     }
 }
+
+/// Administrative operations share the authenticated identity of the console.
+pub struct Administrator(pub AuthenticatedOperator);
+
+impl<S: Send + Sync> FromRequestParts<S> for Administrator {
+    type Rejection = (StatusCode, Json<ApiResponse<()>>);
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let operator = AuthenticatedOperator::from_request_parts(parts, state).await?;
+        if !operator.is_admin && !operator.has_wheel {
+            return Err((StatusCode::FORBIDDEN, Json(ApiResponse { success: false,
+                message: "Operação exige administrador do domínio ou operador autorizado.".into(),
+                data: None, dry_run: false, correlation_id: None })));
+        }
+        Ok(Self(operator))
+    }
+}

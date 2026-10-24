@@ -1,0 +1,56 @@
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const { JSDOM } = require('../web/node_modules/jsdom');
+const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://ad.example.test/ad/' });
+Object.assign(global, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage,
+  EventTarget: dom.window.EventTarget, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
+window.confirm = () => { throw Error('Native dialogs are forbidden'); };
+const calls = [];
+const data = {
+ '/api/auth/me': { success: true, data: { username: 'administrator', provider: 'AD', is_admin: true } },
+ '/api/status': { realm: 'EXAMPLE.TEST', users_count: 1, groups_count: 1, computers_count: 2, zones_count: 1 },
+ '/api/bind/status': { service_name: 'named', service_active: true, syntax_valid: true, listening_on_5353: true, loopback_only: true, forwarders: ['9.9.9.9'], warnings: [] },
+ '/api/bind/logs': { success: true, data: [] },
+ '/api/groups': { success: true, data: [{ name: "R&D's Group" }] },
+ '/api/computers': { success: true, data: [{ name: 'PRIMARY$', is_dc: true, is_local: true, is_primary: true }, { name: 'SECONDARY$', is_dc: true, is_local: false, is_primary: false }] },
+ '/api/backups': { success: true, data: [{ filename: 'domain.tar.bz2', size_human: '1 MB' }] },
+ '/api/provision/preflight': { fqdn: 'dc.example.test', samba_installed: true },
+ '/api/provision/verify-ad-dns': { success: true, data: {} },
+};
+global.fetch = async (url, options = {}) => {
+  const route = url.replace(/^\/ad/, '');
+  calls.push([route, options]);
+  return { ok: true, json: async () => data[route] || { success: true, message: 'OK', data: [] } };
+};
+const bundle = path.resolve(__dirname, '../web/node_modules/.cache/ad-app.cjs');
+require('../web/node_modules/esbuild').buildSync({ entryPoints: [path.resolve(__dirname, '../web/src/App.jsx')], outfile: bundle, bundle: true, platform: 'node', format: 'cjs', external: ['react'] });
+const React = require('../web/node_modules/react');
+const { createRoot } = require('../web/node_modules/react-dom/client');
+const { act } = React;
+const App = require(bundle).default;
+const button = text => [...document.querySelectorAll('button')].find(node => node.textContent.trim() === text);
+const click = async node => { assert(node, 'Expected button'); await act(async () => node.click()); };
+(async () => {
+  const root = createRoot(document.getElementById('root'));
+  await act(async () => root.render(React.createElement(App)));
+  await click(button('BIND 9 Recursivo'));
+  assert(document.body.textContent.includes('Sintaxe: válida'));
+  await click(button('Validar plano'));
+  assert(calls.some(([route, options]) => route === '/api/bind/forwarders' && JSON.parse(options.body).dry_run));
+  await click([...document.querySelectorAll('aside button')].find(node => node.textContent.includes('Computadores & DCs')));
+  assert(document.body.textContent.includes('Primário protegido'));
+  assert.equal([...document.querySelectorAll('button')].filter(node => node.textContent === 'Despromover').length, 1);
+  await click(button('Despromover'));
+  assert(document.querySelector('[aria-label="Despromover DC secundário"]'));
+  await click(button('Cancelar'));
+  await click(button('Backups'));
+  assert(document.querySelector('input[type="file"]'));
+  const selector = document.querySelector('[aria-label="Backup para recuperação"]');
+  await act(async () => { selector.value = 'domain.tar.bz2'; selector.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  await click(button('Configurar recuperação'));
+  assert(document.body.textContent.includes('Confirmo que os DCs do domínio original'));
+  assert([...document.querySelectorAll('button')].find(node => node.textContent.includes('Simular Restauração')).disabled);
+  await act(async () => root.unmount());
+  console.log('PASS: BIND renders/plan, primary DC protection, secondary demotion form and backup recovery/import UI');
+  process.exit(0);
+})().catch(error => { console.error(error); process.exit(1); });

@@ -3,14 +3,19 @@ import React, { useState } from 'react';
 import { RotateCcw, AlertTriangle, CheckCircle, RefreshCw, X, ShieldCheck } from 'lucide-react';
 
 export default function RestoreBackupModal({ filename, onClose, customFetch, showToast, onSuccess }) {
-  const [dryRun, setDryRun] = useState(false);
+  const [dryRun, setDryRun] = useState(true);
   const [restoring, setRestoring] = useState(false);
   const [steps, setSteps] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
   const [completed, setCompleted] = useState(false);
 
+  const [serverName, setServerName] = useState('');
+  const [hostIp, setHostIp] = useState('');
+  const [replaceExisting, setReplaceExisting] = useState(false);
+  const [isolated, setIsolated] = useState(false);
+
   const handleExecuteRestore = async () => {
-    if (!dryRun && !await confirmAction(`ATENÇÃO: Deseja restaurar o backup do Samba AD '${filename}'? Os bancos LDB e Sysvol do Samba serão restaurados, preservando o IP e configurações de rede atuais da máquina.`)) {
+    if (!dryRun && !await confirmAction(`ATENÇÃO: Deseja recuperar o domínio completo a partir de o backup do Samba AD '${filename}'? Os bancos LDB e Sysvol do Samba serão restaurados, preservando o IP e configurações de rede atuais da máquina.`)) {
       return;
     }
 
@@ -19,18 +24,22 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
     setErrorMsg(null);
 
     try {
-      const res = await customFetch('/api/backups/restore', {
+      const res = await customFetch('/api/provision/from-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename,
           dry_run: dryRun,
+          new_server_name: serverName || undefined,
+          host_ip: hostIp || undefined,
+          replace_existing: replaceExisting,
+          isolated_recovery_confirmed: isolated,
         })
       });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.success) {
         setSteps(data.data || []);
-        setCompleted(true);
+        setCompleted(!dryRun);
         showToast(data.message);
         if (!dryRun && onSuccess) {
           onSuccess();
@@ -48,7 +57,7 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full shadow-2xl overflow-auto flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -58,7 +67,7 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
               <p className="text-[11px] text-slate-400">Recuperação de banco LDB, Kerberos e Sysvol</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition">
+          <button disabled={restoring} onClick={onClose} className="text-slate-400 hover:text-white transition">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -81,6 +90,19 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
             </p>
           </div>
 
+          {!completed && <div className="space-y-3">
+            <label className="block">Nome NetBIOS do DC recuperado (até 15 caracteres)
+              <input value={serverName} maxLength={15} onChange={event => setServerName(event.target.value.toUpperCase())} placeholder="Padrão: hostname atual"
+                className="block w-full p-2 bg-slate-950 border border-slate-700 rounded mt-1" />
+            </label>
+            <label className="block">IPv4 do DC recuperado
+              <input value={hostIp} onChange={event => setHostIp(event.target.value)} placeholder="Padrão: IPv4 atual do servidor"
+                className="block w-full p-2 bg-slate-950 border border-slate-700 rounded mt-1" />
+            </label>
+            <label className="flex gap-2 text-amber-300"><input type="checkbox" checked={isolated} onChange={event => setIsolated(event.target.checked)} />Confirmo que os DCs do domínio original estão desligados ou isolados para recuperação.</label>
+            <label className="flex gap-2 text-amber-300"><input type="checkbox" checked={replaceExisting} onChange={event => setReplaceExisting(event.target.checked)} />Substituir configuração/base Samba já existente neste host, preservando cópia anterior.</label>
+          </div>}
+
           {!completed && (
             <div className="space-y-3 pt-2">
               <label className="flex items-center gap-2 cursor-pointer text-slate-200">
@@ -102,7 +124,7 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
               <button
                 type="button"
                 onClick={handleExecuteRestore}
-                disabled={restoring}
+                disabled={restoring || !isolated}
                 className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-lg font-bold text-xs shadow-lg transition flex items-center justify-center gap-2"
               >
                 {restoring ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
@@ -129,6 +151,7 @@ export default function RestoreBackupModal({ filename, onClose, customFetch, sho
         {/* Footer */}
         <div className="bg-slate-950 px-6 py-3 border-t border-slate-800 flex justify-end">
           <button
+            disabled={restoring}
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition"
           >

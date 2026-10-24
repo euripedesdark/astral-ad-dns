@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::fs;
 use std::path::Path;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, ensure_firewall_port_open, check_service_active, sanitize_arg, shell_quote};
+use crate::system::{run_cmd_dry, ensure_firewall_port_open, check_service_active, sanitize_arg, shell_quote, run_ad_operation};
 use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -175,7 +175,6 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
         (464, "tcp", "kpasswd"),
         (636, "tcp", "LDAPS"),
         (3268, "tcp", "Global Catalog"),
-        (5353, "udp", "BIND Hybrid (UDP)"),
         (8095, "tcp", "Astral Web Console"),
     ];
 
@@ -219,6 +218,7 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
 }
 
 pub async fn provision_new_dc(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<ProvisionNewDcRequest>,
 ) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
@@ -283,7 +283,6 @@ pub async fn provision_new_dc(
         (636, "tcp"),
         (8443, "tcp"),
         (3268, "tcp"), (3269, "tcp"),
-        (5353, "tcp"), (5353, "udp"),
         (8095, "tcp"),
     ];
 
@@ -317,26 +316,10 @@ pub async fn provision_new_dc(
         payload.dns_forwarder.unwrap_or_else(|| "8.8.8.8".to_string())
     };
     if payload.setup_bind_hybrid.unwrap_or(true) {
-        let fwd_list = payload.upstream_forwarders.unwrap_or_else(|| vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]);
-        let fwd_formatted = fwd_list.iter().map(|f| format!(" {};", f.trim())).collect::<Vec<_>>().join("");
-
-        if d {
-            steps.push(format!("[SIMULAÇÃO] Configuração do named.conf na porta 5353 com forwarders recursivos: {:?}", fwd_list));
-        } else {
-            let named_conf = format!("options {{\n    directory \"/var/named\";\n    listen-on port 5353 {{ 127.0.0.1; }};\n    listen-on-v6 {{ none; }};\n    allow-query {{ localhost; }};\n    recursion yes;\n    forwarders {{{} }};\n    dnssec-validation no;\n    max-cache-size 64m;\n}};\n", fwd_formatted);
-
-            let temp_named = "/tmp/named.conf.gen";
-            let _ = fs::write(temp_named, named_conf);
-            let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
-            let _ = fs::remove_file(temp_named);
-            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
-            if !named_result.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
-                    data: None, dry_run: false, correlation_id: None,
-                }));
-            }
-            steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353.".to_string());
+        let request = serde_json::json!({"forwarders": payload.upstream_forwarders.clone().unwrap_or_else(|| vec!["8.8.8.8".to_string(), "1.1.1.1".to_string()]), "dry_run": d});
+        match run_ad_operation("bind", &request, sudo) {
+            Ok(bind_steps) => steps.extend(bind_steps),
+            Err(error) => return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: d, correlation_id: None })),
         }
     }
 
@@ -479,6 +462,7 @@ pub async fn provision_new_dc(
 }
 
 pub async fn join_domain(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<JoinDomainRequest>,
 ) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
@@ -742,27 +726,15 @@ pub async fn join_domain(
         steps.push("Serviço Samba Active Directory DC (RODC) inicializado e habilitado no systemd.".to_string());
 
         if payload.setup_bind_hybrid.unwrap_or(true) {
-            let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
-            let temp_named = "/tmp/named.conf.gen";
-            let _ = fs::write(temp_named, named_conf);
-            let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
-            let _ = fs::remove_file(temp_named);
-            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
-            if !named_result.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
-                    data: None, dry_run: false, correlation_id: None,
-                }));
+            let request = serde_json::json!({"forwarders": ["8.8.8.8", "1.1.1.1"]});
+            if let Err(error) = run_ad_operation("bind", &request, sudo) {
+                return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: false, correlation_id: None }));
             }
-            let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
-            let restart = run_cmd_dry("systemctl restart samba || systemctl restart samba-dc", sudo, false);
-            if !restart.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-                    success: false, message: format!("Ingresso concluído, mas falhou ao reiniciar Samba: {}", restart.stderr),
-                    data: None, dry_run: false, correlation_id: None,
-                }));
+            let changed = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", sudo, false);
+            if !changed.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse { success: false, message: changed.stderr, data: None, dry_run: false, correlation_id: None }));
             }
-            steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
+            steps.push("BIND recursivo validado em TCP/UDP 127.0.0.1:5353 e Samba recarregado.".into());
         }
 
         let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);
@@ -816,27 +788,15 @@ pub async fn join_domain(
         steps.push("Serviço Samba Active Directory DC inicializado e habilitado no systemd.".to_string());
 
         if payload.setup_bind_hybrid.unwrap_or(true) {
-            let named_conf = "options {\n    directory \"/var/named\";\n    listen-on port 5353 { 127.0.0.1; };\n    listen-on-v6 { none; };\n    allow-query { localhost; };\n    recursion yes;\n    forwarders { 8.8.8.8; 1.1.1.1; };\n    dnssec-validation no;\n    max-cache-size 64m;\n};\n";
-            let temp_named = "/tmp/named.conf.gen";
-            let _ = fs::write(temp_named, named_conf);
-            let _ = run_cmd_dry(&format!("cp -f {} /etc/named.conf", temp_named), sudo, false);
-            let _ = fs::remove_file(temp_named);
-            let named_result = run_cmd_dry("named-checkconf /etc/named.conf && systemctl enable named && systemctl restart named", sudo, false);
-            if !named_result.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-                    success: false, message: format!("Falha ao ativar BIND recursivo: {}", named_result.stderr),
-                    data: None, dry_run: false, correlation_id: None,
-                }));
+            let request = serde_json::json!({"forwarders": ["8.8.8.8", "1.1.1.1"]});
+            if let Err(error) = run_ad_operation("bind", &request, sudo) {
+                return (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: false, correlation_id: None }));
             }
-            let _ = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf", sudo, false);
-            let restart = run_cmd_dry("systemctl restart samba || systemctl restart samba-dc", sudo, false);
-            if !restart.success {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {
-                    success: false, message: format!("Ingresso concluído, mas falhou ao reiniciar Samba: {}", restart.stderr),
-                    data: None, dry_run: false, correlation_id: None,
-                }));
+            let changed = run_cmd_dry("sed -i 's/dns forwarder = .*/dns forwarder = 127.0.0.1:5353/' /etc/samba/smb.conf && (systemctl restart samba || systemctl restart samba-dc)", sudo, false);
+            if !changed.success {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse { success: false, message: changed.stderr, data: None, dry_run: false, correlation_id: None }));
             }
-            steps.push("BIND 9 híbrido recursivo ativo em 127.0.0.1:5353 configurado como forwarder do Samba.".to_string());
+            steps.push("BIND recursivo validado em TCP/UDP 127.0.0.1:5353 e Samba recarregado.".into());
         }
 
         let fw_rep = crate::system::auto_reconcile_firewall_ports(sudo, false);

@@ -14,6 +14,8 @@ import RestoreBackupModal from './components/RestoreBackupModal';
 import OUTab from './components/OUTab';
 import ConfirmationDialog, { confirmAction } from './components/ConfirmationDialog';
 import GpoTab from './components/GpoTab';
+import BackupProvisioning from './components/BackupProvisioning';
+import DemoteControllerModal from './components/DemoteControllerModal';
 
 
 const API_BASE = typeof window !== "undefined" && window.location.pathname.startsWith("/ad")
@@ -1866,6 +1868,7 @@ function GroupsTab({ t, showToast }) {
 // 4. COMPUTERS TAB
 // ==============================================================================
 function ComputersTab({ t, showToast }) {
+  const [demoteComputer, setDemoteComputer] = useState(null);
   const [computers, setComputers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1999,7 +2002,7 @@ function ComputersTab({ t, showToast }) {
               </div>
               <div>
                 <h4 className="text-xs font-bold text-slate-100 font-mono flex items-center gap-1">
-                  <span>{comp.name}</span>
+                  <span>{comp.name}</span>{comp.is_primary && <span className="text-amber-300"> · Primário protegido</span>}
                 </h4>
                 <span className={`text-[10px] px-2 py-0.5 rounded font-sans ${
                   comp.is_dc ? 'bg-amber-950 text-amber-300 border border-amber-800' : 'text-slate-400'
@@ -2019,7 +2022,8 @@ function ComputersTab({ t, showToast }) {
                 <Info className="w-3.5 h-3.5" />
               </button>
 
-              {!comp.is_local && (
+              {comp.is_dc && !comp.is_primary && <button onClick={() => setDemoteComputer(comp)} className="text-[10px] text-amber-300 px-2 py-1 rounded bg-amber-950">Despromover</button>}
+              {!comp.is_local && !comp.is_primary && (
                 <button 
                   onClick={() => handleDeleteComputer(comp.name)}
                   className="text-slate-500 hover:text-rose-400 p-1.5 rounded transition"
@@ -2054,7 +2058,7 @@ function ComputersTab({ t, showToast }) {
               <Info className="w-3.5 h-3.5 text-sky-400" />
               <span>Propriedades</span>
             </button>
-            {!contextMenu.comp.is_local && (
+            {!contextMenu.comp.is_local && !contextMenu.comp.is_primary && (
               <button
                 onClick={() => {
                   handleDeleteComputer(contextMenu.comp.name);
@@ -2070,6 +2074,7 @@ function ComputersTab({ t, showToast }) {
         </div>
       )}
 
+      {demoteComputer && <DemoteControllerModal computer={demoteComputer} customFetch={customFetch} showToast={showToast} onClose={() => setDemoteComputer(null)} onSuccess={fetchComputers} />}
       {/* Computer Properties Modal */}
       {selectedPropertiesComp && (
         <ComputerPropertiesModal
@@ -2595,13 +2600,14 @@ function BindTab({ t, showToast }) {
     setForwarders(forwarders.filter(f => f !== ip));
   };
 
-  const handleSaveForwarders = async () => {
+  const handleSaveForwarders = async (dryRun = false) => {
+    if (!dryRun && !await confirmAction('Aplicar o BIND recursivo em loopback? A configuração será validada, com cópia anterior e rollback se o serviço ou os testes DNS falharem.')) return;
     try {
       setSaving(true);
       const res = await customFetch('/api/bind/forwarders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ forwarders })
+        body: JSON.stringify({ forwarders, dry_run: dryRun })
       });
       const data = await res.json();
       if (res.ok) {
@@ -2634,6 +2640,10 @@ function BindTab({ t, showToast }) {
 
   return (
     <div className="space-y-6">
+      {bindStatus && <div className="text-xs space-y-2 p-4 bg-slate-900 border border-slate-700 rounded-xl">
+        <p>Serviço: {bindStatus.service_name} · Sintaxe: {bindStatus.syntax_valid ? 'válida' : 'verificar'} · Listener TCP/UDP: {bindStatus.listening_on_5353 ? 'ativo' : 'incompleto'} · Loopback: {bindStatus.loopback_only ? 'restrito' : 'verificar'}</p>
+        {(bindStatus.warnings || []).map((warning, index) => <p key={index} className="text-amber-300">{warning}</p>)}
+      </div>}
       {/* Hybrid DNS Architectural Overview */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 text-sky-400 font-bold text-sm">
@@ -2648,8 +2658,8 @@ function BindTab({ t, showToast }) {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-2 text-center text-xs font-mono">
           <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
             <span className="text-[10px] text-slate-500 uppercase">Clientes da Rede</span>
-            <div className="text-slate-200 font-bold">192.168.2.x</div>
-            <span className="text-[10px] text-indigo-400">DNS: 192.168.2.10</span>
+            <div className="text-slate-200 font-bold">Clientes AD</div>
+            <span className="text-[10px] text-indigo-400">DNS do domínio</span>
           </div>
           <div className="bg-indigo-950/60 border border-indigo-700/60 p-3 rounded-lg space-y-1">
             <span className="text-[10px] text-indigo-300 uppercase">Samba 4 AD DC</span>
@@ -2663,7 +2673,7 @@ function BindTab({ t, showToast }) {
           </div>
           <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
             <span className="text-[10px] text-slate-500 uppercase">Internet / Upstream</span>
-            <div className="text-slate-200 font-bold">8.8.8.8 / 1.1.1.1</div>
+            <div className="text-slate-200 font-bold">{bindStatus?.forwarders?.join(" / ") || "Configure upstreams"}</div>
             <span className="text-[10px] text-cyan-400">Resolução Global</span>
           </div>
         </div>
@@ -2714,7 +2724,7 @@ function BindTab({ t, showToast }) {
               type="text" 
               value={newFwd}
               onChange={(e) => setNewFwd(e.target.value)}
-              placeholder="Ex: 8.8.4.4 ou 9.9.9.9"
+              placeholder="IPv4 ou IPv6 do DNS upstream"
               className="flex-1 bg-slate-950 border border-slate-700 text-xs px-3 py-1.5 rounded-lg text-slate-100 font-mono focus:border-indigo-500 focus:outline-none"
             />
             <button 
@@ -2725,9 +2735,10 @@ function BindTab({ t, showToast }) {
             </button>
           </div>
 
-          <div className="pt-2">
+          <div className="pt-2 flex gap-3">
+            <button onClick={() => handleSaveForwarders(true)} disabled={saving} className="px-4 py-2 rounded bg-slate-800 text-slate-200 text-xs">Validar plano</button>
             <button 
-              onClick={handleSaveForwarders}
+              onClick={() => handleSaveForwarders(false)}
               disabled={saving}
               className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md flex items-center gap-1.5"
             >
@@ -3039,7 +3050,7 @@ function BackupsTab({ t, showToast }) {
   };
 
   const handleDeleteBackup = async (filename) => {
-    if (!confirm(`Deseja realmente excluir o backup ${filename}?`)) return;
+    if (!await confirmAction(`Deseja realmente excluir o backup ${filename}?`)) return;
     try {
       const res = await customFetch(`/api/backups/${encodeURIComponent(filename)}`, { method: 'DELETE' });
       const data = await res.json();
@@ -3056,6 +3067,7 @@ function BackupsTab({ t, showToast }) {
 
   return (
     <div className="space-y-4">
+      <BackupProvisioning customFetch={customFetch} showToast={showToast} />
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -4071,8 +4083,12 @@ function WizardModal({ onClose, t, showToast }) {
             </div>
           )}
 
+          {step === 2 && <button onClick={() => setMode('from_backup')} className={`w-full p-4 rounded-xl border text-left ${mode === 'from_backup' ? 'border-amber-500 bg-amber-950/50' : 'border-slate-700 bg-slate-950'}`}>
+            <strong>Provisionar / recuperar a partir de backup</strong><p className="text-xs text-slate-400 mt-1">Importar backup Samba e recuperar o domínio em um host preparado.</p>
+          </button>}
+          {step === 3 && mode === 'from_backup' && <BackupProvisioning customFetch={customFetch} showToast={showToast} />}
           {/* STEP 3: PARAMETERS */}
-          {step === 3 && (
+          {step === 3 && mode !== 'from_backup' && (
             <div className="space-y-3">
               <div>
                 <label className="block text-slate-300 font-medium mb-1">Domínio Kerberos (REALM) *</label>
@@ -4322,7 +4338,7 @@ function WizardModal({ onClose, t, showToast }) {
                 Avançar
               </button>
             )}
-            {step === 3 && (
+            {step === 3 && mode !== 'from_backup' && (
               <button 
                 onClick={handleStartProvision}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition shadow-md"

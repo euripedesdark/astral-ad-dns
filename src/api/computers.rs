@@ -6,7 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use crate::config::AppConfig;
-use crate::system::{run_cmd_dry, sanitize_arg, shell_quote};
+use crate::system::{run_cmd_dry, sanitize_arg, shell_quote, run_ad_operation};
 use crate::api::users::ApiResponse;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -14,6 +14,7 @@ pub struct ComputerItem {
     pub name: String,
     pub is_dc: bool,
     pub is_local: bool,
+    pub is_primary: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -34,6 +35,23 @@ fn ldif_value(ldif: &str, key: &str) -> String {
 fn is_domain_controller(ldif: &str) -> bool {
     let flags = ldif_value(ldif, "userAccountControl").parse::<u32>().unwrap_or(0);
     flags & 0x2000 != 0 || ldif_value(ldif, "primaryGroupID") == "521"
+}
+
+fn fsmo_primary(output: &str) -> Option<String> {
+    let line = output.lines().find(|line| line.to_lowercase().starts_with("pdcemulationmasterrole owner:"))?;
+    let marker = "cn=ntds settings,cn=";
+    let lower = line.to_lowercase();
+    let start = lower.find(marker)? + marker.len();
+    Some(line[start..].split(',').next()?.to_uppercase())
+}
+
+fn configured_primary(sudo: Option<&str>) -> Option<String> {
+    std::env::var("ASTRAL_PRIMARY_DC").ok().filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().trim_end_matches('$').split('.').next().unwrap_or("").to_uppercase())
+        .or_else(|| {
+            let result = run_cmd_dry("samba-tool fsmo show", sudo, false);
+            if result.success { fsmo_primary(&result.stdout) } else { None }
+        })
 }
 
 fn local_netbios(sudo: Option<&str>) -> String {
@@ -232,6 +250,7 @@ pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
     }
 
     let local = local_netbios(sudo);
+    let primary = configured_primary(sudo);
     let computers: Vec<ComputerItem> = res.stdout.lines()
         .map(str::trim).filter(|name| !name.is_empty())
         .map(|name| {
@@ -241,6 +260,7 @@ pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
                 name: name.to_string(),
                 is_dc: is_domain_controller(&details.stdout),
                 is_local: clean.eq_ignore_ascii_case(&local),
+                is_primary: primary.as_deref().map(|p| clean.eq_ignore_ascii_case(p)).unwrap_or(false),
             }
         }).collect();
 
@@ -317,6 +337,7 @@ pub async fn create_computer(
 }
 
 pub async fn delete_computer(
+    _operator: crate::auth::Administrator,
     Path(computername): Path<String>,
     Query(q): Query<DeleteComputerQuery>,
     State(config): State<Arc<AppConfig>>,
@@ -334,11 +355,18 @@ pub async fn delete_computer(
     if local.is_empty() || name.eq_ignore_ascii_case(&local) {
         return fail(StatusCode::FORBIDDEN, "Não é permitido excluir o próprio servidor do AD.".into());
     }
+    if configured_primary(sudo).as_deref() == Some(name.as_str()) {
+        return fail(StatusCode::FORBIDDEN, "O DC primário não pode ser excluído.".into());
+    }
     let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&name)), sudo, false);
     if !details.success {
         return fail(StatusCode::BAD_REQUEST, format!("Falha ao consultar computador: {}", details.stderr));
     }
     let cmd = if is_domain_controller(&details.stdout) {
+        let primary = configured_primary(sudo);
+        if primary.is_none() || primary.as_deref() == Some(name.as_str()) {
+            return fail(StatusCode::FORBIDDEN, "DC primário protegido ou primário não identificado. Verifique FSMO/ASTRAL_PRIMARY_DC.".into());
+        }
         if !q.remove_dead_dc {
             return fail(StatusCode::CONFLICT, "DC exige despromoção. Para DC permanentemente desativado, confirme a limpeza de metadados.".into());
         }
@@ -399,6 +427,51 @@ pub async fn delete_computer(
                 correlation_id: Some(evt_id),
             }),
         )
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DemoteRequest {
+    pub admin_username: String,
+    pub admin_password: String,
+}
+
+pub async fn demote_controller(
+    _operator: crate::auth::Administrator,
+    Path(computername): Path<String>,
+    State(config): State<Arc<AppConfig>>,
+    Json(payload): Json<DemoteRequest>,
+) -> (StatusCode, Json<ApiResponse<Vec<String>>>) {
+    let sudo = config.sudo_password.as_deref();
+    let name = computername.trim_end_matches('$').to_uppercase();
+    let fail = |message: String| (StatusCode::BAD_REQUEST, Json(ApiResponse::<Vec<String>> {
+        success: false, message, data: None, dry_run: false, correlation_id: None,
+    }));
+    let Some(primary) = configured_primary(sudo) else { return fail("Não foi possível identificar o DC primário.".into()); };
+    if name == primary { return fail("Despromoção do DC primário bloqueada.".into()); }
+    if payload.admin_username.trim().is_empty() || payload.admin_password.is_empty() {
+        return fail("Informe credenciais administrativas do domínio.".into());
+    }
+    let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&name)), sudo, false);
+    if !details.success || !is_domain_controller(&details.stdout) { return fail("Selecione um controlador de domínio existente.".into()); }
+    let fsmo = run_cmd_dry("samba-tool fsmo show", sudo, false);
+    if !fsmo.success || fsmo.stdout.to_uppercase().contains(&format!("CN=NTDS SETTINGS,CN={},", name)) {
+        return fail("Transfira as funções FSMO deste DC antes da despromoção.".into());
+    }
+    let partner = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(&primary)), sudo, false);
+    if !partner.success { return fail("Não foi possível consultar o DC primário.".into()); }
+    let request = serde_json::json!({
+        "target_name": name, "target_hostname": ldif_value(&details.stdout, "dNSHostName"),
+        "primary_hostname": ldif_value(&partner.stdout, "dNSHostName"),
+        "local": name.eq_ignore_ascii_case(&local_netbios(sudo)),
+        "ssh_user": std::env::var("ASTRAL_DC_SSH_USER").unwrap_or_else(|_| "root".into()),
+        "admin_username": payload.admin_username, "admin_password": payload.admin_password,
+    });
+    let result = run_ad_operation("demote", &request, sudo);
+    let id = config.audit.record(&_operator.0.username, None, "DC_DEMOTE", &name, false, result.is_ok(), "Despromoção de DC secundário");
+    match result {
+        Ok(steps) => (StatusCode::OK, Json(ApiResponse { success: true, message: "DC secundário despromovido.".into(), data: Some(steps), dry_run: false, correlation_id: Some(id) })),
+        Err(error) => fail(error),
     }
 }
 

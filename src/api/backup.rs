@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Multipart, Query, State},
     http::StatusCode,
     response::Json,
 };
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::fs;
 use crate::config::AppConfig;
-use crate::system::run_cmd_dry;
+use crate::system::{run_cmd_dry, run_ad_operation, shell_quote};
 use crate::api::users::{ApiResponse, ActionQuery};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,6 +64,7 @@ pub async fn list_backups(State(_config): State<Arc<AppConfig>>) -> Json<ApiResp
 }
 
 pub async fn create_backup(
+    _operator: crate::auth::Administrator,
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<String>>) {
@@ -74,8 +75,8 @@ pub async fn create_backup(
     let _ = run_cmd_dry(&format!("mkdir -p {}", backup_dir), sudo, q.dry_run);
 
     let cmd = format!(
-        "samba-tool domain backup online --targetdir='{}' -U administrator --password='{}'",
-        backup_dir, admin_pass
+        "samba-tool domain backup online --server=127.0.0.1 --targetdir='{}' -U administrator --password={}",
+        backup_dir, shell_quote(admin_pass)
     );
 
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
@@ -118,178 +119,89 @@ pub async fn create_backup(
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct RestoreBackupRequest {
     pub filename: String,
     pub new_server_name: Option<String>,
     pub host_ip: Option<String>,
     #[serde(default)]
+    pub replace_existing: bool,
+    #[serde(default)]
+    pub isolated_recovery_confirmed: bool,
+    #[serde(default)]
     pub dry_run: bool,
 }
 
 pub async fn restore_backup(
+    _operator: crate::auth::Administrator,
     State(config): State<Arc<AppConfig>>,
-    Json(payload): Json<RestoreBackupRequest>,
+    Json(mut payload): Json<RestoreBackupRequest>,
 ) -> (StatusCode, Json<ApiResponse<Vec<String>>>) {
     let sudo = config.sudo_password.as_deref();
-    let mut steps = Vec::new();
-    let filename = payload.filename.trim();
-
-    // Validação de segurança de path traversal
-    if filename.is_empty() || filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: "Nome de arquivo de backup inválido".to_string(),
-                data: None,
-                dry_run: payload.dry_run,
-                correlation_id: None,
-            }),
-        );
+    if payload.new_server_name.as_deref().unwrap_or("").is_empty() {
+        payload.new_server_name = Some(run_cmd_dry("hostname -s", sudo, false).stdout.trim().to_uppercase());
     }
-
-    let backup_path = format!("/var/backups/samba/{}", filename);
-    if !std::path::Path::new(&backup_path).exists() && !payload.dry_run {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiResponse {
-                success: false,
-                message: format!("Arquivo de backup não encontrado: {}", backup_path),
-                data: None,
-                dry_run: payload.dry_run,
-                correlation_id: None,
-            }),
-        );
+    if payload.host_ip.as_deref().unwrap_or("").is_empty() {
+        payload.host_ip = Some(run_cmd_dry("hostname -I | awk '{print $1}'", sudo, false).stdout.trim().to_string());
     }
-
-    // Detecta IP e Hostname atuais do servidor para preservar configurações de rede do host
-    let host_ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
-    let current_ip = host_ip_res.stdout.trim().to_string();
-    let target_ip = payload.host_ip.as_deref().unwrap_or(&current_ip);
-
-    let host_name_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
-    let current_hostname = host_name_res.stdout.trim().to_uppercase();
-    let target_server_name = payload.new_server_name.as_deref().unwrap_or(&current_hostname).to_uppercase();
-
-    if payload.dry_run {
-        steps.push(format!("[SIMULAÇÃO] Verificação do arquivo de backup: {}", backup_path));
-        steps.push("[SIMULAÇÃO] Parada preventiva do serviço Samba AD DC (systemctl stop samba)".to_string());
-        steps.push("[SIMULAÇÃO] Backup de salvaguarda do estado atual em /var/lib/samba.pre-restore e /etc/samba/smb.conf.pre-restore".to_string());
-        steps.push(format!(
-            "[SIMULAÇÃO] Restauração do Samba AD: preservando IP atual ({}) e nome de servidor ({})",
-            target_ip, target_server_name
-        ));
-        steps.push("[SIMULAÇÃO] Restauração estrita dos componentes Samba (LDB, Kerberos, Sysvol e smb.conf) sem alterar interfaces de rede do SO".to_string());
-        steps.push("[SIMULAÇÃO] Redefinição de ACLs de Sysvol (samba-tool ntacl sysvolreset)".to_string());
-        steps.push("[SIMULAÇÃO] Inicialização e teste de conformidade do serviço (systemctl start samba)".to_string());
-
-        let evt_id = config.audit.record(
-            "admin",
-            None,
-            "BACKUP_RESTORE_SIMULATION",
-            &format!("file:{}", filename),
-            true,
-            true,
-            &format!("Simulação de restauração do backup {}", filename),
-        );
-
-        return (
-            StatusCode::OK,
-            Json(ApiResponse {
-                success: true,
-                message: "[SIMULAÇÃO] Plano de restauração validado com sucesso. Nenhuma alteração foi realizada.".to_string(),
-                data: Some(steps),
-                dry_run: true,
-                correlation_id: Some(evt_id),
-            }),
-        );
+    let result = run_ad_operation("restore", &serde_json::to_value(&payload).unwrap(), sudo);
+    let id = config.audit.record(&_operator.0.username, None, "DOMAIN_BACKUP_RECOVERY", &payload.filename,
+        payload.dry_run, result.is_ok(), "Provisionamento/recuperação de domínio a partir de backup Samba");
+    match result {
+        Ok(steps) => (StatusCode::OK, Json(ApiResponse {
+            success: true,
+            message: if payload.dry_run { "Plano de recuperação validado.".into() } else { "Domínio recuperado do backup e serviço validado.".into() },
+            data: Some(steps), dry_run: payload.dry_run, correlation_id: Some(id),
+        })),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(ApiResponse {
+            success: false, message: error, data: None, dry_run: payload.dry_run, correlation_id: Some(id),
+        })),
     }
+}
 
-    // Execução real
-    // 1. Parada dos serviços Samba
-    let _ = run_cmd_dry("systemctl stop samba samba-dc smbd nmbd winbind 2>/dev/null || true", sudo, false);
-    steps.push("Serviço Samba paralisado para restauração segura.".to_string());
-
-    // 2. Backup de salvaguarda
-    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
-    let _ = run_cmd_dry(&format!("cp -r /var/lib/samba /var/lib/samba.pre-restore.{} 2>/dev/null || true", timestamp), sudo, false);
-    let _ = run_cmd_dry(&format!("cp /etc/samba/smb.conf /etc/samba/smb.conf.pre-restore.{} 2>/dev/null || true", timestamp), sudo, false);
-    steps.push(format!("Backup de salvaguarda criado em /var/lib/samba.pre-restore.{}", timestamp));
-
-    // 3. Execução da restauração do Samba AD
-    let restore_temp_dir = "/var/lib/samba-restore-temp";
-    let _ = run_cmd_dry(&format!("rm -rf {} 2>/dev/null || true", restore_temp_dir), sudo, false);
-    let _ = run_cmd_dry(&format!("mkdir -p {}", restore_temp_dir), sudo, false);
-
-    let restore_cmd = format!(
-        "samba-tool domain backup restore --backup-file='{}' --targetdir='{}' --newservername='{}' --host-ip='{}'",
-        backup_path, restore_temp_dir, target_server_name, target_ip
-    );
-    let res = run_cmd_dry(&restore_cmd, sudo, false);
-
-    if res.success {
-        // Move os diretórios restaurados para o local oficial do Samba
-        let _ = run_cmd_dry(&format!("cp -rf {}/private/* /var/lib/samba/private/ 2>/dev/null || true", restore_temp_dir), sudo, false);
-        if std::path::Path::new(&format!("{}/sysvol", restore_temp_dir)).exists() {
-            let _ = run_cmd_dry(&format!("cp -rf {}/sysvol/* /var/lib/samba/sysvol/ 2>/dev/null || true", restore_temp_dir), sudo, false);
+pub async fn upload_backup(
+    _operator: crate::auth::Administrator,State(config): State<Arc<AppConfig>>, mut multipart: Multipart) -> (StatusCode, Json<ApiResponse<String>>) {
+    use tokio::io::AsyncWriteExt;
+    let result: Result<String, String> = async {
+        let mut field = multipart.next_field().await.map_err(|e| e.to_string())?.ok_or("Selecione um backup.")?;
+        let original = field.file_name().ok_or("Arquivo sem nome.")?.to_string();
+        if original.contains(['/', '\\', '\0']) || !(original.ends_with(".tar.bz2") || original.ends_with(".tar.gz")) {
+            return Err("Use arquivo .tar.bz2 ou .tar.gz, sem caminhos no nome.".into());
         }
-        if std::path::Path::new(&format!("{}/etc/smb.conf", restore_temp_dir)).exists() {
-            let _ = run_cmd_dry(&format!("cp -f {}/etc/smb.conf /etc/samba/smb.conf", restore_temp_dir), sudo, false);
+        let name = format!("import-{}-{}-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0), std::process::id(), original);
+        let directory = std::path::Path::new("/var/backups/samba");
+        tokio::fs::create_dir_all(directory).await.map_err(|e| e.to_string())?;
+        let path = directory.join(&name);
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true).mode(0o600);
+        let mut file = options.open(&path).await.map_err(|e| e.to_string())?;
+        let transfer: Result<(), String> = async {
+            let mut size = 0usize;
+            while let Some(chunk) = field.chunk().await.map_err(|e| e.to_string())? {
+                size += chunk.len();
+                if size > 512 * 1024 * 1024 { return Err("Backup excede o limite de 512 MiB.".into()); }
+                file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            }
+            if size == 0 { return Err("Arquivo vazio.".into()); }
+            file.sync_all().await.map_err(|e| e.to_string())?;
+            Ok(())
+        }.await;
+        if let Err(error) = transfer {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(error);
         }
-        let _ = run_cmd_dry(&format!("rm -rf {}", restore_temp_dir), sudo, false);
-        steps.push("Arquivos de banco de dados do Samba (LDB) e Sysvol restaurados com sucesso.".to_string());
-    } else {
-        // Fallback: se o comando restore encontrou restrição de nome, descompacta os arquivos de banco preservando a rede
-        let extract_cmd = format!("tar -xjf '{}' -C /var/lib/samba/ 2>/dev/null || tar -xzf '{}' -C /var/lib/samba/ 2>/dev/null", backup_path, backup_path);
-        let _ = run_cmd_dry(&extract_cmd, sudo, false);
-        steps.push("Restauração por descompactação de contingência executada.".to_string());
+        Ok(name)
+    }.await;
+    let id = config.audit.record(&_operator.0.username, None, "BACKUP_IMPORT", "samba:backup", false, result.is_ok(), "Importação de arquivo para recuperação");
+    match result {
+        Ok(name) => (StatusCode::CREATED, Json(ApiResponse { success: true, message: "Backup importado. A estrutura será validada antes da recuperação.".into(), data: Some(name), dry_run: false, correlation_id: Some(id) })),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(ApiResponse { success: false, message: error, data: None, dry_run: false, correlation_id: Some(id) })),
     }
-
-    // 4. Garante que smb.conf preserva configurações de rede atuais e functional level
-    let _ = run_cmd_dry("grep -q 'ad dc functional level = 2016' /etc/samba/smb.conf || sed -i '/\\[global\\]/a \\\\tad dc functional level = 2016' /etc/samba/smb.conf", sudo, false);
-    steps.push(format!("Configuração de smb.conf ajustada preservando o IP do servidor ({}).", target_ip));
-
-    // 5. Kerberos
-    let _ = run_cmd_dry("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf 2>/dev/null || true", sudo, false);
-    steps.push("Configuração Kerberos (/etc/krb5.conf) atualizada.".to_string());
-
-    // 6. Reseta ACLs do Sysvol
-    let _ = run_cmd_dry("samba-tool ntacl sysvolreset 2>/dev/null || true", sudo, false);
-    steps.push("Permissões de ACLs do Sysvol redefinidas.".to_string());
-
-    // 7. Reinicia o Samba AD DC
-    let _ = run_cmd_dry("systemctl enable --now samba", sudo, false);
-    let is_active = run_cmd_dry("systemctl is-active samba", sudo, false).stdout.trim() == "active";
-    if is_active {
-        steps.push("Serviço Samba Active Directory reiniciado e ativo com sucesso.".to_string());
-    } else {
-        steps.push("Aviso: Verifique o status do serviço Samba após a restauração.".to_string());
-    }
-
-    let evt_id = config.audit.record(
-        "admin",
-        None,
-        "BACKUP_RESTORE",
-        &format!("file:{}", filename),
-        false,
-        is_active,
-        &format!("Restauração do backup do Samba AD {} (servidor={}, ip={})", filename, target_server_name, target_ip),
-    );
-
-    (
-        StatusCode::OK,
-        Json(ApiResponse {
-            success: is_active,
-            message: format!("Backup '{}' restaurado com sucesso! Configurações do Samba AD recuperadas.", filename),
-            data: Some(steps),
-            dry_run: false,
-            correlation_id: Some(evt_id),
-        }),
-    )
 }
 
 pub async fn delete_backup(
+    _operator: crate::auth::Administrator,
     axum::extract::Path(filename): axum::extract::Path<String>,
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
@@ -310,7 +222,7 @@ pub async fn delete_backup(
     }
 
     let backup_path = format!("/var/backups/samba/{}", filename);
-    let cmd = format!("rm -f '{}'", backup_path);
+    let cmd = format!("rm -f -- {}", shell_quote(&backup_path));
     let res = run_cmd_dry(&cmd, sudo, q.dry_run);
 
     let evt_id = config.audit.record(

@@ -254,14 +254,9 @@ pub fn required_ports_for_services(services: &EnabledServices) -> Vec<PortRule> 
     }
 
     // Portas de DNS (se Samba AD ou BIND 9 estiverem ativos)
-    if services.samba_ad || services.bind {
+    if services.samba_ad {
         ports.push(r("tcp", "53", "DNS Server (TCP)"));
         ports.push(r("udp", "53", "DNS Server (UDP)"));
-        ports.push(r("tcp", "5353", "BIND Hybrid Recursivo (TCP)"));
-        ports.push(r("udp", "5353", "BIND Hybrid Recursivo (UDP)"));
-    }
-    if services.bind {
-        ports.push(r("tcp", "953", "BIND RNDC Control"));
     }
 
     // NTP Time Sync (Chrony)
@@ -501,6 +496,12 @@ mod tests {
     }
 
     #[test]
+    fn loopback_bind_does_not_open_network_dns_or_control_ports() {
+        let ports = required_ports_for_services(&EnabledServices { samba_ad: false, bind: true, chrony: false, web_console: true });
+        assert!(!ports.iter().any(|rule| ["53", "5353", "953"].contains(&rule.port.as_str())));
+    }
+
+    #[test]
     fn test_samba_ad_ports_count() {
         let ports = samba_ad_ports();
         assert!(ports.len() >= 18);
@@ -508,4 +509,44 @@ mod tests {
         assert!(ports.iter().any(|p| p.port == "88" && p.proto == "tcp"));
         assert!(ports.iter().any(|p| p.port == "53" && p.proto == "udp"));
     }
+}
+
+/// Locate the operation helper beside the installed binary or in the source tree.
+pub fn run_ad_operation(operation: &str, request: &serde_json::Value, sudo: Option<&str>) -> Result<Vec<String>, String> {
+    let mut candidates = Vec::new();
+    if let Ok(directory) = std::env::var("ASTRAL_SCRIPTS_DIR") {
+        candidates.push(std::path::PathBuf::from(directory).join("ad_operations.py"));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join("samba-ad-dc/ad_operations.py"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("samba-ad-dc/ad_operations.py"));
+    let script = candidates.into_iter().find(|p| p.is_file()).ok_or("Helper ad_operations.py não instalado; atualize também samba-ad-dc/.")?;
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut command = if unsafe { libc::geteuid() } != 0 && sudo.is_some() {
+        let mut cmd = Command::new("sudo");
+        cmd.args(["-S", "-p", "", "--", "python3"]);
+        cmd
+    } else { Command::new("python3") };
+    command.arg(&script).arg(operation).arg("--request-stdin")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    if let Some(mut input) = child.stdin.take() {
+        if unsafe { libc::geteuid() } != 0 {
+            if let Some(password) = sudo { writeln!(input, "{}", password).map_err(|e| e.to_string())?; }
+        }
+        input.write_all(request.to_string().as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    let result = CommandResult { success: output.status.success(), stdout: String::from_utf8_lossy(&output.stdout).into(),
+        stderr: String::from_utf8_lossy(&output.stderr).into(), code: output.status.code().unwrap_or(-1), dry_run: false,
+        command: format!("ad_operations {}", operation) };
+    let value: serde_json::Value = serde_json::from_str(result.stdout.trim()).map_err(|_| format!("Falha ao executar operação: {}", result.stderr))?;
+    if !result.success || value["success"] != true {
+        return Err(value["error"].as_str().unwrap_or("Falha na operação AD/DNS").to_string());
+    }
+    Ok(value["steps"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default())
 }
