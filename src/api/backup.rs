@@ -142,7 +142,7 @@ pub async fn restore_backup(
         payload.new_server_name = Some(run_cmd_dry("hostname -s", sudo, false).stdout.trim().to_uppercase());
     }
     if payload.host_ip.as_deref().unwrap_or("").is_empty() {
-        payload.host_ip = Some(run_cmd_dry("hostname -I | awk '{print $1}'", sudo, false).stdout.trim().to_string());
+        payload.host_ip = Some(run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false).stdout.trim().to_string());
     }
     let result = run_ad_operation("restore", &serde_json::to_value(&payload).unwrap(), sudo);
     let id = config.audit.record(&_operator.0.username, None, "DOMAIN_BACKUP_RECOVERY", &payload.filename,

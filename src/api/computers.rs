@@ -155,7 +155,7 @@ pub async fn get_computer_properties(
     let mut ip_address = "Não identificado".to_string();
 
     if clean_name == my_host {
-        let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+        let ip_res = run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
         let s = ip_res.stdout.trim();
         if !s.is_empty() {
             ip_address = s.to_string();

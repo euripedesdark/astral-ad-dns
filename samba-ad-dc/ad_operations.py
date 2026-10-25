@@ -28,6 +28,15 @@ def checked_run(args):
     return result.stdout
 
 
+def local_ipv4s(run=None):
+    """IPv4 globais da maquina, sem depender de 'hostname -I' (inexistente em inetutils/Arch)."""
+    runner = run or checked_run
+    output = runner(['ip', '-4', '-o', 'addr', 'show', 'scope', 'global'])
+    if not isinstance(output, str):
+        output = str(output)
+    return re.findall(r'\binet\s+(\d+\.\d+\.\d+\.\d+)/', output)
+
+
 def atomic_write(path, text, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.astral-', dir=path.parent)

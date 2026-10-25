@@ -10,7 +10,7 @@ import shutil
 import tarfile
 import time
 import uuid
-from ad_operations import OperationError, atomic_write, checked_run, configure_bind, normalize_forwarders
+from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
 from provision_pki import configure_pki
 
@@ -109,7 +109,7 @@ def preflight(request, root, run, old_name, steps):
         if read_level(observed)[1]!='2016': raise OperationError('O Samba instalado nao aceita nivel 2016; nenhuma base foi limpa.')
         return None
     partner = request['target_dc_ip']
-    local_ips = run(['hostname', '-I']).split()
+    local_ips = local_ipv4s(run)
     if partner in local_ips:
         raise OperationError('O parceiro informado pertence a esta maquina.')
     answer = run(['dig', '@' + partner, '-p', '53', '_ldap._tcp.dc._msdcs.' + request['realm'].lower(), 'SRV', '+noall', '+answer', '+tries=1', '+time=3'])
@@ -348,7 +348,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request['kind']=='new':
             configure_identity(request,root,run,steps)
         elif request['kind']=='configure':
-            candidates=run(['hostname','-I']).split()
+            candidates=local_ipv4s(run)
             request['host_ip']=request.get('static_ip') or next((value for value in candidates if value.count('.')==3),'')
             request['hostname_fqdn']=(old_name or request['netbios_name']).lower()+'.'+request['realm'].lower()
         if request['kind'] == 'join':

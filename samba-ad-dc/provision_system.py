@@ -5,7 +5,7 @@ import re
 import shutil
 import socket
 import itertools
-from ad_operations import OperationError, atomic_write
+from ad_operations import OperationError, atomic_write, local_ipv4s
 
 TOOLS = {
  'samba-tool': ['samba-tools','samba-common-bin','samba','samba'],
@@ -200,7 +200,7 @@ def configure_ntp(request, root, run, steps):
 
 
 def configure_identity(request, root, run, steps):
-    candidates = run(['hostname','-I']).split()
+    candidates = local_ipv4s(run)
     partner = request.get('target_dc_ip')
     route = run(['ip','-4','route','get',partner]).split() if partner else []
     address = request.get('static_ip') or (route[route.index('src')+1] if 'src' in route else next((ip for ip in candidates if re.fullmatch(r'\d+\.\d+\.\d+\.\d+',ip)),''))

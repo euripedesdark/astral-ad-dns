@@ -89,7 +89,7 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
     let fqdn_res = run_cmd_dry("hostname -f 2>/dev/null || hostname", sudo, false);
     let fqdn = fqdn_res.stdout.trim().to_string();
 
-    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let ip_res = run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
     let ip_address = ip_res.stdout.trim().to_string();
 
     let se_res = run_cmd_dry("getenforce 2>/dev/null || echo 'Disabled'", sudo, false);
@@ -285,7 +285,7 @@ pub async fn verify_ad_dns_status(
     let hostname = host_res.stdout.trim().to_lowercase();
     let fqdn_res = run_cmd_dry("hostname -f 2>/dev/null || hostname", sudo, false);
     let fqdn = fqdn_res.stdout.trim().to_lowercase();
-    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let ip_res = run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
     let local_ip = ip_res.stdout.trim().to_string();
 
     let partner_dc_ip = parameters.get("target_dc_ip").cloned().unwrap_or_default().trim().to_string();
@@ -358,7 +358,7 @@ pub async fn sync_ad_dns_dc(
 
     let host_res = run_cmd_dry("hostname -s 2>/dev/null || hostname", sudo, false);
     let hostname = host_res.stdout.trim().to_lowercase();
-    let ip_res = run_cmd_dry("hostname -I 2>/dev/null | awk '{print $1}'", sudo, false);
+    let ip_res = run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
     let local_ip = ip_res.stdout.trim().to_string();
 
     // 1. Configurar /etc/resolv.conf estritamente com DNS do AD (parceiro e 127.0.0.1, sem DNS externo)
