@@ -396,7 +396,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 sysvol.mkdir(parents=True,exist_ok=True)
                 run(['smbclient','//' + partner + '/sysvol','--client-protection=sign','-c','recurse ON; prompt OFF; lcd ' + str(sysvol) + '; mget *'] + credentials(request))
                 run(['samba-tool','ntacl','sysvolreset'])
-                run(['samba-tool','gpo','aclcheck'])
+                run(['samba-tool','gpo','aclcheck','-H','ldap://'+partner]+credentials(request))
         elif request['kind'] == 'new':
             remove(config)
             manifest['phase'] = 'provision_attempted'

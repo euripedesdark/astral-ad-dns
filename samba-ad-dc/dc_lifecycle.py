@@ -253,7 +253,7 @@ def promote_writable(request, root=Path('/'), run=run_command):
         if root == Path('/') and shutil.which('restorecon'):
             run(['restorecon', '-R', str(live), str(config)])
         run(['samba-tool', 'ntacl', 'sysvolreset'])
-        run(['samba-tool', 'gpo', 'aclcheck'])
+        run(['samba-tool', 'gpo', 'aclcheck', '-H', 'ldap://' + request['primary_hostname']] + credentials(request))
         run(['systemctl', 'start', active[0]])
         observed = run(['samba-tool', 'computer', 'show', request['target_name']])
         if not writable(observed):
