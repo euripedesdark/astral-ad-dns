@@ -102,9 +102,14 @@ def configure_pki(request,root,run,samba_unit,steps):
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]
-        command=[cli,'ca','certificate',request['hostname_fqdn'],str(cert),str(key),'--ca-url',url,'--root',str(ca_root),
-                 '--provisioner',provisioner,'--provisioner-password-file',str(secret),'--kty','RSA','--size','4096','--not-after',str(int(request.get('ca_cert_hours',8760)))+'h','--no-password','--insecure']
-        for san in sans:command+=['--san',san]
+        # Match the working Arch script: ca certificate uses password-file.
+        # no-password/insecure belong to other Step subcommands and are not
+        # required here (the issued service key is unencrypted by default).
+        command=[cli,'ca','certificate',request['hostname_fqdn'],str(cert),str(key),
+                 '--ca-url='+url,'--root='+str(ca_root),'--provisioner='+provisioner,
+                 '--password-file='+str(secret),'--kty=RSA','--size=2048',
+                 '--not-after='+str(int(request.get('ca_cert_hours',8760)))+'h']
+        for san in sans:command+=['--san='+san]
         run(command)
         run(['openssl','verify','-CAfile',str(ca_root),'-untrusted',str(cert),str(cert)])
         atomic_write(tls/'dc.crt',cert.read_bytes(),0o644);atomic_write(tls/'dc.key',key.read_bytes(),0o600)
