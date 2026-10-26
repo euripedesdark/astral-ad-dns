@@ -169,11 +169,25 @@ def check_bind_runtime(root, main, service, run):
             expected = '/' + str(main.relative_to(root))
             if configured != expected:
                 raise OperationError(f'O named ativo usa {configured}, mas o configurador selecionou {expected}; nenhum arquivo foi alterado.')
-    # Do not evict Avahi, resolved or another service from the requested port.
+    # BIND binds only IPv4 127.0.0.1. A multicast socket (Chrome mDNS,
+    # e.g. 224.0.0.251:5353) does not occupy that local address.
+    # Keep wildcard and loopback conflicts protected; never stop their owners.
     listeners = run(['ss', '-H', '-lntup', '( sport = :5353 )'])
     for line in listeners.splitlines():
-        if line.strip() and not re.search(r'"named(?:-sdb)?"', line):
-            raise OperationError('Porta 5353 ocupada por outro processo; nenhum servico foi parado: ' + line)
+        if not line.strip() or re.search(r'"named(?:-sdb)?"', line):
+            continue
+        fields = line.split()
+        if len(fields) < 5:
+            raise OperationError('Nao foi possivel identificar o endereco local do listener 5353: ' + line)
+        address = fields[4].rsplit(':', 1)[0].strip('[]').split('%', 1)[0]
+        if address not in ['*', '0.0.0.0', '::', '127.0.0.1']:
+            try:
+                parsed = ipaddress.ip_address(address)
+                if parsed != ipaddress.ip_address('::ffff:127.0.0.1'):
+                    continue
+            except ValueError:
+                raise OperationError('Endereco do listener 5353 nao reconhecido: ' + line)
+        raise OperationError('Endereco local 127.0.0.1:5353 ou wildcard ocupado por outro processo; nenhum servico foi parado: ' + line)
 
 
 def port_labels(output, protocol):
