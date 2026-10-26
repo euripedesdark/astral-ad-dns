@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
 import sys
 import tarfile
@@ -89,6 +91,50 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(result['success']);self.assertIn('FSMO',result['message'])
         self.assertEqual(self.db.read_text(),'old database')
         self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
+    def test_backup_excludes_real_unix_sockets_and_fifos_but_preserves_database(self):
+        runtime = self.root/'var/lib/samba/ntp_signd/socket'
+        runtime.parent.mkdir(parents=True)
+        # Real filesystem socket inodes reproduce copy2's ENXIO without
+        # requiring a running Samba process or permission to bind a socket.
+        os.mknod(runtime,stat.S_IFSOCK|0o600)
+        stale = self.db.parent/'msg.sock/1234'
+        stale.parent.mkdir()
+        os.mknod(stale,stat.S_IFSOCK|0o600)
+        fifo=self.db.parent/'runtime.pipe'
+        os.mkfifo(fifo)
+        regular=self.db.parent/'keep.sock'
+        regular.write_text('regular file despite its suffix')
+        link=self.db.parent/'database-link'
+        link.symlink_to('sam.ldb')
+        result=self.execute()
+        self.assertTrue(result['success'],result)
+        with tarfile.open(Path(result['backup_path'])/'previous-state.tar.gz') as archive:
+            names=archive.getnames()
+            self.assertNotIn('files/var/lib/samba/ntp_signd/socket',names)
+            self.assertNotIn('files/var/lib/samba/private/msg.sock/1234',names)
+            self.assertNotIn('files/var/lib/samba/private/runtime.pipe',names)
+            self.assertEqual(archive.extractfile('files/var/lib/samba/private/sam.ldb').read(),b'old database')
+            self.assertIn('files/var/lib/samba/private/keep.sock',names)
+            self.assertTrue(archive.getmember('files/var/lib/samba/private/database-link').issym())
+
+    def test_incomplete_database_snapshot_never_replaces_live_database(self):
+        original=flow.snapshot
+        def fail(root,backup,include_database):
+            if not include_database:
+                return original(root,backup,include_database)
+            partial=backup/'files/var/lib/samba/private/sam.ldb'
+            partial.parent.mkdir(parents=True)
+            partial.write_text('incomplete snapshot')
+            raise OSError('database copy failed')
+        host=Host(self.root)
+        with patch.object(flow,'snapshot',side_effect=fail):
+            result=self.execute(host=host)
+        self.assertFalse(result['success'])
+        self.assertEqual(self.db.read_text(),'old database')
+        self.assertTrue((self.db.parent/'stale.tdb').exists())
+        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
+        self.assertIn(['systemctl','start','samba'],host.calls)
+
     def test_backup_failure_never_demotes_or_cleans(self):
         host=Host(self.root)
         with patch.object(flow.tarfile,'open',side_effect=OSError('disk full')):result=self.execute(host=host)

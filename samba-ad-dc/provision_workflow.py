@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tarfile
 import time
 import uuid
@@ -175,6 +176,13 @@ def preflight(request, root, run, old_name, steps):
     return selected[1]
 
 
+def ignore_runtime_entries(directory, names):
+    """Samba recreates Unix sockets/FIFOs; copying their bytes is invalid."""
+    return [name for name in names
+            if stat.S_ISSOCK((Path(directory) / name).lstat().st_mode)
+            or stat.S_ISFIFO((Path(directory) / name).lstat().st_mode)]
+
+
 def snapshot(root, backup, include_database):
     mirror = backup / 'files'
     mirror.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -188,7 +196,12 @@ def snapshot(root, backup, include_database):
         if source.is_symlink():
             target.symlink_to(os.readlink(source))
         elif source.is_dir():
-            shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True, ignore=shutil.ignore_patterns('db') if relative == 'etc/step-ca' else None)
+            def ignore(directory, names):
+                excluded = ignore_runtime_entries(directory, names)
+                if relative == 'etc/step-ca' and 'db' in names:
+                    excluded.append('db')
+                return excluded
+            shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True, ignore=ignore)
         else:
             shutil.copy2(source, target)
     return mirror
@@ -202,15 +215,19 @@ def remove(path):
 
 
 def restore_configuration(root, backup):
+    captured = set(json.loads((backup / 'manifest.json').read_text()).get('captured_paths', []))
     for relative in PATHS:
+        # A failed database snapshot can contain only part of a live database.
+        # Never replace the live tree with an incomplete, uncommitted snapshot.
+        if relative not in captured:
+            continue
         # This phase never modified the CA; do not replace a live Badger database
         # with the configuration-only CA snapshot.
         if relative == 'etc/step-ca': continue
         source, target = backup / 'files' / relative, root / relative
         if not source.exists() and not source.is_symlink():
             # Only remove paths captured as absent, not unsnapshotted databases.
-            if relative in json.loads((backup / 'manifest.json').read_text()).get('captured_paths', []):
-                remove(target)
+            remove(target)
             continue
         remove(target)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -293,8 +310,10 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
                     'previous_hostname': optional(run,['hostname','-s']).strip(),
                     'resolver_immutable': 'i' in optional(run,['lsattr','-d',str(root/'etc/resolv.conf')]).split(' ')[0],
-                    'captured_paths': [path for path in PATHS if not path.startswith('var/')]}
+                    'captured_paths': []}
+        save_manifest(backup, manifest)
         snapshot(root, backup, False)
+        manifest['captured_paths'] = [path for path in PATHS if not path.startswith('var/')]
         save_manifest(backup, manifest)
         steps.append('Backup automatico da configuracao anterior: ' + str(backup))
         manifest['phase']='installing_dependencies'
