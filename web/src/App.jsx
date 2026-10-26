@@ -3894,7 +3894,7 @@ function WizardModal({ onClose, t, showToast }) {
       showToast('Informe o IP do DC parceiro para consultar o AD na porta 53.', 'error');
       return;
     }
-    if (setupStepCa && mode !== 'join_member' && !certPassword) { showToast('Informe a senha da PKI.', 'error'); return; }
+    if ((mode === 'new' || setupStepCa) && mode !== 'join_member' && !certPassword) { showToast('Informe a senha da PKI.', 'error'); return; }
     if (!adminPassword) {
       showToast('Informe a senha do administrador do dominio.', 'error');
       return;
@@ -3915,14 +3915,14 @@ function WizardModal({ onClose, t, showToast }) {
         netbios_name: dcNetbiosName,
         upstream_forwarders: upstreams,
         global_catalog: globalCatalog,
-        setup_step_ca: setupStepCa && mode !== 'join_member',
-        initialize_ca: mode === 'new' && setupStepCa && initializeCa,
-        ca_url: caUrl,
-        ca_port: Number(caPort),
-        ca_cert_hours: Number(caCertHours),
-        ca_fingerprint: caFingerprint,
+        setup_step_ca: mode === 'new' || (setupStepCa && mode !== 'join_member'),
+        initialize_ca: mode === 'new',
+        ca_url: mode === 'new' ? '' : caUrl,
+        ca_port: mode === 'new' ? 8443 : Number(caPort),
+        ca_cert_hours: mode === 'new' ? 8760 : Number(caCertHours),
+        ca_fingerprint: mode === 'new' ? '' : caFingerprint,
         cert_password: certPassword,
-        tls_mode: setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
+        tls_mode: mode === 'new' || setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
         tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
         network_interface: networkInterface,
         realm,
@@ -3946,14 +3946,14 @@ function WizardModal({ onClose, t, showToast }) {
         reapply_configuration: configurationOnly,
         upstream_forwarders: upstreams,
         global_catalog: globalCatalog,
-        setup_step_ca: setupStepCa && mode !== 'join_member',
-        initialize_ca: mode === 'new' && setupStepCa && initializeCa,
-        ca_url: caUrl,
-        ca_port: Number(caPort),
-        ca_cert_hours: Number(caCertHours),
-        ca_fingerprint: caFingerprint,
+        setup_step_ca: mode === 'new' || (setupStepCa && mode !== 'join_member'),
+        initialize_ca: mode === 'new',
+        ca_url: mode === 'new' ? '' : caUrl,
+        ca_port: mode === 'new' ? 8443 : Number(caPort),
+        ca_cert_hours: mode === 'new' ? 8760 : Number(caCertHours),
+        ca_fingerprint: mode === 'new' ? '' : caFingerprint,
         cert_password: certPassword,
-        tls_mode: setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
+        tls_mode: mode === 'new' || setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
         tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
         network_interface: networkInterface,
       };
@@ -4341,6 +4341,7 @@ function WizardModal({ onClose, t, showToast }) {
                 </label>
                 {mode !== 'join_member' && <>
                   <p>{mode === 'new' ? 'DC1: a CA e os certificados sao gerados e configurados automaticamente. Informe apenas a senha da PKI abaixo.' : 'Certificados existentes sao detectados automaticamente. Informe caminhos somente se desejar selecionar outro conjunto.'}</p>
+                  {mode === 'new' ? <input type="password" aria-label="Senha do certificado" value={certPassword} onChange={event => setCertPassword(event.target.value)} placeholder="Senha do certificado / PKI" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" /> : <>
                   {!setupStepCa && <details><summary>Avancado: selecionar certificados existentes no servidor</summary>{['cert', 'key', 'ca'].map(field => <input key={field} aria-label={'TLS ' + field} placeholder={field === 'cert' ? 'Certificado deste DC (.pem/.crt)' : field === 'key' ? 'Chave privada deste DC (.key)' : 'Cadeia CA completa (.pem/.crt)'} value={tlsPaths[field]} onChange={event => setTlsPaths({...tlsPaths, [field]: event.target.value})} className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />)}</details>}
                   <label className="flex gap-2"><input type="checkbox" checked={setupStepCa} onChange={event => setSetupStepCa(event.target.checked)} />Configurar certificado LDAPS e renovacao via Step-CA</label>
                   {setupStepCa && <div className="space-y-2 pl-4">
@@ -4351,6 +4352,7 @@ function WizardModal({ onClose, t, showToast }) {
                     <input aria-label="Fingerprint SHA256 da CA" value={caFingerprint} onChange={event => setCaFingerprint(event.target.value)} placeholder="Fingerprint SHA256 para CA remota" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                     <input type="password" aria-label="Senha da PKI" value={certPassword} onChange={event => setCertPassword(event.target.value)} placeholder="Senha da PKI (nao e salva no navegador)" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                   </div>}
+                  </>}
                 </>}
                 <p className="text-xs text-slate-400">Pacotes ausentes, NTP, iptables e persistencia das regras sao tratados automaticamente. O BIND local usa estes forwarders quando selecionado.</p>
                 {mode !== 'new' && <>
