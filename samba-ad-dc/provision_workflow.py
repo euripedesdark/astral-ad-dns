@@ -63,6 +63,22 @@ def validate(request):
     if kind == 'new':
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,15}', request.get('workgroup', '')):
             raise OperationError('Workgroup NetBIOS invalido.')
+        fqdn = str(request.get('hostname_fqdn','')).strip().lower()
+        if not re.fullmatch(r'[a-z0-9-]+(?:\.[a-z0-9-]+)+',fqdn) or not fqdn.endswith('.'+realm.lower()):
+            raise OperationError('Informe HOSTNAME_COMPLETO pertencente ao REALM.')
+        request['hostname_fqdn'] = fqdn
+        request['netbios_name'] = fqdn.split('.')[0].upper()
+        if len(request['netbios_name']) > 15:
+            raise OperationError('Hostname curto deve ter no maximo 15 caracteres.')
+        try:
+            address = ipaddress.IPv4Address(str(request.get('static_ip','')).strip())
+        except ValueError as error:
+            raise OperationError('Informe IP_ESTATICO valido para o DC1.') from error
+        if address.is_loopback or address.is_unspecified or address.is_multicast:
+            raise OperationError('IP_ESTATICO deve ser o IPv4 da interface do DC1.')
+        request['static_ip'] = str(address)
+        if not str(request.get('network_interface','')).strip():
+            raise OperationError('Informe INTERFACE_REDE para o DC1.')
         if len(request['admin_password']) < 8:
             raise OperationError('Senha administrativa deve ter ao menos oito caracteres.')
     elif kind != 'configure' or request.get('target_dc_ip'):
@@ -86,7 +102,7 @@ def validate(request):
     if interface and not re.fullmatch(r'[A-Za-z0-9_.:-]{1,32}',interface):
         raise OperationError('Interface de rede invalida.')
     forwarders = normalize_forwarders(request.get('upstream_forwarders') or [])
-    request.update(kind=kind, realm=realm, netbios_name=name, domain_role=role, upstream_forwarders=forwarders)
+    request.update(kind=kind, realm=realm, netbios_name=request['netbios_name'] if kind=='new' else name, domain_role=role, upstream_forwarders=forwarders)
 
 
 def credentials(request):
@@ -335,6 +351,9 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             request['domain_role'] = ('RODC' if re.search(r'(?im)^primaryGroupID:\s*521',account) else 'DC') if local_db else 'MEMBER'
         if old_realm and old_realm != request['realm']:
             raise OperationError('A base local pertence a outro dominio; migracao entre dominios exige um fluxo dedicado.')
+        if request['kind']=='new':
+            if request['static_ip'] not in local_ipv4s(run): raise OperationError('IP_ESTATICO nao esta atribuido a esta maquina; verifique o IP informado.')
+            run(['ip','link','show','dev',request['network_interface']])
         prepare_existing_tls(request, root, run, steps)
         level = preflight(request, root, run, old_name, steps)
         verify_partner_gpo(request, run)

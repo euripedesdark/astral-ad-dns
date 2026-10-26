@@ -105,6 +105,7 @@ def configure_pki(request,root,run,samba_unit,steps):
         # Match the working Arch script: ca certificate uses password-file.
         # no-password/insecure belong to other Step subcommands and are not
         # required here (the issued service key is unencrypted by default).
+        sans += ['_ldap._tcp.dc._msdcs.'+request['realm'].lower(), '_kerberos._tcp.dc._msdcs.'+request['realm'].lower(), '_gc._tcp.'+request['realm'].lower(), 'ca.'+request['realm'].lower(), 'pki.'+request['realm'].lower(), '127.0.0.1']
         command=[cli,'ca','certificate',request['hostname_fqdn'],str(cert),str(key),
                  '--ca-url='+url,'--root='+str(ca_root),'--provisioner='+provisioner,
                  '--password-file='+str(secret),'--kty=RSA','--size=2048',

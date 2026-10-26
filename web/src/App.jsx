@@ -3753,6 +3753,8 @@ function WizardModal({ onClose, t, showToast }) {
   // Form
   const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
   const [workgroup, setWorkgroup] = useState('SRVCLOUD');
+  const [primaryHostname, setPrimaryHostname] = useState('');
+  const [primaryIp, setPrimaryIp] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [setupBind, setSetupBind] = useState(false);
   const [targetDcIp, setTargetDcIp] = useState('');
@@ -3899,6 +3901,7 @@ function WizardModal({ onClose, t, showToast }) {
       showToast('Informe a senha do administrador do dominio.', 'error');
       return;
     }
+    if (mode === 'new' && (!primaryHostname.trim() || !primaryIp.trim() || !networkInterface.trim() || !workgroup.trim() || !realm.trim())) { showToast('Preencha HOSTNAME_COMPLETO, NOME_NETBIOS, REALM, IP_ESTATICO e INTERFACE_REDE.', 'error'); return; }
     const upstreams = upstreamText.split(/[\s,;]+/).filter(Boolean);
     if (!upstreams.length) { showToast('Informe pelo menos um forwarder DNS.', 'error'); return; }
     if (rejoin && !configurationOnly && !await confirmAction('Executar backup automatico, despromover quando necessario, limpar o estado local e ingressar no papel selecionado? O primario/FSMO sera protegido.')) return;
@@ -3912,7 +3915,7 @@ function WizardModal({ onClose, t, showToast }) {
       const endpoint = mode === 'new' ? '/api/provision/new-dc' : '/api/provision/join-dc';
       const domainRole = mode === 'join_rodc' ? 'RODC' : mode === 'join_member' ? 'MEMBER' : 'DC';
       const payload = mode === 'new' ? {
-        netbios_name: dcNetbiosName,
+        netbios_name: mode === 'new' ? primaryHostname.trim().split('.')[0].toUpperCase() : dcNetbiosName,
         upstream_forwarders: upstreams,
         global_catalog: globalCatalog,
         setup_step_ca: mode === 'new' || (setupStepCa && mode !== 'join_member'),
@@ -3927,7 +3930,8 @@ function WizardModal({ onClose, t, showToast }) {
         network_interface: networkInterface,
         realm,
         workgroup,
-        hostname_fqdn: dcNetbiosName.toLowerCase() + '.' + realm.toLowerCase(),
+        hostname_fqdn: primaryHostname.trim().toLowerCase(),
+        static_ip: primaryIp.trim(),
         admin_password: adminPassword,
         dns_backend: dnsBackend,
         dns_forwarder: setupBind ? '127.0.0.1:5353' : '8.8.8.8',
@@ -3937,7 +3941,7 @@ function WizardModal({ onClose, t, showToast }) {
         target_dc_ip: targetDcIp,
         admin_username: targetAdmin,
         admin_password: adminPassword,
-        netbios_name: dcNetbiosName,
+        netbios_name: mode === 'new' ? primaryHostname.trim().split('.')[0].toUpperCase() : dcNetbiosName,
         domain_role: domainRole,
         dns_backend: mode === 'join_member' ? 'NONE' : dnsBackend,
         setup_bind_hybrid: setupBind,
@@ -4186,9 +4190,13 @@ function WizardModal({ onClose, t, showToast }) {
                 />
               </div>
 
+              {mode === 'new' && <>
+                <label className="block">Hostname completo (HOSTNAME_COMPLETO) *<input value={primaryHostname} onChange={e => setPrimaryHostname(e.target.value)} placeholder="dc1.exemplo.ad" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" /></label>
+                <label className="block">IP estatico deste DC (IP_ESTATICO) *<input value={primaryIp} onChange={e => setPrimaryIp(e.target.value)} placeholder="192.168.2.123" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" /></label>
+              </>}
               {mode === 'new' && (
                 <div>
-                  <label className="block text-slate-300 font-medium mb-1">Workgroup NetBIOS *</label>
+                  <label className="block text-slate-300 font-medium mb-1">Nome NetBIOS do dominio (NOME_NETBIOS) *</label>
                   <input 
                     type="text" 
                     value={workgroup} 
@@ -4336,7 +4344,7 @@ function WizardModal({ onClose, t, showToast }) {
                 <label className="block text-slate-300">Forwarders DNS (IPv4/IPv6 separados por virgula)
                   <input aria-label="Forwarders DNS do provisionamento" value={upstreamText} onChange={event => setUpstreamText(event.target.value)} className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                 </label>
-                <label className="block text-slate-300">Interface de rede (opcional)
+                <label className="block text-slate-300">{mode === 'new' ? 'Interface de rede (INTERFACE_REDE) *' : 'Interface de rede (opcional)'}
                   <input aria-label="Interface de rede Samba" value={networkInterface} onChange={event => setNetworkInterface(event.target.value)} placeholder="Ex.: enp3s0; vazio usa as interfaces atuais" className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                 </label>
                 {mode !== 'join_member' && <>
