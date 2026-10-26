@@ -285,9 +285,10 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     selinux_steps = []
     try:
         check_bind_runtime(root, main, service, run)
-        atomic_write(staged, candidate, (original_stat.st_mode & 0o777) if original_stat else 0o644)
-        if original_stat:
-            os.chown(staged, original_stat.st_uid, original_stat.st_gid)
+        # named runs unprivileged on Arch: do not inherit an unreadable
+        # root-only configuration mode from a previous deployment.
+        atomic_write(staged, candidate, 0o640)
+        run(['chown', 'root:' + ('bind' if service == 'bind9' else 'named'), str(staged)])
         run(['named-checkconf', str(staged)])
         try:
             was_active = run(['systemctl', 'is-active', service]).strip() == 'active'
@@ -568,7 +569,10 @@ def main():
         with lock_path.open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation == 'provision':
-                from provision_workflow import execute
+                if request.get('kind') == 'new':
+                    from provision_dc1 import execute
+                else:
+                    from provision_workflow import execute
                 data = execute(request)
                 print(json.dumps({'success': True, 'data': data}, ensure_ascii=False))
                 return
