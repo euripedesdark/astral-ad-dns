@@ -4111,13 +4111,13 @@ function WizardModal({ onClose, t, showToast }) {
           {step === 2 && (
             <div className="space-y-3">
               <label 
-                onClick={() => setMode('new')}
+                onClick={() => { setMode('new'); setSetupStepCa(true); setInitializeCa(true); setSetupBind(true); }}
                 className={`block p-4 rounded-xl border cursor-pointer transition ${
                   mode === 'new' ? 'bg-indigo-950/60 border-indigo-500 shadow-md' : 'bg-slate-950 border-slate-800'
                 }`}
               >
                 <div className="flex items-center gap-2 font-bold text-slate-100 text-sm">
-                  <input type="radio" checked={mode === 'new'} onChange={() => setMode('new')} />
+                  <input type="radio" checked={mode === 'new'} onChange={() => { setMode('new'); setSetupStepCa(true); setInitializeCa(true); setSetupBind(true); }} />
                   <Server className="w-4 h-4 text-indigo-400" />
                   <span>{t.provisionNewDc}</span>
                 </div>
@@ -4340,8 +4340,8 @@ function WizardModal({ onClose, t, showToast }) {
                   <input aria-label="Interface de rede Samba" value={networkInterface} onChange={event => setNetworkInterface(event.target.value)} placeholder="Ex.: enp3s0; vazio usa as interfaces atuais" className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                 </label>
                 {mode !== 'join_member' && <>
-                  <p>Certificados existentes: caminhos absolutos no servidor. Validacao antes da limpeza; Step-CA e opcional.</p>
-                  {!setupStepCa && ['cert', 'key', 'ca'].map(field => <input key={field} aria-label={'TLS ' + field} placeholder={field === 'cert' ? 'Certificado deste DC (.pem/.crt)' : field === 'key' ? 'Chave privada deste DC (.key)' : 'Cadeia CA completa (.pem/.crt)'} value={tlsPaths[field]} onChange={event => setTlsPaths({...tlsPaths, [field]: event.target.value})} className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />)}
+                  <p>{mode === 'new' ? 'DC1: a CA e os certificados sao gerados e configurados automaticamente. Informe apenas a senha da PKI abaixo.' : 'Certificados existentes sao detectados automaticamente. Informe caminhos somente se desejar selecionar outro conjunto.'}</p>
+                  {!setupStepCa && <details><summary>Avancado: selecionar certificados existentes no servidor</summary>{['cert', 'key', 'ca'].map(field => <input key={field} aria-label={'TLS ' + field} placeholder={field === 'cert' ? 'Certificado deste DC (.pem/.crt)' : field === 'key' ? 'Chave privada deste DC (.key)' : 'Cadeia CA completa (.pem/.crt)'} value={tlsPaths[field]} onChange={event => setTlsPaths({...tlsPaths, [field]: event.target.value})} className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />)}</details>}
                   <label className="flex gap-2"><input type="checkbox" checked={setupStepCa} onChange={event => setSetupStepCa(event.target.checked)} />Configurar certificado LDAPS e renovacao via Step-CA</label>
                   {setupStepCa && <div className="space-y-2 pl-4">
                     {mode === 'new' && <label className="flex gap-2"><input type="checkbox" checked={initializeCa} onChange={event => setInitializeCa(event.target.checked)} />Inicializar CA neste novo dominio (preserva qualquer CA existente)</label>}
