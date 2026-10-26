@@ -3772,6 +3772,7 @@ function WizardModal({ onClose, t, showToast }) {
   const [caCertHours, setCaCertHours] = useState(8760);
   const [caFingerprint, setCaFingerprint] = useState('');
   const [certPassword, setCertPassword] = useState('');
+  const [tlsPaths, setTlsPaths] = useState({cert: '', key: '', ca: ''});
   const [networkInterface, setNetworkInterface] = useState('');
 
   // Execution
@@ -3921,6 +3922,8 @@ function WizardModal({ onClose, t, showToast }) {
         ca_cert_hours: Number(caCertHours),
         ca_fingerprint: caFingerprint,
         cert_password: certPassword,
+        tls_mode: setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
+        tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
         network_interface: networkInterface,
         realm,
         workgroup,
@@ -3950,6 +3953,8 @@ function WizardModal({ onClose, t, showToast }) {
         ca_cert_hours: Number(caCertHours),
         ca_fingerprint: caFingerprint,
         cert_password: certPassword,
+        tls_mode: setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
+        tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
         network_interface: networkInterface,
       };
 
@@ -4335,6 +4340,8 @@ function WizardModal({ onClose, t, showToast }) {
                   <input aria-label="Interface de rede Samba" value={networkInterface} onChange={event => setNetworkInterface(event.target.value)} placeholder="Ex.: enp3s0; vazio usa as interfaces atuais" className="mt-1 w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                 </label>
                 {mode !== 'join_member' && <>
+                  <p>Certificados existentes: caminhos absolutos no servidor. Validacao antes da limpeza; Step-CA e opcional.</p>
+                  {!setupStepCa && ['cert', 'key', 'ca'].map(field => <input key={field} aria-label={'TLS ' + field} placeholder={field === 'cert' ? 'Certificado deste DC (.pem/.crt)' : field === 'key' ? 'Chave privada deste DC (.key)' : 'Cadeia CA completa (.pem/.crt)'} value={tlsPaths[field]} onChange={event => setTlsPaths({...tlsPaths, [field]: event.target.value})} className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />)}
                   <label className="flex gap-2"><input type="checkbox" checked={setupStepCa} onChange={event => setSetupStepCa(event.target.checked)} />Configurar certificado LDAPS e renovacao via Step-CA</label>
                   {setupStepCa && <div className="space-y-2 pl-4">
                     {mode === 'new' && <label className="flex gap-2"><input type="checkbox" checked={initializeCa} onChange={event => setInitializeCa(event.target.checked)} />Inicializar CA neste novo dominio (preserva qualquer CA existente)</label>}

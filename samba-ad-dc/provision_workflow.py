@@ -14,6 +14,7 @@ import uuid
 from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
 from provision_pki import configure_pki
+from provision_tls import prepare_existing_tls, install_existing_tls
 
 SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'chrony', 'chronyd']
 PATHS = ['etc/samba', 'etc/krb5.conf', 'etc/resolv.conf', 'etc/named.conf', 'etc/bind',
@@ -334,6 +335,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             request['domain_role'] = ('RODC' if re.search(r'(?im)^primaryGroupID:\s*521',account) else 'DC') if local_db else 'MEMBER'
         if old_realm and old_realm != request['realm']:
             raise OperationError('A base local pertence a outro dominio; migracao entre dominios exige um fluxo dedicado.')
+        prepare_existing_tls(request, root, run, steps)
         level = preflight(request, root, run, old_name, steps)
         verify_partner_gpo(request, run)
         if request.get('setup_step_ca') and request.get('initialize_ca'):
@@ -484,7 +486,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 run(['samba-tool','domain','schemaupgrade','--schema=2019'])
                 run(['samba-tool','domain','functionalprep','--function-level=2016'])
             steps.append('Novo dominio: schema 2019 ou superior verificado; nivel funcional 2016 selecionado no provisionamento.')
-        if request['kind']=='join' and not request.get('setup_step_ca'):
+        if request['kind']=='join' and not request.get('setup_step_ca') and not request.get('_existing_tls'):
             previous_tls_dir=backup/'files/var/lib/samba/private/tls'
             if previous_tls_dir.is_dir():
                 shutil.copytree(previous_tls_dir,root/'var/lib/samba/private/tls',dirs_exist_ok=True)
@@ -504,7 +506,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             except Exception as error:
                 bind_error = str(error)
         text = tune_config(config.read_text(), forwarder, level)
-        for key,value in previous_tls:
+        for key,value in (install_existing_tls(request, root) or previous_tls):
             text = re.sub(r'(?im)^\s*' + re.escape(key) + r'\s*=.*$', '', text)
             text = text.replace('[global]','[global]\n    ' + key + ' = ' + value,1)
         if request.get('network_interface'):
