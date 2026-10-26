@@ -43,6 +43,9 @@ def configure_pki(request,root,run,samba_unit,steps):
     cli = step_binary()
     home=root/'etc/step-ca';ca_config=home/'config/ca.json'
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if initialize and ca_config.exists():
+        initialize = False
+        steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
     ca_port=int(request.get('ca_port',8443))
     configured_port=ca_port
     if ca_config.exists():
@@ -71,6 +74,8 @@ def configure_pki(request,root,run,samba_unit,steps):
             data=json.loads(ca_config.read_text());claims=data.setdefault('authority',{}).setdefault('claims',{})
             claims.update(maxTLSCertDuration='8760h',defaultTLSCertDuration='8760h',disableRenewal=False)
             provisioners=data['authority'].setdefault('provisioners',[])
+            for existing in provisioners:
+                existing.setdefault('claims',{}).update(maxTLSCertDuration='8760h',defaultTLSCertDuration='8760h',disableRenewal=False)
             if not any(item.get('type')=='ACME' for item in provisioners):
                 provisioners.append({'type':'ACME','name':'dc-auto-enroll'})
             atomic_write(ca_config,json.dumps(data,indent=2),0o600)
@@ -80,6 +85,7 @@ def configure_pki(request,root,run,samba_unit,steps):
             run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         elif ca_config.exists() and parsed.hostname in [request['host_ip'],request['hostname_fqdn']]:
+            run(['systemctl','start','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         else:
             ca_root=tls/'trusted-step-root.crt'

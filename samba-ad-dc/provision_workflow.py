@@ -338,7 +338,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         prepare_existing_tls(request, root, run, steps)
         level = preflight(request, root, run, old_name, steps)
         verify_partner_gpo(request, run)
-        if request.get('setup_step_ca') and request.get('initialize_ca'):
+        if request.get('setup_step_ca') and request.get('initialize_ca') and not (root/'etc/step-ca/config/ca.json').exists():
             preferred=request['ca_port']
             request['ca_port']=allocate_ca_port(root,run,preferred)
             steps.append('Porta da nova CA selecionada automaticamente: '+str(request['ca_port'])+' (preferida: '+str(preferred)+'); listeners existentes preservados.')
@@ -389,9 +389,19 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             remove(resolver)
             servers=[request['target_dc_ip']] if request['kind']=='join' else request['upstream_forwarders']
             atomic_write(resolver,'search '+request['realm'].lower()+'\n'+''.join('nameserver '+server+'\n' for server in servers),0o644)
+        if request.get('setup_step_ca') and request.get('initialize_ca') and (root/'etc/step-ca/config/ca.json').exists():
+            address=json.loads((root/'etc/step-ca/config/ca.json').read_text()).get('address','')
+            if ':' in address: request['ca_port']=int(address.rsplit(':',1)[1])
         configure_firewall(request, root, backup, run, steps)
+        primary_tls = []
         if request['kind']=='new':
             configure_identity(request,root,run,steps)
+            if request.get('setup_step_ca'):
+                manifest['phase']='primary_pki'
+                save_manifest(backup,manifest)
+                remote_mutated=True  # Preserve any newly created CA on later failure.
+                primary_tls=configure_pki(request,root,run,unit(run,['samba','samba-ad-dc','samba-dc']),steps)
+            configure_ntp(request,root,run,steps)
         elif request['kind']=='configure':
             candidates=local_ipv4s(run)
             request['host_ip']=request.get('static_ip') or next((value for value in candidates if value.count('.')==3),'')
@@ -510,7 +520,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             except Exception as error:
                 bind_error = str(error)
         text = tune_config(config.read_text(), forwarder, level)
-        for key,value in (install_existing_tls(request, root) or previous_tls):
+        for key,value in (primary_tls or install_existing_tls(request, root) or previous_tls):
             text = re.sub(r'(?im)^\s*' + re.escape(key) + r'\s*=.*$', '', text)
             text = text.replace('[global]','[global]\n    ' + key + ' = ' + value,1)
         if request.get('network_interface'):
@@ -527,13 +537,13 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             atomic_write(root/'etc/krb5.conf','[libdefaults]\n default_realm = '+request['realm']+'\n dns_lookup_realm = false\n dns_lookup_kdc = true\n rdns = false\n[domain_realm]\n .'+request['realm'].lower()+' = '+request['realm']+'\n '+request['realm'].lower()+' = '+request['realm']+'\n',0o644)
         if root == Path('/') and shutil.which('restorecon'):
             run(['restorecon', '-R', str(root / 'var/lib/samba'), str(config)])
-        if request['kind']!='join':
+        if request['kind']=='configure':
             configure_ntp(request,root,run,steps)
         if request['domain_role'] == 'MEMBER':
             services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
         else:
             services = [unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])]
-        if request.get('setup_step_ca') and request['domain_role']!='MEMBER':
+        if request.get('setup_step_ca') and request['domain_role']!='MEMBER' and request['kind']!='new':
             remote_mutated=True  # PKI initialization/issuance must never trigger raw old-domain restoration.
             tls_pairs=configure_pki(request,root,run,services[0],steps)
             text=config.read_text()
