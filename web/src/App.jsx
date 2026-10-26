@@ -4398,7 +4398,7 @@ function WizardModal({ onClose, t, showToast }) {
 
               {lastResult?.ca_url && <a className="text-cyan-300 underline" href={lastResult.ca_url} target="_blank" rel="noopener noreferrer">CA configurada: {lastResult.ca_url}</a>}
               {lastResult?.backup_path && <p className="text-xs text-slate-300 break-all">Backup automatico: {lastResult.backup_path}</p>}
-              {!executing && lastResult && !lastResult.success && <button className="px-3 py-2 rounded bg-indigo-600" onClick={() => { setRejoin(true); setConfigurationOnly(!!lastResult.joined); setStep(3); }}>Retomar pela interface</button>}
+              {!executing && lastResult && !lastResult.success && <button className="px-3 py-2 rounded bg-indigo-600" onClick={() => { setRejoin(true); setConfigurationOnly(!!lastResult.joined); if ((lastResult.message || lastResult.error || '').includes('Despromocao nao concluiu')) setCleanExisting(true); setStep(3); }}>Retomar pela interface</button>}
               <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-1.5 font-mono text-[11px]">
                 {completedSteps.map((st, i) => (
                   <div key={i} className={`flex items-center gap-2 ${st.startsWith("[AVISO]") ? "text-amber-400" : "text-emerald-400"}`}>
