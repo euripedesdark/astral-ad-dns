@@ -25,7 +25,9 @@ class Host:
             if args[1]=='is-active': return 'active' if args[2] in ['samba','named','chronyd','smb','winbind'] else 'inactive'
             if args[1]=='is-enabled': return 'enabled'
             if args[1]=='show': return 'loaded' if args[2] in ['samba','named','chronyd','smb','winbind'] else 'not-found'
-        if args[0]=='hostname': return '192.0.2.20'
+        if args[0]=='hostname': return 'secondary'
+        if args==['ip','-4','-o','addr','show','scope','global']: return '2: eth0 inet 192.0.2.20/24 scope global eth0'
+        if args[:4]==['ip','-4','route','get']: return '192.0.2.10 dev eth0 src 192.0.2.20'
         if args[0]=='dig': return 'domain.test. 900 IN SRV 0 100 389 primary.example.test.'
         if args[0]=='testparm':
             if '--parameter-name=netbios name' in args:return 'SECONDARY'
@@ -110,6 +112,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(result['success']);self.assertTrue(result['recovery_required'])
         self.assertTrue((Path(result['backup_path'])/'previous-state.tar.gz').exists())
         self.assertNotIn(['systemctl','start','samba'],host.calls)
+    def test_gpo_permission_failure_is_detected_before_stop_or_demotion(self):
+        host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','gpo','aclcheck'])
+        result=self.execute(host=host)
+        self.assertFalse(result['success'])
+        self.assertIn('antes da limpeza',result['message'])
+        self.assertEqual(self.db.read_text(),'old database')
+        self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
+        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
+        check=next(args for args in host.calls if args[:3]==['samba-tool','gpo','aclcheck'])
+        self.assertIn('ldap://192.0.2.10',check)
+        self.assertIn('-UAdministrator',check)
+        self.assertIn('--password=secret-test-only',check)
+
+    def test_post_join_sysvol_failure_preserves_membership_and_reapply_retries_sysvol(self):
+        host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','ntacl','sysvolreset'])
+        result=self.execute(host=host)
+        self.assertFalse(result['success'])
+        self.assertTrue(result['joined']);self.assertTrue(result['configuration_pending'])
+        self.assertFalse(result['recovery_required'])
+        manifest=json.loads((Path(result['backup_path'])/'manifest.json').read_text())
+        self.assertEqual(manifest['phase'],'configuration_pending')
+        self.assertEqual(manifest['failure_phase'],'sysvol_configuration')
+        retry_host=Host(self.root)
+        retry=self.execute(dict(self.request,kind='configure'),retry_host)
+        self.assertTrue(retry['success'],retry)
+        self.assertIn(['samba-tool','ntacl','sysvolreset'],retry_host.calls)
+        self.assertTrue(any(args[0]=='smbclient' for args in retry_host.calls))
+        self.assertFalse(any(args[:3]==['samba-tool','domain','join'] for args in retry_host.calls))
+
     def test_configure_only_never_demotes_or_rejoins(self):
         host=Host(self.root)
         result=self.execute(dict(self.request,kind='configure'),host)

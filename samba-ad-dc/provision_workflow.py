@@ -91,6 +91,29 @@ def credentials(request):
     return ['-U' + request.get('admin_username', 'Administrator'), '--password=' + request['admin_password']]
 
 
+def verify_partner_gpo(request, run):
+    """Read-only check before touching the existing membership or services."""
+    partner = request.get('target_dc_ip')
+    if request['domain_role'] == 'MEMBER' or not partner:
+        return
+    try:
+        run(['samba-tool', 'gpo', 'aclcheck', '-H', 'ldap://' + partner] + credentials(request))
+    except OperationError as error:
+        raise OperationError('Validacao de GPO/SYSVOL no DC parceiro falhou antes da limpeza. '
+                             'Verifique as credenciais administrativas do dominio e as ACLs no parceiro. ' + str(error)) from error
+
+
+def configure_sysvol(request, root, run, steps):
+    partner = request['target_dc_ip']
+    sysvol = root / 'var/lib/samba/sysvol'
+    sysvol.mkdir(parents=True, exist_ok=True)
+    run(['smbclient', '//' + partner + '/sysvol', '--client-protection=sign',
+         '-c', 'recurse ON; prompt OFF; lcd ' + str(sysvol) + '; mget *'] + credentials(request))
+    run(['samba-tool', 'ntacl', 'sysvolreset'])
+    run(['samba-tool', 'gpo', 'aclcheck', '-H', 'ldap://' + partner] + credentials(request))
+    steps.append('SYSVOL sincronizado; ACLs locais restauradas e GPOs do parceiro verificadas com credenciais administrativas.')
+
+
 def read_level(text):
     levels = {'2000': 0, '2003': 2, '2008': 3, '2008_R2': 4, '2012': 5, '2012_R2': 6, '2016': 7}
     text = text.strip().replace('(Windows)', '').strip().replace(' ', '_').upper()
@@ -293,6 +316,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if old_realm and old_realm != request['realm']:
             raise OperationError('A base local pertence a outro dominio; migracao entre dominios exige um fluxo dedicado.')
         level = preflight(request, root, run, old_name, steps)
+        verify_partner_gpo(request, run)
         if request.get('setup_step_ca') and request.get('initialize_ca'):
             preferred=request['ca_port']
             request['ca_port']=allocate_ca_port(root,run,preferred)
@@ -392,11 +416,9 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             manifest['joined'] = True
             save_manifest(backup,manifest)
             if request['domain_role'] != 'MEMBER':
-                sysvol = root / 'var/lib/samba/sysvol'
-                sysvol.mkdir(parents=True,exist_ok=True)
-                run(['smbclient','//' + partner + '/sysvol','--client-protection=sign','-c','recurse ON; prompt OFF; lcd ' + str(sysvol) + '; mget *'] + credentials(request))
-                run(['samba-tool','ntacl','sysvolreset'])
-                run(['samba-tool','gpo','aclcheck','-H','ldap://'+partner]+credentials(request))
+                manifest['phase'] = 'sysvol_configuration'
+                save_manifest(backup, manifest)
+                configure_sysvol(request, root, run, steps)
         elif request['kind'] == 'new':
             remove(config)
             manifest['phase'] = 'provision_attempted'
@@ -408,6 +430,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             manifest['joined'] = True
             remote_mutated = True
             save_manifest(backup,manifest)
+        if request['kind'] == 'configure' and request['domain_role'] != 'MEMBER' and request.get('target_dc_ip'):
+            remote_mutated = True  # SYSVOL ACL reset must not restore a raw old database.
+            manifest['phase'] = 'sysvol_configuration'
+            save_manifest(backup, manifest)
+            configure_sysvol(request, root, run, steps)
         if not config.exists():
             raise OperationError('Samba nao produziu smb.conf; backup preservado.')
         if request['kind']=='new':
@@ -530,7 +557,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         message = str(error)
         recovery_required = remote_mutated and not manifest.get('joined',False)
         if backup:
-            manifest['phase'] = 'recovery_required' if remote_mutated else 'failed_before_remote_change'
+            manifest['failure_phase'] = manifest.get('phase')
+            manifest['phase'] = 'configuration_pending' if manifest.get('joined') else ('recovery_required' if remote_mutated else 'failed_before_remote_change')
             try:
                 if not remote_mutated:
                     optional(run, ['chattr', '-i', str(root / 'etc/resolv.conf')])
@@ -540,6 +568,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     if stopped:
                         restore_services(states, run)
                     steps.append('Configuracao anterior restaurada; nenhuma alteracao remota AD foi confirmada.')
+                elif manifest.get('joined'):
+                    steps.append('[AVISO] Ingresso preservado; use Reaplicar configuracao para concluir a etapa pendente. Nao e necessario refazer o ingresso.')
                 else:
                     steps.append('[AVISO] Alteracoes remotas podem ter ocorrido. Base antiga nao sera reativada automaticamente; retome o reingresso pela interface com o backup preservado.')
             except Exception as rollback:
