@@ -9,8 +9,12 @@ from urllib.parse import urlsplit
 from ad_operations import OperationError,atomic_write
 
 
+def step_binary():
+    return shutil.which('step-cli') or shutil.which('step')
+
+
 def install_step(root,run):
-    if shutil.which('step') and shutil.which('step-ca'):return
+    if step_binary() and shutil.which('step-ca'):return
     manager=next((m for m in ['dnf','yum','apt-get','pacman','zypper'] if shutil.which(m)),None)
     if manager in ['dnf','yum']:
         repo=root/'etc/yum.repos.d/smallstep.repo'
@@ -25,7 +29,7 @@ def install_step(root,run):
     elif manager=='pacman':run([manager,'-S','--needed','--noconfirm','step-cli','step-ca'])
     elif manager=='zypper':run([manager,'--non-interactive','install','step-cli','step-ca'])
     else:raise OperationError('Gerenciador nao suportado para instalar Step-CA automaticamente.')
-    if not shutil.which('step') or not shutil.which('step-ca'):raise OperationError('Os pacotes nao disponibilizaram step/step-ca.')
+    if not step_binary() or not shutil.which('step-ca'):raise OperationError('Os pacotes nao disponibilizaram step/step-ca.')
 
 
 def configure_pki(request,root,run,samba_unit,steps):
@@ -36,6 +40,7 @@ def configure_pki(request,root,run,samba_unit,steps):
     password=request.get('cert_password','')
     if not password:raise OperationError('Informe a senha da PKI na tela, sem reutilizar automaticamente a senha do AD.')
     install_step(root,run)
+    cli = step_binary()
     home=root/'etc/step-ca';ca_config=home/'config/ca.json'
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
     ca_port=int(request.get('ca_port',8443))
@@ -60,7 +65,7 @@ def configure_pki(request,root,run,samba_unit,steps):
             if not exists: run(['useradd','--system','--user-group','--home-dir','/etc/step-ca','--shell','/usr/sbin/nologin','step'])
             home.mkdir(parents=True,exist_ok=True,mode=0o700)
             permanent=home/'password.txt';atomic_write(permanent,password)
-            run(['env','STEPPATH='+str(home),'step','ca','init','--name',request['realm']+' Root CA',
+            run(['env','STEPPATH='+str(home),cli,'ca','init','--name',request['realm']+' Root CA',
                  '--dns',request['hostname_fqdn'],'--dns',request['host_ip'],'--dns','ca.'+request['realm'].lower(),
                  '--address',request['host_ip']+':'+str(ca_port),'--provisioner',provisioner,'--password-file',str(permanent),'--deployment-type','standalone'])
             data=json.loads(ca_config.read_text());claims=data.setdefault('authority',{}).setdefault('claims',{})
@@ -70,7 +75,7 @@ def configure_pki(request,root,run,samba_unit,steps):
                 provisioners.append({'type':'ACME','name':'dc-auto-enroll'})
             atomic_write(ca_config,json.dumps(data,indent=2),0o600)
             run(['chown','-R','step:step',str(home)])
-            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
+            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
             atomic_write(root/'etc/systemd/system/step-ca.service',unit,0o644)
             run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','step-ca'])
             ca_root=home/'certs/root_ca.crt'
@@ -80,18 +85,18 @@ def configure_pki(request,root,run,samba_unit,steps):
             ca_root=tls/'trusted-step-root.crt'
             fingerprint=request.get('ca_fingerprint','').replace(':','').lower()
             if not re.fullmatch('[a-f0-9]{64}',fingerprint):raise OperationError('Informe o fingerprint SHA256 da CA existente para validar o bootstrap.')
-            run(['env','STEPPATH='+temp,'step','ca','bootstrap','--ca-url',url,'--fingerprint',fingerprint])
+            run(['env','STEPPATH='+temp,cli,'ca','bootstrap','--ca-url',url,'--fingerprint',fingerprint])
             shutil.copy2(Path(temp)/'certs/root_ca.crt',ca_root)
         for attempt in range(15):
             try:
-                run(['step','ca','health','--ca-url',url,'--root',str(ca_root)])
+                run([cli,'ca','health','--ca-url',url,'--root',str(ca_root)])
                 break
             except OperationError:
                 if attempt==14: raise
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]
-        command=['step','ca','certificate',request['hostname_fqdn'],str(cert),str(key),'--ca-url',url,'--root',str(ca_root),
+        command=[cli,'ca','certificate',request['hostname_fqdn'],str(cert),str(key),'--ca-url',url,'--root',str(ca_root),
                  '--provisioner',provisioner,'--provisioner-password-file',str(secret),'--kty','RSA','--size','4096','--not-after',str(int(request.get('ca_cert_hours',8760)))+'h','--no-password','--insecure']
         for san in sans:command+=['--san',san]
         run(command)
@@ -104,16 +109,20 @@ def configure_pki(request,root,run,samba_unit,steps):
     elif shutil.which('update-ca-certificates'):
         anchor=root/'usr/local/share/ca-certificates/astral-step-root.crt';atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
         run(['update-ca-certificates'])
+    elif shutil.which('trust'):
+        anchor=root/'etc/ca-certificates/trust-source/anchors/astral-step-root.crt'
+        atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        run(['trust','extract-compat'])
     else:raise OperationError('Ferramenta de trust store da distribuicao nao encontrada.')
     # Renewal uses the existing certificate/key and does not regenerate the CA.
-    config={'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'ca.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
+    config={'step_binary':cli,'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'ca.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
     atomic_write(root/'etc/astral-ad-dns/tls-renew.json',json.dumps(config))
     script="""#!/usr/bin/python3
 import json,subprocess
 from pathlib import Path
 c=json.loads(Path('/etc/astral-ad-dns/tls-renew.json').read_text())
 if subprocess.run(['openssl','x509','-in',c['cert'],'-checkend',str(c.get('renew_before_seconds',604800)),'-noout'],capture_output=True).returncode:
-    subprocess.run(['step','ca','renew',c['cert'],c['key'],'--ca-url',c['url'],'--root',c['root'],'--force'],check=True)
+    subprocess.run([c.get('step_binary','step'),'ca','renew',c['cert'],c['key'],'--ca-url',c['url'],'--root',c['root'],'--force'],check=True)
     subprocess.run(['systemctl','restart',c['unit']],check=True)
 """
     atomic_write(root/'usr/local/lib/astral-ad-dns/tls-renew.py',script,0o700)

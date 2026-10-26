@@ -467,7 +467,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             save_manifest(backup, manifest)
             run(['samba-tool', 'domain', 'provision', '--use-rfc2307', '--realm=' + request['realm'],
                  '--domain=' + request['workgroup'].upper(), '--server-role=dc', '--dns-backend=SAMBA_INTERNAL',
-                 '--option=netbios name = ' + request['netbios_name'], '--function-level=2016', '--option=ad dc functional level = 2016', '--adminpass=' + request['admin_password']])
+                 '--option=netbios name = ' + request['netbios_name'], '--adminpass=' + request['admin_password']])
             level = '2016'
             manifest['joined'] = True
             remote_mutated = True
@@ -485,6 +485,10 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             if observed.get('schema_version',0)<88:
                 run(['samba-tool','domain','schemaupgrade','--schema=2019'])
                 run(['samba-tool','domain','functionalprep','--function-level=2016'])
+            levels = run(['samba-tool','domain','level','show','-s',str(config)])
+            if any(not re.search(re.escape(label)+r':\s*(?:\(Windows\)\s*)?2016\s*$', levels, re.M) for label in ['Domain function level','Forest function level']):
+                run(['samba-tool','domain','functionalprep','--function-level=2016'])
+                run(['samba-tool','domain','level','raise','--domain-level=2016','--forest-level=2016','--option=ad dc functional level = 2016'])
             steps.append('Novo dominio: schema 2019 ou superior verificado; nivel funcional 2016 selecionado no provisionamento.')
         if request['kind']=='join' and not request.get('setup_step_ca') and not request.get('_existing_tls'):
             previous_tls_dir=backup/'files/var/lib/samba/private/tls'
