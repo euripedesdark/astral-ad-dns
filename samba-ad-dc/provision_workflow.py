@@ -39,7 +39,7 @@ def optional(run, args):
 
 
 def validate(request):
-    for field in ['rejoin','clean_existing','setup_bind_hybrid','setup_step_ca','initialize_ca','global_catalog','dry_run','reapply_configuration']:
+    for field in ['overwrite_existing','rejoin','clean_existing','setup_bind_hybrid','setup_step_ca','initialize_ca','global_catalog','dry_run','reapply_configuration']:
         if field in request and not isinstance(request[field],bool):
             raise OperationError('O campo '+field+' deve ser booleano; nenhuma limpeza foi autorizada.')
     if not isinstance(request.get('admin_password'),str):
@@ -144,8 +144,8 @@ def preflight(request, root, run, old_name, steps):
     if request['kind'] == 'configure':
         return None
     if request['kind'] == 'new':
-        if (root / 'var/lib/samba/private/sam.ldb').exists():
-            raise OperationError('Ja existe uma base AD. Escolha Reingresso para mudar o papel ou Reaplicar configuracao para preservar o dominio atual. O primario nao sera apagado.')
+        if (root / 'var/lib/samba/private/sam.ldb').exists() and not request.get('overwrite_existing'):
+            raise OperationError('Ja existe uma base AD. Para criar um dominio novo, selecione Sobrescrever a base e configuracao local do DC1. Para preservar o dominio, escolha Reaplicar configuracao.')
         observed=run(['testparm','-s','--parameter-name=ad dc functional level','--option=ad dc functional level = 2016','/dev/null'])
         if read_level(observed)[1]!='2016': raise OperationError('O Samba instalado nao aceita nivel 2016; nenhuma base foi limpa.')
         return None
@@ -342,14 +342,14 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         old_realm = optional(run, ['testparm', '-s', '--parameter-name=realm', str(config)]).strip().upper() if local_db else ''
         if request.get('initialize_ca') and request['kind']!='new':
             raise OperationError('Inicializar CA so e permitido em novo dominio. No reingresso, selecione a CA existente.')
-        if local_db and (not old_name or not old_realm):
+        if local_db and (not old_name or not old_realm) and not (request['kind']=='new' and request.get('overwrite_existing')):
             raise OperationError('Base AD local nao pode ser identificada com seguranca; use recuperacao de backup na interface. Limpeza bloqueada para proteger o primario.')
         if request['kind'] == 'configure':
             if old_name and request['netbios_name']!=old_name:
                 raise OperationError('Para alterar o nome NetBIOS escolha Reingresso; reaplicacao preserva a identidade atual.')
             account = optional(run,['samba-tool','computer','show',old_name]) if local_db else ''
             request['domain_role'] = ('RODC' if re.search(r'(?im)^primaryGroupID:\s*521',account) else 'DC') if local_db else 'MEMBER'
-        if old_realm and old_realm != request['realm']:
+        if old_realm and old_realm != request['realm'] and request['kind']!='new':
             raise OperationError('A base local pertence a outro dominio; migracao entre dominios exige um fluxo dedicado.')
         if request['kind']=='new':
             if request['static_ip'] not in local_ipv4s(run): raise OperationError('IP_ESTATICO nao esta atribuido a esta maquina; verifique o IP informado.')
@@ -414,6 +414,15 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         configure_firewall(request, root, backup, run, steps)
         primary_tls = []
         if request['kind']=='new':
+            if request.get('overwrite_existing'):
+                manifest['phase']='replacing_local_domain'
+                save_manifest(backup,manifest)
+                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
+                    remove(root/relative)
+                (root/'var/lib/samba').mkdir(parents=True,exist_ok=True)
+                (root/'etc/samba').mkdir(parents=True,exist_ok=True)
+                previous_tls=[]
+                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
             if request.get('setup_step_ca'):
                 manifest['phase']='primary_pki'

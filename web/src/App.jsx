@@ -3755,6 +3755,7 @@ function WizardModal({ onClose, t, showToast }) {
   const [workgroup, setWorkgroup] = useState('SRVCLOUD');
   const [primaryHostname, setPrimaryHostname] = useState('');
   const [primaryIp, setPrimaryIp] = useState('');
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [setupBind, setSetupBind] = useState(false);
   const [targetDcIp, setTargetDcIp] = useState('');
@@ -3902,6 +3903,7 @@ function WizardModal({ onClose, t, showToast }) {
       return;
     }
     if (mode === 'new' && (!primaryHostname.trim() || !primaryIp.trim() || !networkInterface.trim() || !workgroup.trim() || !realm.trim())) { showToast('Preencha HOSTNAME_COMPLETO, NOME_NETBIOS, REALM, IP_ESTATICO e INTERFACE_REDE.', 'error'); return; }
+    if (mode === 'new' && overwriteExisting && !await confirmAction('Sobrescrever a base AD e a configuracao Samba desta maquina e criar um dominio novo? Usuarios, computadores e GPOs da base atual nao serao recuperados. O backup anterior sera preservado.')) return;
     const upstreams = upstreamText.split(/[\s,;]+/).filter(Boolean);
     if (!upstreams.length) { showToast('Informe pelo menos um forwarder DNS.', 'error'); return; }
     if (rejoin && !configurationOnly && !await confirmAction('Executar backup automatico, despromover quando necessario, limpar o estado local e ingressar no papel selecionado? O primario/FSMO sera protegido.')) return;
@@ -3930,6 +3932,7 @@ function WizardModal({ onClose, t, showToast }) {
         network_interface: networkInterface,
         realm,
         workgroup,
+        overwrite_existing: overwriteExisting,
         hostname_fqdn: primaryHostname.trim().toLowerCase(),
         static_ip: primaryIp.trim(),
         admin_password: adminPassword,
@@ -4191,6 +4194,7 @@ function WizardModal({ onClose, t, showToast }) {
               </div>
 
               {mode === 'new' && <>
+                <label className="flex gap-2 text-amber-300"><input type="checkbox" checked={overwriteExisting} onChange={e => setOverwriteExisting(e.target.checked)} />Sobrescrever a base e configuracao local do DC1: criar dominio novo, sem recuperar usuarios, computadores ou GPOs anteriores</label>
                 <label className="block">Hostname completo (HOSTNAME_COMPLETO) *<input value={primaryHostname} onChange={e => setPrimaryHostname(e.target.value)} placeholder="dc1.exemplo.ad" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" /></label>
                 <label className="block">IP estatico deste DC (IP_ESTATICO) *<input value={primaryIp} onChange={e => setPrimaryIp(e.target.value)} placeholder="192.168.2.123" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" /></label>
               </>}
