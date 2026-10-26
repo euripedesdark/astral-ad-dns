@@ -146,7 +146,65 @@ class WorkflowTests(unittest.TestCase):
         result=self.execute(host=host)
         self.assertFalse(result['success']);self.assertTrue(result['recovery_required'])
         self.assertEqual(self.db.read_text(),'old database')
-        self.assertNotIn(['systemctl','start','samba'],host.calls)
+        attempt=next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','domain','demote'])
+        self.assertNotIn(['systemctl','start','samba'],host.calls[attempt+1:])
+    def test_writable_demotion_runs_with_samba_active_after_offline_snapshot(self):
+        host=Host(self.root)
+        active=True
+        def run(args):
+            nonlocal active
+            if args==['systemctl','stop','samba']: active=False
+            if args==['systemctl','start','samba']: active=True
+            if args[:3]==['samba-tool','domain','demote']:
+                self.assertTrue(active,'native demotion needs local DRS running')
+            if args[:3]==['samba-tool','domain','join']:
+                self.assertFalse(active,'old DC must stop before cleanup and join')
+            return host(args)
+        original=flow.snapshot
+        def snapshot(root,backup,include_database):
+            if include_database: self.assertFalse(active,'database backup must be offline')
+            return original(root,backup,include_database)
+        with patch.object(flow,'snapshot',side_effect=snapshot):
+            result=self.execute(dict(self.request,domain_role='DC'),run)
+        self.assertTrue(result['success'],result)
+
+    def test_orphan_without_local_database_skips_normal_demotion(self):
+        flow.remove(self.root/'var/lib/samba')
+        host=Host(self.root)
+        result=self.execute(dict(self.request,clean_existing=True),host)
+        self.assertTrue(result['success'],result)
+        demotions=[args for args in host.calls if args[:3]==['samba-tool','domain','demote']]
+        self.assertEqual(len(demotions),1)
+        self.assertIn('--remove-other-dead-server=SECONDARY',demotions[0])
+
+    def test_demotion_error_preserves_native_cause_and_redacts_password(self):
+        host=Host(self.root)
+        def run(args):
+            if args[:3]==['samba-tool','domain','demote']:
+                raise OperationError('DRS RPC failure '+self.request['admin_password'])
+            return host(args)
+        result=self.execute(host=run)
+        self.assertFalse(result['success'])
+        self.assertIn('DRS RPC failure',result['message'])
+        self.assertNotIn(self.request['admin_password'],result['message'])
+
+    def test_stop_failure_after_demotion_never_forces_remote_cleanup(self):
+        host=Host(self.root)
+        demotion_attempted=False
+        def run(args):
+            nonlocal demotion_attempted
+            if args[:3]==['samba-tool','domain','demote']:
+                demotion_attempted=True
+                raise OperationError('demotion failed')
+            if demotion_attempted and args==['systemctl','stop','samba']:
+                raise OperationError('cannot stop samba')
+            return host(args)
+        result=self.execute(dict(self.request,clean_existing=True),run)
+        self.assertFalse(result['success'])
+        self.assertIn('limpeza bloqueada',result['message'])
+        self.assertFalse(any('--remove-other-dead-server=SECONDARY' in args for args in host.calls))
+        self.assertEqual(self.db.read_text(),'old database')
+
     def test_explicit_orphan_cleanup_can_recover_failed_demotion(self):
         host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','domain','demote'] and not any(a.startswith('--remove-other') for a in args))
         result=self.execute(dict(self.request,clean_existing=True),host)
@@ -157,7 +215,8 @@ class WorkflowTests(unittest.TestCase):
         result=self.execute(host=host)
         self.assertFalse(result['success']);self.assertTrue(result['recovery_required'])
         self.assertTrue((Path(result['backup_path'])/'previous-state.tar.gz').exists())
-        self.assertNotIn(['systemctl','start','samba'],host.calls)
+        attempt=next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','domain','demote'])
+        self.assertNotIn(['systemctl','start','samba'],host.calls[attempt+1:])
     def test_gpo_permission_failure_is_detected_before_stop_or_demotion(self):
         host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','gpo','aclcheck'])
         result=self.execute(host=host)

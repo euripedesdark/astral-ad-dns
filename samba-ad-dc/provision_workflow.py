@@ -403,11 +403,32 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 manifest['phase'] = 'demotion_attempted'
                 save_manifest(backup, manifest)
                 remote_mutated = True  # A failed demotion can still have replicated partial changes.
+                dc_stopped = True
                 try:
-                    run(['samba-tool', 'domain', 'demote', '--server=' + partner, '-s', str(config)] + credentials(request))
-                except OperationError:
+                    if not local_db:
+                        raise OperationError('Existe uma conta DC no parceiro, mas nao existe sam.ldb local para despromocao normal.')
+                    # The offline snapshot is complete. Native demotion asks the
+                    # partner to pull final changes from this DC via DRS RPC.
+                    # Samba must run for that synchronization, even though it
+                    # must be stopped again before any cleanup or dead-DC removal.
+                    dc_service = unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])
+                    try:
+                        dc_stopped = False
+                        run(['systemctl', 'start', dc_service])
+                        if run(['systemctl', 'is-active', dc_service]).strip() != 'active':
+                            raise OperationError('Samba local nao ficou ativo para a despromocao: ' + dc_service)
+                        steps.append('Backup offline concluido; Samba local ativo para sincronizacao final da despromocao.')
+                        run(['samba-tool', 'domain', 'demote', '--server=' + partner, '-s', str(config)] + credentials(request))
+                    finally:
+                        run(['systemctl', 'stop', dc_service])
+                        dc_stopped = True
+                except OperationError as demotion_error:
+                    if not dc_stopped:
+                        raise OperationError('Nao foi possivel parar o Samba apos tentativa de despromocao; limpeza bloqueada. ' + str(demotion_error)) from demotion_error
                     if not request.get('clean_existing'):
-                        raise OperationError('Despromocao nao concluiu. Backup preservado; para conta orfa confirme a limpeza de registros orfaos na interface e retome o reingresso.')
+                        raise OperationError('Despromocao nao concluiu. Causa: ' + str(demotion_error) +
+                                             '. Backup preservado; se a base/conta anterior estiver inutilizavel, autorize a limpeza de registros orfaos na interface e retome o reingresso.') from demotion_error
+                    steps.append('Despromocao normal indisponivel; limpeza do DC anterior explicitamente autorizada, com Samba local parado.')
                     run(['samba-tool', 'domain', 'demote', '--remove-other-dead-server=' + (old_name or request['netbios_name']), '-H', 'ldap://' + partner] + credentials(request))
                 steps.append('DC secundario anterior despromovido; funcoes FSMO do parceiro preservadas.')
             elif account:
