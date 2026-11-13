@@ -614,7 +614,14 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     except OperationError:
                         if attempt == 14: raise
                         time.sleep(1)
-                run(['dig','@127.0.0.1','_gc._tcp.' + request['realm'].lower(),'SRV','+short','+tries=1','+time=3'])
+                # During DC join, the local DNS listener may not yet be ready.
+                # Use the previously validated partner DNS to verify GC SRV records.
+                gc_dns_server = request.get('target_dc_ip') or request['host_ip']
+                gc_records = run(['dig', '@' + gc_dns_server, '-p', '53',
+                                  '_gc._tcp.' + request['realm'].lower(), 'SRV',
+                                  '+short', '+tries=1', '+time=3'])
+                if not gc_records.strip():
+                    raise OperationError('Catalogo global pronto, mas nenhum registro SRV _gc foi retornado pelo DNS ' + gc_dns_server + '. Ingresso preservado; verifique o DNS do dominio e reaplique a configuracao.')
                 steps.append('Catalogo global confirmado por isGlobalCatalogReady; portas 3268/3269 garantidas no firewall.')
             configure_dns_records(request,run,steps)
             resolver=root/'etc/resolv.conf'
