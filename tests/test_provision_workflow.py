@@ -86,6 +86,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('127.0.0.1:5353',self.config.read_text())
         manifest=(Path(result['backup_path'])/'manifest.json').read_text()
         self.assertNotIn(self.request['admin_password'],manifest)
+    def test_gc_srv_uses_partner_not_localhost_during_join(self):
+        host=Host(self.root,fail=lambda args: args[0]=='dig' and '@127.0.0.1' in args)
+        result=self.execute(host=host)
+        self.assertTrue(result['success'],result)
+        gc_queries=[args for args in host.calls if args[0]=='dig' and any('_gc._tcp.' in arg for arg in args)]
+        self.assertEqual(len(gc_queries),1)
+        self.assertIn('@192.0.2.10',gc_queries[0])
+        self.assertNotIn('@127.0.0.1',gc_queries[0])
+
+    def test_empty_gc_srv_preserves_join_and_reports_pending_configuration(self):
+        class NoGcRecords(Host):
+            def __call__(self,args):
+                result=super().__call__(args)
+                if args[0]=='dig' and any('_gc._tcp.' in arg for arg in args): return ''
+                return result
+        result=self.execute(host=NoGcRecords(self.root))
+        self.assertFalse(result['success'])
+        self.assertTrue(result['joined'])
+        self.assertTrue(result['configuration_pending'])
+        self.assertIn('nenhum registro SRV',result['message'])
+
     def test_primary_or_any_fsmo_owner_is_not_cleaned(self):
         host=Host(self.root,fsmo_target=True);result=self.execute(host=host)
         self.assertFalse(result['success']);self.assertIn('FSMO',result['message'])
