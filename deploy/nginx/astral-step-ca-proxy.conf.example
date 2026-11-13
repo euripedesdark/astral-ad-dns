@@ -1,0 +1,31 @@
+# Example: /etc/nginx/conf.d/astral-step-ca-proxy.conf on DC1 only.
+# Verify the actual Samba TLS paths and chain BEFORE enabling.
+# CA service stays bound to 127.0.0.1:9443; Auth Service remains on :8443.
+server {
+    listen 192.168.2.10:9444 ssl;
+    server_name dc-erp.srvcloud.cloud;
+
+    ssl_certificate /etc/samba/tls/dc-erp.crt;
+    ssl_certificate_key /etc/samba/tls/dc-erp.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Restrict issuance endpoint to the management subnet. Further narrow if possible.
+    allow 192.168.2.0/24;
+    deny all;
+    access_log off;
+
+    location / {
+        proxy_pass https://127.0.0.1:9443;
+        proxy_http_version 1.1;
+        proxy_set_header Host dc-erp.srvcloud.cloud;
+        proxy_ssl_server_name on;
+        proxy_ssl_name dc-erp.srvcloud.cloud;
+        proxy_ssl_trusted_certificate /etc/samba/tls/ca.crt;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 3;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 45s;
+        proxy_send_timeout 45s;
+        client_max_body_size 1m;
+    }
+}

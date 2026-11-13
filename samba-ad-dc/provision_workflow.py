@@ -91,6 +91,15 @@ def validate(request):
         request['target_dc_ip'] = str(partner)
     if request.get('setup_step_ca') and not request.get('cert_password'):
         raise OperationError('Informe a senha da PKI para configurar TLS/Step-CA.')
+    if request.get('setup_step_ca') and kind == 'join':
+        from urllib.parse import urlsplit
+        ca_url = str(request.get('ca_url') or '').strip()
+        parsed_ca = urlsplit(ca_url)
+        if parsed_ca.scheme != 'https' or not parsed_ca.hostname or parsed_ca.username or parsed_ca.password or parsed_ca.query or parsed_ca.fragment:
+            raise OperationError('Para DC secundario, informe a URL HTTPS da CA existente; nunca use a CA local por padrao.')
+        fingerprint = str(request.get('ca_fingerprint') or '').replace(':', '').strip().lower()
+        if not re.fullmatch(r'[a-f0-9]{64}', fingerprint):
+            raise OperationError('Informe o fingerprint SHA256 confiavel da CA antes do reingresso.')
     try:
         port=int(request.get('ca_port',8443)); hours=int(request.get('ca_cert_hours',8760))
     except (ValueError,TypeError) as error:
