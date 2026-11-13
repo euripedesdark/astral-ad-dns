@@ -107,6 +107,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(result['configuration_pending'])
         self.assertIn('nenhum registro SRV',result['message'])
 
+    def test_join_with_step_ca_requires_pinned_remote_endpoint_before_demotion(self):
+        host=Host(self.root)
+        req=dict(self.request,setup_step_ca=True,cert_password='test-jwk-secret',ca_url='',ca_fingerprint='')
+        result=self.execute(req,host)
+        self.assertFalse(result['success'])
+        self.assertIn('URL HTTPS da CA',result['message'])
+        self.assertFalse(any(c[:3]==['samba-tool','domain','demote'] for c in host.calls))
+        self.assertEqual(self.db.read_text(),'old database')
+        req['ca_url']='https://ca.example.test:9444'
+        result=self.execute(req,Host(self.root))
+        self.assertFalse(result['success'])
+        self.assertIn('fingerprint SHA256',result['message'])
+        self.assertEqual(self.db.read_text(),'old database')
+
     def test_primary_or_any_fsmo_owner_is_not_cleaned(self):
         host=Host(self.root,fsmo_target=True);result=self.execute(host=host)
         self.assertFalse(result['success']);self.assertIn('FSMO',result['message'])

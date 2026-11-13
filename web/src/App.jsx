@@ -3774,6 +3774,7 @@ function WizardModal({ onClose, t, showToast }) {
   const [caPort, setCaPort] = useState(8443);
   const [caCertHours, setCaCertHours] = useState(8760);
   const [caFingerprint, setCaFingerprint] = useState('');
+  const [caProvisioner, setCaProvisioner] = useState('admin');
   const [certPassword, setCertPassword] = useState('');
   const [tlsPaths, setTlsPaths] = useState({cert: '', key: '', ca: ''});
   const [networkInterface, setNetworkInterface] = useState('');
@@ -3897,7 +3898,8 @@ function WizardModal({ onClose, t, showToast }) {
       showToast('Informe o IP do DC parceiro para consultar o AD na porta 53.', 'error');
       return;
     }
-    if ((mode === 'new' || setupStepCa) && mode !== 'join_member' && !certPassword) { showToast('Informe a senha da PKI.', 'error'); return; }
+    if ((mode === 'new' || setupStepCa) && mode !== 'join_member' && !certPassword) { showToast('Informe a senha do provisioner da PKI.', 'error'); return; }
+    if (mode !== 'new' && setupStepCa && mode !== 'join_member' && (!/^https:\/\/[^\s/]+/.test(caUrl.trim()) || !/^[a-f0-9:]{64,95}$/i.test(caFingerprint.trim()))) { showToast('Informe URL HTTPS e fingerprint SHA256 da CA existente antes do ingresso.', 'error'); return; }
     if (!adminPassword) {
       showToast('Informe a senha do administrador do dominio.', 'error');
       return;
@@ -3926,6 +3928,7 @@ function WizardModal({ onClose, t, showToast }) {
         ca_port: mode === 'new' ? 8443 : Number(caPort),
         ca_cert_hours: mode === 'new' ? 8760 : Number(caCertHours),
         ca_fingerprint: mode === 'new' ? '' : caFingerprint,
+        ca_provisioner: mode === 'new' ? '' : caProvisioner,
         cert_password: certPassword,
         tls_mode: mode === 'new' || setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
         tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
@@ -3959,6 +3962,7 @@ function WizardModal({ onClose, t, showToast }) {
         ca_port: mode === 'new' ? 8443 : Number(caPort),
         ca_cert_hours: mode === 'new' ? 8760 : Number(caCertHours),
         ca_fingerprint: mode === 'new' ? '' : caFingerprint,
+        ca_provisioner: mode === 'new' ? '' : caProvisioner,
         cert_password: certPassword,
         tls_mode: mode === 'new' || setupStepCa ? 'step-ca' : Object.values(tlsPaths).some(Boolean) ? 'existing' : 'auto',
         tls_cert_path: tlsPaths.cert, tls_key_path: tlsPaths.key, tls_ca_path: tlsPaths.ca,
@@ -4362,6 +4366,7 @@ function WizardModal({ onClose, t, showToast }) {
                     <label className="block">Validade solicitada do certificado (horas)<input type="number" min="1" max="8760" aria-label="Validade do certificado" value={caCertHours} onChange={event => setCaCertHours(event.target.value)} className="ml-2 bg-slate-950 border border-slate-700 p-2 rounded" /></label>
                     <input aria-label="URL da CA" value={caUrl} onChange={event => setCaUrl(event.target.value)} placeholder="URL HTTPS da CA; vazio usa a CA local" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                     <input aria-label="Fingerprint SHA256 da CA" value={caFingerprint} onChange={event => setCaFingerprint(event.target.value)} placeholder="Fingerprint SHA256 para CA remota" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
+                     <input aria-label="Nome do provisioner Step-CA" value={caProvisioner} onChange={event => setCaProvisioner(event.target.value)} placeholder="Provisioner existente (ex.: admin)" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                     <input type="password" aria-label="Senha da PKI" value={certPassword} onChange={event => setCertPassword(event.target.value)} placeholder="Senha da PKI (nao e salva no navegador)" className="w-full bg-slate-950 border border-slate-700 p-2 rounded" />
                   </div>}
                   </>}

@@ -13,23 +13,23 @@ def step_binary():
     return shutil.which('step-cli') or shutil.which('step')
 
 
-def install_step(root,run):
-    if step_binary() and shutil.which('step-ca'):return
+def install_step(root,run,require_server=True):
+    if step_binary() and (not require_server or shutil.which('step-ca')):return
     manager=next((m for m in ['dnf','yum','apt-get','pacman','zypper'] if shutil.which(m)),None)
     if manager in ['dnf','yum']:
         repo=root/'etc/yum.repos.d/smallstep.repo'
         if not repo.exists():
             atomic_write(repo,'[smallstep]\nname=Smallstep\nbaseurl=https://packages.smallstep.com/stable/fedora/\nenabled=1\nrepo_gpgcheck=0\ngpgcheck=1\ngpgkey=https://packages.smallstep.com/keys/smallstep-0x889B19391F774443.gpg\n',0o644)
-        run([manager,'install','-y','step-cli','step-ca'])
+        run([manager,'install','-y']+(['step-cli','step-ca'] if require_server else ['step-cli']))
     elif manager=='apt-get':
         key=root/'etc/apt/keyrings/smallstep.asc';key.parent.mkdir(parents=True,exist_ok=True)
         run(['curl','-fsSL','https://packages.smallstep.com/keys/apt/repo-signing-key.gpg','-o',str(key)])
         atomic_write(root/'etc/apt/sources.list.d/smallstep.sources','Types: deb\nURIs: https://packages.smallstep.com/stable/debian\nSuites: debs\nComponents: main\nSigned-By: /etc/apt/keyrings/smallstep.asc\n',0o644)
-        run([manager,'update']);run(['env','DEBIAN_FRONTEND=noninteractive',manager,'install','-y','step-cli','step-ca'])
-    elif manager=='pacman':run([manager,'-S','--needed','--noconfirm','step-cli','step-ca'])
-    elif manager=='zypper':run([manager,'--non-interactive','install','step-cli','step-ca'])
+        run([manager,'update']);run(['env','DEBIAN_FRONTEND=noninteractive',manager,'install','-y']+(['step-cli','step-ca'] if require_server else ['step-cli']))
+    elif manager=='pacman':run([manager,'-S','--needed','--noconfirm']+(['step-cli','step-ca'] if require_server else ['step-cli']))
+    elif manager=='zypper':run([manager,'--non-interactive','install']+(['step-cli','step-ca'] if require_server else ['step-cli']))
     else:raise OperationError('Gerenciador nao suportado para instalar Step-CA automaticamente.')
-    if not step_binary() or not shutil.which('step-ca'):raise OperationError('Os pacotes nao disponibilizaram step/step-ca.')
+    if not step_binary() or (require_server and not shutil.which('step-ca')):raise OperationError('Pacote Step CLI ou servidor Step-CA ausente apos instalacao.')
 
 
 def configure_pki(request,root,run,samba_unit,steps):
@@ -39,9 +39,10 @@ def configure_pki(request,root,run,samba_unit,steps):
         raise OperationError('Uma CA nova so pode ser inicializada em novo dominio; reingresso preserva a CA existente.')
     password=request.get('cert_password','')
     if not password:raise OperationError('Informe a senha da PKI na tela, sem reutilizar automaticamente a senha do AD.')
-    install_step(root,run)
-    cli = step_binary()
     home=root/'etc/step-ca';ca_config=home/'config/ca.json'
+    # Secondary DCs are CA clients: never install another CA server.
+    install_step(root,run,require_server=bool(initialize or ca_config.exists()))
+    cli = step_binary()
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
     if initialize and ca_config.exists():
         initialize = False
@@ -51,12 +52,14 @@ def configure_pki(request,root,run,samba_unit,steps):
     if ca_config.exists():
         address=json.loads(ca_config.read_text()).get('address','')
         if ':' in address: configured_port=int(address.rsplit(':',1)[1])
+    if not request.get('ca_url') and not ca_config.exists() and not initialize:
+        raise OperationError('Informe a URL HTTPS da CA existente do dominio. Nunca utilizar o IP local do DC2 como CA.')
     url=request.get('ca_url') or 'https://'+request['host_ip']+':'+str(configured_port)
     parsed=urlsplit(url)
     if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise OperationError('URL da CA deve ser HTTPS, sem credenciais/query.')
     request['ca_url'],request['ca_port']=url,configured_port
-    provisioner=request.get('ca_provisioner') or 'admin@'+request['realm'].lower()
+    provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or ca_config.exists() else 'admin')
     with tempfile.TemporaryDirectory(prefix='astral-pki-',dir=tls) as temp:
         secret=Path(temp)/'password';atomic_write(secret,password)
         if initialize:
