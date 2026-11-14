@@ -112,11 +112,29 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
         return False
 
 def check_prerequisites():
-    """Verifica se ferramentas essenciais estão disponíveis."""
-    for tool in ["cargo", "rustc", "npm", "node", "git"]:
-        if not shutil.which(tool):
-            log_error(f"Ferramenta obrigatória não encontrada no PATH: {tool}")
-            sys.exit(1)
+    """Valida ferramentas de build e dependencias AD antes do deploy do painel.
+
+    O instalador do painel nao instala Samba ou ferramentas de desenvolvimento.
+    Apenas Step-CA pode ser instalada posteriormente pelo wizard, depois do AD.
+    """
+    required = {
+        "Build Rust": ["rustc", "cargo"],
+        "Build React": ["node", "npm"],
+        "Ferramentas do deploy": ["git", "curl"],
+        "Samba AD / identidade": ["samba", "samba-tool", "testparm", "smbclient", "net", "winbindd"],
+        "DNS e rede": ["dig", "ip", "iptables", "iptables-save"],
+        "Sincronizacao e criptografia": ["chronyd", "openssl"],
+    }
+    missing = {group: [tool for tool in tools if not shutil.which(tool)]
+               for group, tools in required.items()}
+    missing = {group: tools for group, tools in missing.items() if tools}
+    if missing:
+        for group, tools in missing.items():
+            log_error(f"{group}: dependencias ausentes: {', '.join(tools)}")
+        log_error("Instale os pacotes ausentes pelo gerenciador da distribuicao antes do deploy. "
+                  "Nenhum build, arquivo ou servico foi alterado.")
+        sys.exit(1)
+    log_success("Rust/Cargo, Node/npm, Samba AD, DNS, iptables, Chrony e OpenSSL verificados.")
 
 def main():
     parser = argparse.ArgumentParser(description="Compilação, Deploy em Sistema e Sync Git do Astral AD & DNS")
