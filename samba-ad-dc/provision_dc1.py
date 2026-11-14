@@ -1175,6 +1175,12 @@ def verify_new_domain_prerequisites(root, run, bind_requested, steps):
             'obrigatorios ausentes: '+', '.join(missing)+
             '. Instale pela distribuicao e execute a checagem novamente. '
             'Apenas Step-CA podera ser instalada durante o fluxo do wizard.')
+    # Distros can ship binaries without the matching Samba Python modules.
+    # The wizard later runs the local directory/GC logic with /usr/bin/python3.
+    run(['/usr/bin/python3','-c',
+         'import samba, ldb; from samba.samdb import SamDB; from samba.credentials import Credentials'])
+    run(['samba-tool','--help'])
+    run(['testparm','-s','/dev/null'])
     run(['iptables-save'])
     steps.append('Preflight novo dominio: Samba AD, DNS, iptables, Chrony, '
                  'OpenSSL e BIND opcional instalados; nenhuma instalacao automatica executada.')
