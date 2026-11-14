@@ -550,6 +550,10 @@ mod tests {
         assert!(!is_domain_controller("sAMAccountName: DC-DESKTOP$\nuserAccountControl: 4096\nprimaryGroupID: 515"));
         assert!(is_domain_controller("userAccountControl: 532480\nprimaryGroupID: 516"));
         assert!(is_domain_controller("userAccountControl: 67112960\nprimaryGroupID: 521"));
+        // After demotion to a member computer, Samba removes SERVER_TRUST_ACCOUNT
+        // and the machine becomes a WORKSTATION_TRUST_ACCOUNT (0x1000).
+        assert!(!is_domain_controller("sAMAccountName: SECONDARY$\nuserAccountControl: 4096\nprimaryGroupID: 515"));
+        assert!(!is_rodc("sAMAccountName: SECONDARY$\nuserAccountControl: 4096\nprimaryGroupID: 515"));
         assert!(!is_domain_controller(""));
     }
 }
