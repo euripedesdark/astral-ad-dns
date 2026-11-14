@@ -115,22 +115,53 @@ def configure_pki(request,root,run,samba_unit,steps):
                  '--not-after='+str(int(request.get('ca_cert_hours',8760)))+'h']
         for san in sans:command+=['--san='+san]
         run(command)
-        run(['openssl','verify','-CAfile',str(ca_root),'-untrusted',str(cert),str(cert)])
-        atomic_write(tls/'dc.crt',cert.read_bytes(),0o644);atomic_write(tls/'dc.key',key.read_bytes(),0o600)
-        atomic_write(tls/'ca.crt',ca_root.read_bytes(),0o644)
+        # Keep the root as a distinct trust anchor. Samba cafile receives
+        # the intermediate(s) followed by that root; never trust an unverified
+        # intermediate as an independent OS trust anchor.
+        if ca_config.exists():
+            ca_definition=json.loads(ca_config.read_text())
+            intermediate=Path(ca_definition.get('crt') or str(home/'certs/intermediate_ca.crt'))
+            if not intermediate.is_file():
+                raise OperationError('CA intermediaria local ausente; certificado nao sera instalado.')
+            intermediate_data=intermediate.read_bytes()
+        else:
+            # The authenticated HTTPS Step CA endpoint serves the signing
+            # intermediates. Use the pinned root for TLS; do not use -k.
+            from urllib.request import urlopen
+            import ssl
+            intermediate_url=url.rstrip('/')+'/intermediates.pem'
+            try:
+                with urlopen(intermediate_url, timeout=15,
+                             context=ssl.create_default_context(cafile=str(ca_root))) as response:
+                    intermediate_data=response.read(262144)
+            except Exception as error:
+                raise OperationError('Nao foi possivel obter a CA intermediaria por HTTPS confiavel: '+str(error)) from error
+        if b'-----BEGIN CERTIFICATE-----' not in intermediate_data:
+            raise OperationError('Endpoint da CA nao retornou certificado intermediario PEM valido.')
+        intermediate_file=Path(temp)/'intermediates.pem'
+        atomic_write(intermediate_file,intermediate_data,0o644)
+        run(['openssl','verify','-purpose','sslserver','-verify_hostname',
+             request['hostname_fqdn'],'-CAfile',str(ca_root),
+             '-untrusted',str(intermediate_file),str(cert)])
+        atomic_write(tls/'dc.crt',cert.read_bytes(),0o644)
+        atomic_write(tls/'dc.key',key.read_bytes(),0o600)
+        # The renewal helper and Step CLI must use the root-only file.
+        atomic_write(tls/'trusted-step-root.crt',ca_root.read_bytes(),0o644)
+        chain=intermediate_data.rstrip()+b'\n'+ca_root.read_bytes().strip()+b'\n'
+        atomic_write(tls/'ca.crt',chain,0o644)
     if shutil.which('update-ca-trust'):
-        anchor=root/'etc/pki/ca-trust/source/anchors/astral-step-root.crt';atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        anchor=root/'etc/pki/ca-trust/source/anchors/astral-step-root.crt';atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['update-ca-trust'])
     elif shutil.which('update-ca-certificates'):
-        anchor=root/'usr/local/share/ca-certificates/astral-step-root.crt';atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        anchor=root/'usr/local/share/ca-certificates/astral-step-root.crt';atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['update-ca-certificates'])
     elif shutil.which('trust'):
         anchor=root/'etc/ca-certificates/trust-source/anchors/astral-step-root.crt'
-        atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['trust','extract-compat'])
     else:raise OperationError('Ferramenta de trust store da distribuicao nao encontrada.')
     # Renewal uses the existing certificate/key and does not regenerate the CA.
-    config={'step_binary':cli,'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'ca.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
+    config={'step_binary':cli,'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'trusted-step-root.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
     atomic_write(root/'etc/astral-ad-dns/tls-renew.json',json.dumps(config))
     script="""#!/usr/bin/python3
 import json,subprocess
