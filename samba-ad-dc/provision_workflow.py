@@ -157,16 +157,16 @@ def check_gpo_acl(request, run, partner):
             raise OperationError(
                 'ACL de GPO falhou apos SYSVOL via SMB ter sido validado. '
                 'Verifique permissoes reais do SYSVOL/GPO; nenhuma limpeza iniciada. ' + detail) from error
-    # samba-tool supports --ipaddress and --use-kerberos; do not rely on
-    # discovery or implicit Kerberos when LDAP is configured using an IP.
+    # Pin the SMB destination while retaining the Samba authentication policy.
+    # In particular, do not downgrade or disable Kerberos automatically.
     explicit=['samba-tool','gpo','aclcheck','-H','ldap://' + partner,
-              '--ipaddress='+partner,'--use-kerberos=off'] + credentials(request)
+              '--ipaddress='+partner] + credentials(request)
     try:
         run(explicit)
     except OperationError as retry_error:
         raise OperationError(
             'SYSVOL acessivel com smbclient, mas samba-tool gpo aclcheck '
-            'falhou com a descoberta padrao e com IP explicito/Kerberos desativado. '
+            'falhou com a descoberta padrao e com IP explicito. '
             'A verificacao das ACLs continua pendente e nenhuma limpeza foi iniciada. '
             'Confira as configuracoes cliente Samba, versao das bibliotecas Python '
             'Samba e politica de autenticacao SMB. Detalhe: '+str(retry_error)) from retry_error
