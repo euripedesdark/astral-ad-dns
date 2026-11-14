@@ -131,7 +131,7 @@ pub fn create_api_router(config: Arc<AppConfig>) -> Router {
         .route("/api/provision/sync-ad-dns", post(provision::sync_ad_dns_dc))
         .route("/api/provision/upgrade-schema", post(provision::upgrade_schema_and_levels))
         .route("/api/provision/fix-dns-partitions", post(provision::fix_dns_partitions))
-        .route("/api/provision/step-ca", post(provision::setup_step_ca))
+        .route("/api/provision/step-ca", get(provision::pki_status).post(provision::setup_step_ca))
         .route("/api/provision/reverse-zone", post(provision::configure_reverse_zone))
 
         .with_state(config)
