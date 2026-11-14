@@ -508,8 +508,28 @@ pub struct StepCaSetupRequest {
     pub dry_run: bool,
 }
 
-pub async fn setup_step_ca(_operator: crate::auth::Administrator, State(_config): State<Arc<AppConfig>>, Json(_request): Json<StepCaSetupRequest>) -> (StatusCode, Json<ApiResponse<ProvisionResult>>) {
-    (StatusCode::CONFLICT,Json(ApiResponse{success:false,message:"TLS/Step-CA e renovacao agora integram o assistente: Reaplicar configuracao > Configurar certificado LDAPS.".into(),data:None,dry_run:false,correlation_id:None}))
+pub async fn pki_status(_operator: crate::auth::Administrator, State(config): State<Arc<AppConfig>>) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    run_independent_pki(config, serde_json::json!({"action":"status"})).await
+}
+
+pub async fn setup_step_ca(_operator: crate::auth::Administrator, State(config): State<Arc<AppConfig>>, Json(request): Json<serde_json::Value>) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    run_independent_pki(config, request).await
+}
+
+async fn run_independent_pki(config: Arc<AppConfig>, request: serde_json::Value) -> (StatusCode, Json<ApiResponse<serde_json::Value>>) {
+    if !matches!(request["action"].as_str(), Some("status" | "verify" | "trust")) {
+        return (StatusCode::BAD_REQUEST, Json(ApiResponse {success:false,message:"Acao PKI desconhecida.".into(),data:None,dry_run:false,correlation_id:None}));
+    }
+    let action=request["action"].as_str().unwrap_or("status").to_string();
+    let output=tokio::task::spawn_blocking(move || crate::system::run_ad_operation_value("pki", &request, config.sudo_password.as_deref())).await;
+    match output {
+        Ok(Ok(value)) => {
+            let data=value["data"].clone();
+            (StatusCode::OK, Json(ApiResponse {success:true,message:format!("PKI: {} concluido.",action),data:Some(data),dry_run:false,correlation_id:None}))
+        }
+        Ok(Err(error)) => (StatusCode::BAD_REQUEST, Json(ApiResponse {success:false,message:error,data:None,dry_run:false,correlation_id:None})),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse {success:false,message:error.to_string(),data:None,dry_run:false,correlation_id:None})),
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
