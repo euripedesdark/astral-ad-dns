@@ -99,6 +99,7 @@ def firewall_rules(role, step_ca=False, ca_port=9443):
     for protocol,ports in [('tcp',tcp),('udp',udp)]:
         rules += [['-p',protocol,'--dport',str(port),'-j','ACCEPT'] for port in ports]
     rules.append(['-p','tcp','--dport','49152:65535','-j','ACCEPT'])
+    rules.append(['-p','udp','--dport','49152:65535','-j','ACCEPT'])
     return rules
 
 
