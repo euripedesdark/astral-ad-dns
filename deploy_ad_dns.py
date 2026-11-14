@@ -260,7 +260,7 @@ def install_missing_build_tools(missing):
     missing = set(missing) & {"rustc", "cargo", "node", "npm", "git", "curl"}
     if not missing:
         return
-    distro, _, _ = detect_host_distribution()
+    distro, major, _ = detect_host_distribution()
     if distro in ("arch", "archlinux"):
         manager = "pacman"
         package_map = {"rustc": "rust", "cargo": "rust", "node": "nodejs",
@@ -268,8 +268,10 @@ def install_missing_build_tools(missing):
         command = ["pacman", "-S", "--needed", "--noconfirm"]
     elif distro in ("fedora", "rhel", "almalinux", "rocky", "centos", "ol", "oracle"):
         manager = "dnf"
+        npm_package = ("nodejs" if distro == "fedora" else
+                       "nodejs-npm" if major == "10" else "npm")
         package_map = {"rustc": "rust", "cargo": "cargo", "node": "nodejs",
-                       "npm": "npm", "git": "git", "curl": "curl"}
+                       "npm": npm_package, "git": "git", "curl": "curl"}
         command = ["dnf", "install", "-y"]
     elif distro in ("debian", "ubuntu", "linuxmint", "pop"):
         manager = "apt-get"
