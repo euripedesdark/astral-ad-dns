@@ -1878,6 +1878,7 @@ function ComputersTab({ t, showToast }) {
   const [transition, setTransition] = useState(null);
   const [demoteComputer, setDemoteComputer] = useState(null);
   const [computers, setComputers] = useState([]);
+  const [machineView, setMachineView] = useState('dcs');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [newComputerName, setNewComputerName] = useState('');
@@ -1891,10 +1892,15 @@ function ComputersTab({ t, showToast }) {
       const res = await customFetch('/api/computers');
       if (res.ok) {
         const json = await res.json();
-        setComputers(json.data || []);
+        if (json.success === false || !Array.isArray(json.data)) {
+          throw new Error(json.message || 'Resposta de computadores inválida');
+        }
+        setComputers(json.data);
+      } else {
+        throw new Error('Falha HTTP ao consultar computadores do domínio');
       }
     } catch (e) {
-      showToast('Failed to load computers', 'error');
+      showToast(e.message || 'Falha ao carregar computadores', 'error');
     } finally {
       setLoading(false);
     }
@@ -1962,10 +1968,38 @@ function ComputersTab({ t, showToast }) {
     }
   };
 
-  const filtered = computers.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
+  // The AD object is the source of truth, not the old role or the machine name.
+  // After a successful demotion and a fresh LDAP read, a member account has
+  // is_dc=false and therefore moves from the DC tab to Computers.
+  const domainControllers = computers.filter(c => c.is_dc === true);
+  const memberComputers = computers.filter(c => c.is_dc === false);
+  const visibleMachines = machineView === 'dcs' ? domainControllers : memberComputers;
+  const filtered = visibleMachines.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3" role="tablist" aria-label="Tipos de máquinas no Active Directory">
+        <button
+          type="button"
+          role="tab"
+          aria-label="Aba Controladores de Domínio"
+          aria-selected={machineView === 'dcs'}
+          onClick={() => { setMachineView('dcs'); setContextMenu({ visible: false, x: 0, y: 0, comp: null }); }}
+          className={`rounded-lg px-4 py-2 text-xs font-semibold border transition ${machineView === 'dcs' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'}`}
+        >
+          Controladores de Domínio <span className="ml-2 opacity-80">{domainControllers.length}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-label="Aba Computadores"
+          aria-selected={machineView === 'computers'}
+          onClick={() => { setMachineView('computers'); setContextMenu({ visible: false, x: 0, y: 0, comp: null }); }}
+          className={`rounded-lg px-4 py-2 text-xs font-semibold border transition ${machineView === 'computers' ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'}`}
+        >
+          Computadores <span className="ml-2 opacity-80">{memberComputers.length}</span>
+        </button>
+      </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="relative flex-1 max-w-md">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
@@ -1984,17 +2018,25 @@ function ComputersTab({ t, showToast }) {
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button 
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
-          >
-            <Plus className="w-4 h-4" />
-            <span>{t.addComputer}</span>
-          </button>
+          {machineView === 'computers' && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 py-2 rounded-lg transition shadow-md"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{t.addComputer}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      {!loading && filtered.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center text-xs text-slate-400" role="status">
+          {search.trim() ? 'Nenhuma máquina corresponde ao filtro nesta aba.' :
+            machineView === 'dcs' ? 'Nenhum controlador de domínio encontrado.' : 'Nenhum computador membro encontrado.'}
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" role="tabpanel" aria-label={machineView === 'dcs' ? 'Controladores de Domínio' : 'Computadores'}>
         {filtered.map((comp) => (
           <div 
             key={comp.name} 
@@ -2084,7 +2126,7 @@ function ComputersTab({ t, showToast }) {
       )}
 
       {transition && <ControllerTransitionModal {...transition} customFetch={customFetch} showToast={showToast} onClose={() => setTransition(null)} onSuccess={fetchComputers} />}
-      {demoteComputer && <DemoteControllerModal computer={demoteComputer} customFetch={customFetch} showToast={showToast} onClose={() => setDemoteComputer(null)} onSuccess={fetchComputers} />}
+      {demoteComputer && <DemoteControllerModal computer={demoteComputer} customFetch={customFetch} showToast={showToast} onClose={() => setDemoteComputer(null)} onSuccess={() => { fetchComputers(); setMachineView('computers'); }} />}
       {/* Computer Properties Modal */}
       {selectedPropertiesComp && (
         <ComputerPropertiesModal
