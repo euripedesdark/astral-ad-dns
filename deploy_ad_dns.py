@@ -176,6 +176,21 @@ def main():
 
     check_prerequisites()
 
+    # Validate all Python provisioning stacks before any build or deployment.
+    # The web wizard must never ship a SyntaxError into /opt.
+    import ast
+    for relative in ("samba-ad-dc/provision_dc1.py",
+                     "samba-ad-dc/provision_workflow.py",
+                     "samba-ad-dc/ad_operations.py"):
+        path = os.path.join(repo_dir, relative)
+        try:
+            with open(path, encoding="utf-8") as source:
+                ast.parse(source.read(), filename=path)
+        except (OSError, SyntaxError) as error:
+            log_error(f"Deploy bloqueado: pilha Python invalida em {relative}: {error}")
+            sys.exit(1)
+    log_success("Pilha Python do wizard validada antes do deploy.")
+
     # -------------------------------------------------------------------------
     # PASSO 1: Build do Frontend React / Vite
     # -------------------------------------------------------------------------
