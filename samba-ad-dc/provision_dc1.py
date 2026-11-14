@@ -1216,7 +1216,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
     try:
         validate(request)
         if request.get('dry_run'):
-            return {'success': True, 'steps_completed': ['Plano: instalar dependencias ausentes, validar DNS/FSMO, backup automatico, despromocao se necessaria, limpeza e ingresso como ' + request['domain_role'], 'Forwarders: ' + ', '.join(request['upstream_forwarders']), 'Nenhum arquivo, pacote, servico ou objeto AD foi alterado.'], 'plan_only': True}
+            return {'success': True, 'steps_completed': ['Plano: verificar pacotes/iptables antes de qualquer mudanca, validar DNS/FSMO, backup e criar dominio (Step-CA somente apos Samba ativo) como ' + request['domain_role'], 'Forwarders: ' + ', '.join(request['upstream_forwarders']), 'Nenhum arquivo, pacote, servico ou objeto AD foi alterado.'], 'plan_only': True}
+        if request['kind']=='new':
+            # Mandatory read-only checks before backup, service changes or package actions.
+            verify_new_domain_prerequisites(root,run,request.get('setup_bind_hybrid',False),steps)
+            firewall_to_verify=verify_new_domain_firewall(request,run,steps)
         identifier = uuid.uuid4().hex
         backup = root / 'var/backups/astral-ad-dns/provision' / identifier
         backup.mkdir(parents=True, mode=0o700)
@@ -1234,10 +1238,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         save_manifest(backup, manifest)
         steps.append('Backup automatico da configuracao anterior: ' + str(backup))
         if request['kind']=='new':
-            manifest['phase']='checking_dependencies'
+            manifest['phase']='dependencies_verified'
             save_manifest(backup,manifest)
-            verify_new_domain_prerequisites(root,run,request.get('setup_bind_hybrid',False),steps)
-            firewall_to_verify=verify_new_domain_firewall(request,run,steps)
         else:
             manifest['phase']='installing_dependencies'
             save_manifest(backup,manifest)
