@@ -32,6 +32,38 @@ def install_step(root,run,require_server=True):
     if not step_binary() or (require_server and not shutil.which('step-ca')):raise OperationError('Pacote Step CLI ou servidor Step-CA ausente apos instalacao.')
 
 
+
+def verify_remote_ca_before_join(request,root,run,steps):
+    """Trust-on-first-use bootstrap requires a pre-pinned CA root fingerprint.
+
+    Called before Samba is stopped/demoted. It installs only the Step CLI,
+    validates the CA using its configured root fingerprint, and leaves no
+    persistent CA material or signing secrets on the DC.
+    """
+    if not request.get('setup_step_ca') or request.get('kind') != 'join':
+        return
+    url=str(request.get('ca_url') or '').strip()
+    parsed=urlsplit(url)
+    fingerprint=str(request.get('ca_fingerprint') or '').replace(':','').strip().lower()
+    if (parsed.scheme!='https' or not parsed.hostname or parsed.username or
+        parsed.password or parsed.query or parsed.fragment or
+        not re.fullmatch('[a-f0-9]{64}',fingerprint)):
+        raise OperationError('CA remota invalida: configure URL HTTPS e fingerprint SHA256 no assistente antes do ingresso.')
+    install_step(root,run,require_server=False)
+    cli=step_binary()
+    with tempfile.TemporaryDirectory(prefix='astral-step-preflight-') as directory:
+        run(['env','STEPPATH='+directory,cli,'ca','bootstrap',
+             '--ca-url',url,'--fingerprint',fingerprint])
+        root_cert=Path(directory)/'certs/root_ca.crt'
+        if not root_cert.exists():
+            raise OperationError('Bootstrap da CA nao retornou certificado raiz; ingresso nao iniciado.')
+        fingerprint_output=run(['openssl','x509','-in',str(root_cert),'-noout','-fingerprint','-sha256'])
+        observed=fingerprint_output.rsplit('=',1)[-1].replace(':','').strip().lower()
+        if observed!=fingerprint:
+            raise OperationError('Fingerprint da CA nao corresponde ao informado; ingresso nao iniciado.')
+        run([cli,'ca','health','--ca-url',url,'--root',str(root_cert)])
+    steps.append('CA remota validada automaticamente via HTTPS, fingerprint SHA256 e endpoint de saude; nenhuma CA local criada.')
+
 def configure_pki(request,root,run,samba_unit,steps):
     if not request.get('setup_step_ca'):return []
     initialize=bool(request.get('initialize_ca'))
