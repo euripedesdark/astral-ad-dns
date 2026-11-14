@@ -127,8 +127,8 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
     let bind_listener_ok = bind_forward_port.map_or(false, |port| {
         ["tcp", "udp"].iter().all(|proto| listener_output.lines().any(|line| {
             let cols: Vec<_> = line.split_whitespace().collect();
-            cols.first().map_or(false, |v| v.starts_with(proto))
-                && cols.get(4).map_or(false, |v| *v == format!("127.0.0.1:{port}"))
+            cols.first().map_or(false, |v| v.starts_with(*proto))
+                && cols.get(4).map_or(false, |v| *v == format!("127.0.0.1:{port}").as_str())
                 && (line.contains("named") || line.contains("bind9"))
         }))
     });
