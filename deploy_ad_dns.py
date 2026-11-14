@@ -189,18 +189,33 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         staged.write(repo_content)
         staged_path = staged.name
     try:
-        # Never silently replace another repo named tis-samba.
-        if os.path.exists(repo_path):
+        # A manually configured [tis-samba] without 'enabled=1' is valid:
+        # dnf defaults to enabled. Preserve matching existing repo files.
+        repo_exists = os.path.exists(repo_path)
+        if repo_exists:
+            import configparser
             existing = run_cmd(["cat", repo_path], use_sudo=True, capture=True)
-            if existing.strip() != repo_content.strip():
-                log_error(f"{repo_path} já existe e difere da configuração esperada; revise-o manualmente.")
+            parser = configparser.ConfigParser()
+            try:
+                parser.read_string(existing)
+                safe = (parser.has_section("tis-samba")
+                        and parser.get("tis-samba", "baseurl", fallback="") ==
+                            f"https://samba.tranquil.it/redhat{major}/samba-4.24/"
+                        and parser.get("tis-samba", "gpgcheck", fallback="") == "1"
+                        and parser.get("tis-samba", "gpgkey", fallback="") == f"file://{key_path}"
+                        and parser.get("tis-samba", "enabled", fallback="1") == "1")
+            except configparser.Error:
+                safe = False
+            if not safe:
+                log_error(f"{repo_path} já existe com outros parâmetros; revise-o manualmente.")
                 sys.exit(1)
         run_cmd(["install", "-d", "-m", "0755", "/etc/pki/rpm-gpg",
                  "/etc/yum.repos.d"], use_sudo=True)
         run_cmd(["curl", "--fail", "--location", "--show-error", "--silent",
                  "--output", key_path, key_url], use_sudo=True)
         run_cmd(["rpm", "--import", key_path], use_sudo=True)
-        run_cmd(["install", "-m", "0644", staged_path, repo_path], use_sudo=True)
+        if not repo_exists:
+            run_cmd(["install", "-m", "0644", staged_path, repo_path], use_sudo=True)
     finally:
         os.unlink(staged_path)
 
