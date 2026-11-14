@@ -68,7 +68,7 @@ class HostPreparationTests(unittest.TestCase):
         joined="\n".join(" ".join(cmd) for cmd,_ in commands)
         self.assertIn("RPM-GPG-KEY-TISSAMBA-10",joined)
         self.assertIn("dnf config-manager --set-enabled crb",joined)
-        self.assertIn("epel-release-latest-10.noarch.rpm",joined)
+        self.assertIn("dnf install -y epel-release",joined)
         self.assertIn("--enablerepo=crb install -y samba samba-dc",joined)
         self.assertIn("python3-setproctitle",joined)
         self.assertNotIn("systemctl start samba",joined)
