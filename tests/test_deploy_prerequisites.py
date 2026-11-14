@@ -21,11 +21,87 @@ class DeployPrerequisitesTests(unittest.TestCase):
         self.assertTrue(any("Daemon do Samba AD DC ausente" in line for line in logs))
         self.assertTrue(any("winbindd" in line for line in logs))
 
-    def test_missing_cargo_stops_before_deploy(self):
-        with patch.object(deploy.shutil,'which',side_effect=lambda name:None if name=='cargo' else '/usr/bin/'+name),\
-             patch.object(deploy,'log_error'),\
-             self.assertRaises(SystemExit):
+    def test_missing_cargo_triggers_install_before_deploy(self):
+        installed=set()
+        commands=[]
+        def which(name):
+            return None if name=='cargo' and name not in installed else '/usr/bin/'+name
+        def runner(command,**kwargs):
+            commands.append((command,kwargs))
+            if command[:3]==['dnf','install','-y']:
+                installed.add('cargo')
+            return True
+        with patch.object(deploy.shutil,'which',side_effect=which),\
+             patch.object(deploy,'detect_host_distribution',return_value=('almalinux','10',True)),\
+             patch.object(deploy,'run_cmd',side_effect=runner),\
+             patch.object(deploy,'log_warning'),\
+             patch.object(deploy,'log_success'):
             deploy.check_prerequisites()
+        self.assertIn((['dnf','install','-y','cargo'],{'use_sudo':True}),commands)
+
+    def test_missing_rust_cargo_node_npm_installs_once_with_sudo(self):
+        missing={'rustc','cargo','node','npm'}
+        installed=set()
+        calls=[]
+        def which(name):
+            return None if name in missing and name not in installed else '/usr/bin/'+name
+        def runner(args,**kwargs):
+            calls.append((args,kwargs))
+            if args[:3]==['dnf','install','-y']:
+                installed.update(missing)
+            return True
+        with patch.object(deploy.shutil,'which',side_effect=which),\
+             patch.object(deploy,'detect_host_distribution',return_value=('almalinux','10',True)),\
+             patch.object(deploy,'run_cmd',side_effect=runner),\
+             patch.object(deploy,'log_warning'),\
+             patch.object(deploy,'log_success'):
+            deploy.check_prerequisites()
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][0],['dnf','install','-y','cargo','nodejs','nodejs-npm','rust'])
+        self.assertTrue(calls[0][1]['use_sudo'])
+
+    def test_fedora_installs_nodejs_with_npm_bundled(self):
+        installed=set()
+        calls=[]
+        def which(name):
+            return None if name in ('node','npm') and name not in installed else '/usr/bin/'+name
+        def runner(args, **kwargs):
+            calls.append((args,kwargs))
+            installed.update(('node','npm'))
+            return True
+        with patch.object(deploy.shutil,'which',side_effect=which),\
+             patch.object(deploy,'detect_host_distribution',return_value=('fedora','44',False)),\
+             patch.object(deploy,'run_cmd',side_effect=runner),\
+             patch.object(deploy,'log_warning'),\
+             patch.object(deploy,'log_success'):
+            deploy.check_prerequisites()
+        self.assertEqual(calls[0][0],['dnf','install','-y','nodejs'])
+        self.assertTrue(calls[0][1]['use_sudo'])
+
+    def test_arch_uses_rust_not_rustc_package(self):
+        installed=set()
+        def which(name):
+            return None if name in ('cargo','rustc') and name not in installed else '/usr/bin/'+name
+        commands=[]
+        def runner(args,**kwargs):
+            commands.append((args,kwargs))
+            installed.update(('cargo','rustc'))
+            return True
+        with patch.object(deploy.shutil,'which',side_effect=which),\
+             patch.object(deploy,'detect_host_distribution',return_value=('arch','',False)),\
+             patch.object(deploy,'run_cmd',side_effect=runner),\
+             patch.object(deploy,'log_warning'),\
+             patch.object(deploy,'log_success'):
+            deploy.check_prerequisites()
+        self.assertEqual(commands[0][0],['pacman','-S','--needed','--noconfirm','rust'])
+        self.assertTrue(commands[0][1]['use_sudo'])
+
+    def test_existing_toolchain_is_not_installed_again(self):
+        with patch.object(deploy.shutil,'which',return_value='/usr/bin/tool'),\
+             patch.object(deploy,'run_cmd') as run,\
+             patch.object(deploy,'log_success'):
+            deploy.check_prerequisites()
+        run.assert_not_called()
 
 if __name__=='__main__':
     unittest.main()

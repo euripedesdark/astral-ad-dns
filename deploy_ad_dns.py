@@ -251,6 +251,57 @@ def prepare_ad_packages(os_release="/etc/os-release"):
     log_success("Samba AD DC e dependências validados. Serviço samba ainda não será iniciado: o wizard provisionará o domínio.")
 
 
+def install_missing_build_tools(missing):
+    """Install only missing compiler/web prerequisites using the host package manager.
+
+    No curl|sh, no global npm package install, and no replacement of existing
+    toolchains. Every package-manager operation is elevated separately.
+    """
+    missing = set(missing) & {"rustc", "cargo", "node", "npm", "git", "curl"}
+    if not missing:
+        return
+    distro, major, _ = detect_host_distribution()
+    if distro in ("arch", "archlinux"):
+        manager = "pacman"
+        package_map = {"rustc": "rust", "cargo": "rust", "node": "nodejs",
+                       "npm": "npm", "git": "git", "curl": "curl"}
+        command = ["pacman", "-S", "--needed", "--noconfirm"]
+    elif distro in ("fedora", "rhel", "almalinux", "rocky", "centos", "ol", "oracle"):
+        manager = "dnf"
+        npm_package = ("nodejs" if distro == "fedora" else
+                       "nodejs-npm" if major == "10" else "npm")
+        package_map = {"rustc": "rust", "cargo": "cargo", "node": "nodejs",
+                       "npm": npm_package, "git": "git", "curl": "curl"}
+        command = ["dnf", "install", "-y"]
+    elif distro in ("debian", "ubuntu", "linuxmint", "pop"):
+        manager = "apt-get"
+        package_map = {"rustc": "rustc", "cargo": "cargo", "node": "nodejs",
+                       "npm": "npm", "git": "git", "curl": "curl"}
+        command = ["apt-get", "install", "-y"]
+    elif distro in ("opensuse-leap", "opensuse-tumbleweed", "sles"):
+        manager = "zypper"
+        package_map = {"rustc": "rust", "cargo": "cargo", "node": "nodejs",
+                       "npm": "npm", "git": "git", "curl": "curl"}
+        command = ["zypper", "--non-interactive", "install"]
+    else:
+        log_error(f"Instalação automática das ferramentas não implementada em {distro}; nenhum pacote foi alterado.")
+        sys.exit(1)
+    if not shutil.which(manager):
+        log_error(f"Gerenciador {manager} não encontrado; não foi possível instalar: {', '.join(sorted(missing))}")
+        sys.exit(1)
+    packages = sorted({package_map[name] for name in missing})
+    log_warning("Ferramentas de build ausentes: " + ", ".join(sorted(missing)))
+    log_warning("Instalando pelo gerenciador da distribuição: " + ", ".join(packages))
+    if manager == "apt-get":
+        run_cmd(["apt-get", "update"], use_sudo=True)
+    run_cmd(command + packages, use_sudo=True)
+    remaining = [name for name in sorted(missing) if not shutil.which(name)]
+    if remaining:
+        log_error("Instalação incompleta; comandos ainda ausentes: " + ", ".join(remaining))
+        sys.exit(1)
+    log_success("Ferramentas de build instaladas e revalidadas.")
+
+
 def check_prerequisites():
     """Fail on build tools; report AD DC capability separately.
 
@@ -261,7 +312,10 @@ def check_prerequisites():
     required_build = ["rustc", "cargo", "node", "npm", "git", "curl"]
     missing = [tool for tool in required_build if not shutil.which(tool)]
     if missing:
-        log_error("Ferramentas obrigatorias para build/deploy ausentes: " + ", ".join(missing))
+        install_missing_build_tools(missing)
+    remaining = [tool for tool in required_build if not shutil.which(tool)]
+    if remaining:
+        log_error("Ferramentas de build/deploy ausentes após preparação: " + ", ".join(remaining))
         sys.exit(1)
 
     required_host = ["samba-tool", "testparm", "smbclient", "net",
