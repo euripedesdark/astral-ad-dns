@@ -155,7 +155,7 @@ def check_gpo_acl(request, run, partner):
         detail=str(error)
         if not any(item in detail for item in ('using SMB', 'NT_STATUS_IO_TIMEOUT', 'NT_STATUS_CONNECTION')):
             raise OperationError(
-                'ACL de GPO falhou apos SYSVOL via SMB ter sido validado. '
+                'ACL de GPO falhou antes da limpeza, apos SYSVOL via SMB ter sido validado. '
                 'Verifique permissoes reais do SYSVOL/GPO; nenhuma limpeza iniciada. ' + detail) from error
     # Pin the SMB destination while retaining the Samba authentication policy.
     # In particular, do not downgrade or disable Kerberos automatically.
