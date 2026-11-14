@@ -567,8 +567,9 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         bind_error = None
         if request.get('setup_bind_hybrid') and request['domain_role'] != 'MEMBER':
             try:
-                steps.extend(bind({'forwarders': request['upstream_forwarders']}, root, run))
-                forwarder = '127.0.0.1:5353'
+                bind_request={'forwarders': request['upstream_forwarders']}
+                steps.extend(bind(bind_request, root, run))
+                forwarder = '127.0.0.1:' + str(bind_request.get('bind_port', 5353))
             except Exception as error:
                 bind_error = str(error)
         text = tune_config(config.read_text(), forwarder, level)
