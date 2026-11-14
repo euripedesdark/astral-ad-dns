@@ -48,6 +48,40 @@ class SystemTests(unittest.TestCase):
         rules=system.firewall_rules('DC',True,9443)
         self.assertIn(['-p','tcp','--dport','9443','-j','ACCEPT'],rules)
         self.assertNotIn(['-p','tcp','--dport','8443','-j','ACCEPT'],rules)
+    def test_remote_ca_preflight_uses_pinned_fingerprint_and_no_ca_server(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);calls=[];steps=[]
+            fingerprint='a'*64
+            req={'setup_step_ca':True,'kind':'join','ca_url':'https://192.0.2.10:9444','ca_fingerprint':fingerprint}
+            def run(args):
+                calls.append(args)
+                if args[:2]==['env','STEPPATH='+args[1].split('=',1)[1]] and 'bootstrap' in args:
+                    path=Path(args[1].split('=',1)[1])/'certs/root_ca.crt'
+                    path.parent.mkdir(parents=True);path.write_text('trusted root')
+                if args[:3]==['openssl','x509','-in']:
+                    return 'sha256 Fingerprint='+':'.join(fingerprint[i:i+2] for i in range(0,64,2))
+                return ''
+            with patch.object(pki.shutil,'which',side_effect=lambda x:'/usr/bin/step' if x in ['step','step-cli'] else None):
+                pki.verify_remote_ca_before_join(req,root,run,steps)
+            self.assertTrue(any('bootstrap' in call for call in calls))
+            self.assertTrue(any(call[:3]==['/usr/bin/step','ca','health'] for call in calls))
+            self.assertFalse(any('step-ca' in call for call in calls))
+            self.assertTrue(any('validada automaticamente' in step for step in steps))
+
+    def test_remote_ca_preflight_rejects_mismatched_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            req={'setup_step_ca':True,'kind':'join','ca_url':'https://192.0.2.10:9444','ca_fingerprint':'a'*64}
+            def run(args):
+                if 'bootstrap' in args:
+                    path=Path(args[1].split('=',1)[1])/'certs/root_ca.crt'
+                    path.parent.mkdir(parents=True);path.write_text('wrong CA root')
+                if args[:3]==['openssl','x509','-in']:
+                    return 'sha256 Fingerprint='+('bb:'*31)+'bb'
+                return ''
+            with patch.object(pki.shutil,'which',side_effect=lambda x:'/usr/bin/step' if x in ['step','step-cli'] else None),self.assertRaisesRegex(OperationError,'Fingerprint da CA nao corresponde'):
+                pki.verify_remote_ca_before_join(req,root,run,[])
+
     def test_existing_ca_is_never_reinitialized(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=root/'etc/step-ca/config/ca.json';config.parent.mkdir(parents=True);config.write_text('{}')
