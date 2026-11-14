@@ -69,6 +69,7 @@ class SystemTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=root/'etc/step-ca/config/ca.json';config.parent.mkdir(parents=True);config.write_text(json.dumps({'address':':9443'}))
             ca=root/'etc/step-ca/certs/root_ca.crt';ca.parent.mkdir();ca.write_text('trusted root')
+            (ca.parent/'intermediate_ca.crt').write_text('-----BEGIN CERTIFICATE-----\ntrusted intermediate\n-----END CERTIFICATE-----\n')
             req={'setup_step_ca':True,'initialize_ca':False,'kind':'configure','cert_password':'pki-secret','host_ip':'192.0.2.20','hostname_fqdn':'dc.example.test','netbios_name':'DC','realm':'EXAMPLE.TEST'}
             def run(args):
                 if args[:3]==['step','ca','certificate']:
@@ -80,6 +81,12 @@ class SystemTests(unittest.TestCase):
             self.assertFalse(list((root/'etc/samba/tls').glob('astral-pki-*')))
             self.assertTrue((root/'etc/systemd/system/astral-ad-tls-renew.timer').exists())
             self.assertNotIn('pki-secret',(root/'etc/astral-ad-dns/tls-renew.json').read_text())
+            chain=(root/'etc/samba/tls/ca.crt').read_text()
+            self.assertIn('trusted intermediate',chain)
+            self.assertIn('trusted root',chain)
+            self.assertEqual((root/'etc/samba/tls/trusted-step-root.crt').read_text(),'trusted root')
+            self.assertEqual(json.loads((root/'etc/astral-ad-dns/tls-renew.json').read_text())['root'],
+                             str(root/'etc/samba/tls/trusted-step-root.crt'))
             self.assertIn(('tls enabled','yes'),pairs)
 
 if __name__=='__main__':unittest.main()
