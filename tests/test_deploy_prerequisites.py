@@ -57,7 +57,25 @@ class DeployPrerequisitesTests(unittest.TestCase):
              patch.object(deploy,'log_success'):
             deploy.check_prerequisites()
         self.assertEqual(len(calls),1)
-        self.assertEqual(calls[0][0],['dnf','install','-y','cargo','nodejs','npm','rust'])
+        self.assertEqual(calls[0][0],['dnf','install','-y','cargo','nodejs','nodejs-npm','rust'])
+        self.assertTrue(calls[0][1]['use_sudo'])
+
+    def test_fedora_installs_nodejs_with_npm_bundled(self):
+        installed=set()
+        calls=[]
+        def which(name):
+            return None if name in ('node','npm') and name not in installed else '/usr/bin/'+name
+        def runner(args, **kwargs):
+            calls.append((args,kwargs))
+            installed.update(('node','npm'))
+            return True
+        with patch.object(deploy.shutil,'which',side_effect=which),\
+             patch.object(deploy,'detect_host_distribution',return_value=('fedora','44',False)),\
+             patch.object(deploy,'run_cmd',side_effect=runner),\
+             patch.object(deploy,'log_warning'),\
+             patch.object(deploy,'log_success'):
+            deploy.check_prerequisites()
+        self.assertEqual(calls[0][0],['dnf','install','-y','nodejs'])
         self.assertTrue(calls[0][1]['use_sudo'])
 
     def test_arch_uses_rust_not_rustc_package(self):
