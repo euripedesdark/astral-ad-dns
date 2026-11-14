@@ -88,6 +88,15 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         }
     }
 
+    if !ad_configured {
+        // smb.conf can hold defaults for a file server or stale remnants of
+        // a previous domain. None are verified AD metadata without sam.ldb.
+        realm.clear();
+        workgroup.clear();
+        netbios_name.clear();
+        dns_forwarder.clear();
+    }
+
     let mut forest_level = String::new();
     let mut domain_level = String::new();
     if ad_configured {
