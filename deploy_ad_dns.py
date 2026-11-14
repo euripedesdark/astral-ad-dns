@@ -117,6 +117,111 @@ def verify_web_firewall():
     log_warning("Verifique a persistencia das regras iptables da distribuicao apos reiniciar.")
 
 
+# Packages requested for preparing an EL9/EL10 Samba AD Domain Controller.
+EL_AD_PACKAGES = (
+    "samba", "samba-dc", "samba-winbind", "samba-winbind-clients",
+    "krb5-workstation", "ldb-tools", "bind", "chrony", "bind-utils",
+    "samba-client", "python3-markdown", "python3-setproctitle",
+    "policycoreutils-python-utils",
+)
+
+
+def detect_host_distribution(os_release="/etc/os-release"):
+    """Read local distro metadata; never identify Fedora by RPM presence."""
+    values = {}
+    with open(os_release, encoding="utf-8") as source:
+        for line in source:
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.rstrip("\n").split("=", 1)
+                values[key] = value.strip().strip('"').strip("'")
+    distro = values.get("ID", "").lower()
+    like = values.get("ID_LIKE", "").lower().split()
+    major = values.get("VERSION_ID", "").split(".")[0]
+    if distro in ("fedora", "arch", "archlinux"):
+        return distro, major, False
+    is_el = distro in ("rhel", "almalinux", "rocky", "centos", "ol", "oracle")
+    is_el = is_el or "rhel" in like or "centos" in like
+    return distro, major, is_el
+
+
+def prepare_ad_packages(os_release="/etc/os-release"):
+    """Opt-in host setup before AD provisioning; never changes an existing DC."""
+    distro, major, is_el = detect_host_distribution(os_release)
+    if distro in ("fedora", "arch", "archlinux"):
+        log_success(f"{distro} {major}: repositórios Samba da distribuição preservados.")
+        return
+    if not is_el or major not in ("9", "10"):
+        log_error(f"Preparação AD não configurada para {distro} {major}; nenhuma alteração executada.")
+        sys.exit(1)
+    if os.path.isfile("/var/lib/samba/private/sam.ldb"):
+        log_error("AD local já possui sam.ldb; instalação/atualização automática de Samba bloqueada.")
+        sys.exit(1)
+    if not shutil.which("dnf") or not shutil.which("rpm"):
+        log_error("EL9/EL10 requerem dnf e rpm para preparar o Samba AD.")
+        sys.exit(1)
+
+    log_header(f"Preparando Samba AD DC para {distro} {major} (TIS Samba 4.24)")
+    # Every privileged operation explicitly goes through run_cmd(use_sudo=True).
+    run_cmd(["dnf", "install", "-y", "dnf-plugins-core"], use_sudo=True)
+    run_cmd(["dnf", "config-manager", "--set-enabled", "crb"], use_sudo=True)
+    if not run_cmd(["rpm", "-q", "epel-release"], use_sudo=True, check=False):
+        if not run_cmd(["dnf", "install", "-y", "epel-release"], use_sudo=True, check=False):
+            epel_url = (
+                "https://dl.fedoraproject.org/pub/epel/"
+                f"epel-release-latest-{major}.noarch.rpm"
+            )
+            run_cmd(["dnf", "install", "-y", epel_url], use_sudo=True)
+
+    key_url = f"https://samba.tranquil.it/RPM-GPG-KEY-TISSAMBA-{major}"
+    key_path = f"/etc/pki/rpm-gpg/RPM-GPG-KEY-TISSAMBA-{major}"
+    repo_path = "/etc/yum.repos.d/tissamba.repo"
+    repo_content = (
+        "[tis-samba]\n"
+        "name=tis-samba\n"
+        f"baseurl=https://samba.tranquil.it/redhat{major}/samba-4.24/\n"
+        "enabled=1\n"
+        "gpgcheck=1\n"
+        f"gpgkey=file://{key_path}\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8",
+                                     prefix="astral-tis-samba-", delete=False) as staged:
+        staged.write(repo_content)
+        staged_path = staged.name
+    try:
+        # Never silently replace another repo named tis-samba.
+        if os.path.exists(repo_path):
+            existing = run_cmd(["cat", repo_path], use_sudo=True, capture=True)
+            if existing.strip() != repo_content.strip():
+                log_error(f"{repo_path} já existe e difere da configuração esperada; revise-o manualmente.")
+                sys.exit(1)
+        run_cmd(["install", "-d", "-m", "0755", "/etc/pki/rpm-gpg",
+                 "/etc/yum.repos.d"], use_sudo=True)
+        run_cmd(["curl", "--fail", "--location", "--show-error", "--silent",
+                 "--output", key_path, key_url], use_sudo=True)
+        run_cmd(["rpm", "--import", key_path], use_sudo=True)
+        run_cmd(["install", "-m", "0644", staged_path, repo_path], use_sudo=True)
+    finally:
+        os.unlink(staged_path)
+
+    run_cmd(["dnf", "makecache", "--refresh"], use_sudo=True)
+    # On EL10, the distro package samba-winexe 4.23 pins libldb/libwbclient
+    # and conflicts with TIS Samba 4.24. Remove only this optional package.
+    if run_cmd(["rpm", "-q", "samba-winexe"], use_sudo=True, check=False):
+        log_warning("Removendo apenas samba-winexe antigo, incompatível com bibliotecas TIS Samba.")
+        run_cmd(["dnf", "remove", "-y", "samba-winexe"], use_sudo=True)
+
+    run_cmd(["dnf", "--enablerepo=crb", "install", "-y", *EL_AD_PACKAGES],
+            use_sudo=True)
+    for command in ("samba", "samba-tool", "named", "chronyd"):
+        if not shutil.which(command):
+            log_error(f"Preparo incompleto: executável ausente: {command}")
+            sys.exit(1)
+    run_cmd(["/usr/bin/python3", "-c", "import samba, ldb; from samba.samdb import SamDB"],
+            use_sudo=True)
+    log_success("Samba AD DC e dependências validados. Serviço samba ainda não será iniciado: o wizard provisionará o domínio.")
+
+
 def check_prerequisites():
     """Fail on build tools; report AD DC capability separately.
 
@@ -151,6 +256,8 @@ def check_prerequisites():
 def main():
     parser = argparse.ArgumentParser(description="Compilação, Deploy em Sistema e Sync Git do Astral AD & DNS")
     parser.add_argument("--repo-dir", default=REPO_DIR, help="Diretório raiz do repositório astral-ad-dns")
+    parser.add_argument("--prepare-ad", action="store_true", help="Preparar pacotes Samba AD em EL9/EL10 antes do deploy; requer sudo.")
+    parser.add_argument("--prepare-ad-only", action="store_true", help="Preparar apenas o host Samba AD; não executar build/deploy.")
     parser.add_argument("--skip-tests", action="store_true", help="Pular execução de testes unitários do cargo")
     parser.add_argument("--skip-git", action="store_true", help="Pular commit e push para o repositório Git")
     parser.add_argument("--commit-msg", help="Mensagem customizada para o commit no Git")
@@ -174,7 +281,12 @@ def main():
     print(f"  • Serviço Systemd   : {Colors.BOLD}{SYSTEMD_SERVICE}{Colors.RESET}")
     print(f"  • Porta Alvo        : {Colors.BOLD}8095 (HTTP / Axum REST){Colors.RESET}\n")
 
+    if args.prepare_ad_only:
+        prepare_ad_packages()
+        return
     check_prerequisites()
+    if args.prepare_ad:
+        prepare_ad_packages()
 
     # Validate all Python provisioning stacks before any build or deployment.
     # The web wizard must never ship a SyntaxError into /opt.
