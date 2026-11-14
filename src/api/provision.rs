@@ -18,6 +18,7 @@ pub struct PreflightCheck {
     pub ip_address: String,
     pub selinux_status: String,
     pub samba_installed: bool,
+    pub missing_dependencies: Vec<String>,
     pub bind_installed: bool,
     pub chrony_installed: bool,
     pub smb_conf_exists: bool,
@@ -103,23 +104,22 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
     let ad_is_active = check_service_active("samba", sudo) || check_service_active("samba-dc", sudo);
 
     let check_ports = vec![
-        (53, "tcp", "DNS (TCP)"),
-        (53, "udp", "DNS (UDP)"),
-        (88, "tcp", "Kerberos (TCP)"),
-        (88, "udp", "Kerberos (UDP)"),
-        (135, "tcp", "RPC EndPoint Mapper"),
-        (389, "tcp", "LDAP (TCP)"),
-        (389, "udp", "LDAP (UDP)"),
-        (445, "tcp", "SMB over TCP"),
-        (464, "tcp", "kpasswd"),
-        (636, "tcp", "LDAPS"),
-        (3268, "tcp", "Global Catalog"),
-        (8095, "tcp", "Astral Web Console"),
+        (53, "tcp", "DNS"), (53, "udp", "DNS"),
+        (88, "tcp", "Kerberos"), (88, "udp", "Kerberos"),
+        (123, "udp", "NTP"), (135, "tcp", "RPC"),
+        (137, "udp", "NetBIOS"), (138, "udp", "NetBIOS"),
+        (139, "tcp", "SMB"), (389, "tcp", "LDAP"),
+        (389, "udp", "LDAP"), (445, "tcp", "SMB"),
+        (464, "tcp", "kpasswd"), (464, "udp", "kpasswd"),
+        (636, "tcp", "LDAPS"), (3268, "tcp", "GC"),
+        (3269, "tcp", "GC LDAPS"), (8095, "tcp", "Astral"),
+        (49152, "tcp", "RPC high ports (range checked separately)"),
     ];
 
     let mut ports_open = Vec::new();
     for (port, proto, desc) in check_ports {
-        let chk = format!("iptables -C INPUT -p {} -m {} --dport {} -j ACCEPT 2>/dev/null", proto, proto, port);
+        let check_value = if port == 49152 { "49152:65535".to_string() } else { port.to_string() };
+        let chk = format!("iptables -C INPUT -p {} --dport {} -j ACCEPT 2>/dev/null", proto, check_value);
         let open = run_cmd_dry(&chk, sudo, false).success;
         ports_open.push(PortStatus {
             port,
@@ -129,7 +129,16 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
         });
     }
 
-    let ready_for_provision = samba_installed && !ad_is_active && !sam_ldb_exists;
+    let requirements = ["samba", "samba-tool", "testparm", "smbclient", "net", "winbindd",
+        "dig", "ip", "iptables", "iptables-save", "chronyd", "openssl", "curl",
+        "named", "named-checkconf"];
+    let missing_dependencies: Vec<String> = requirements.iter()
+        .filter(|name| !run_cmd_dry(&format!("command -v {} >/dev/null 2>&1", name), sudo, false).success)
+        .map(|name| name.to_string())
+        .collect();
+    // The wizard's backend validates dependencies again for the actual mode.
+    let ready_for_provision = samba_installed && missing_dependencies.is_empty()
+        && !ad_is_active && !sam_ldb_exists;
 
     // Verificação de integração do DNS do AD no DC2
     let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
@@ -145,6 +154,7 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
         ip_address,
         selinux_status,
         samba_installed,
+        missing_dependencies,
         bind_installed,
         chrony_installed,
         smb_conf_exists,
