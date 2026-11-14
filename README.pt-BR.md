@@ -13,6 +13,47 @@
 ![BIND](https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg)
 ![Web GUI](https://img.shields.io/badge/Web%20GUI-React%2018%20%2B%20Tailwind-blueviolet.svg)
 
+## Preparação do Samba AD DC por distribuição (antes do wizard)
+
+Para um **servidor novo, sem `sam.ldb`**, prepare os pacotes do Samba AD DC
+antes de abrir o assistente de criação de domínio:
+
+```bash
+# Configurar o repositório e instalar os pacotes, sem recompilar o painel
+python3 deploy_ad_dns.py --prepare-ad-only
+
+# Alternativa: preparar os pacotes e executar o deploy da interface
+python3 deploy_ad_dns.py --prepare-ad --skip-git
+```
+
+- **RHEL 10 / AlmaLinux 10 / Rocky Linux 10 / derivados EL10:** chave
+  `RPM-GPG-KEY-TISSAMBA-10` e repositório
+  `https://samba.tranquil.it/redhat10/samba-4.24/`.
+- **RHEL 9 / AlmaLinux 9 / Rocky Linux 9 / derivados EL9:** chave
+  `RPM-GPG-KEY-TISSAMBA-9` e repositório
+  `https://samba.tranquil.it/redhat9/samba-4.24/`.
+- **Fedora 44/45 e Arch Linux:** não adiciona repositórios externos nem
+  modifica pacotes. Utiliza as dependências disponibilizadas pela distribuição.
+
+O preparo usa `sudo` para **cada comando privilegiado**: CRB/CodeReady Builder,
+EPEL, download e importação da chave GPG, criação do arquivo de repositório
+e instalação dos pacotes `samba samba-dc samba-winbind samba-winbind-clients
+krb5-workstation ldb-tools bind chrony bind-utils samba-client
+python3-markdown`, além de `python3-setproctitle` (dependência do Samba DC
+TIS) e `policycoreutils-python-utils` (SELinux). Em EL, se o pacote opcional
+`samba-winexe` estiver instalado, ele é removido de forma específica para
+evitar dependências 4.23 travadas, sem executar `dnf remove samba*` nem
+`--allowerasing` geral.
+
+**Segurança e separação das etapas:** preparar o host não provisiona o domínio,
+não inicia o Samba AD e não instala Step-CA. O preparo recusa qualquer host que
+já possua `/var/lib/samba/private/sam.ldb`; manutenção de um DC existente exige
+processo próprio de atualização/backup. A criação do domínio é feita pelo wizard
+após as verificações de portas iptables; **somente depois de o Samba funcionar**
+a Step-CA será instalada para LDAPS. Um repositório de terceiros é confiado
+explicitamente pelo administrador que invoca `--prepare-ad`; valide a chave
+GPG e a procedência antes de usá-lo em produção.
+
 **Módulo Corporativo em Rust com Interface Web para Administração e Provisionamento do Samba 4 Active Directory 2016 e BIND 9 Híbrido** — Plataforma completa desenvolvida com base no guia técnico aprofundado de arquitetura corporativa em Linux (Fedora/Rocky Linux) de Euripedes Batista.
 
 Este projeto está sob **GNU AGPL v3**. Ver [`LICENSE.md`](LICENSE.md).
