@@ -4053,7 +4053,7 @@ function WizardModal({ onClose, t, showToast }) {
                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
                      <span className="font-bold text-slate-200">Dependências para novo domínio</span>
                      {preflight.missing_dependencies?.length ? (
-                       <p className="text-amber-300 text-xs">Ausentes: {preflight.missing_dependencies.join(', ')}. Instale antes de criar o domínio. Somente Step-CA será instalada pelo wizard depois do Samba estar ativo.</p>
+                       <p className="text-amber-300 text-xs">Ausentes: {preflight.missing_dependencies.join(', ')}. Instale antes de criar o domínio. Em EL9/EL10, use o preparo do host: python3 deploy_ad_dns.py --prepare-ad-only. O wizard instalará somente a Step-CA após Samba ativo.</p>
                      ) : (
                        <p className="text-emerald-300 text-xs">Samba, BIND, DNS, iptables, Chrony e OpenSSL: comandos verificados.</p>
                      )}
