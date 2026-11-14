@@ -113,7 +113,8 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
         (464, "tcp", "kpasswd"), (464, "udp", "kpasswd"),
         (636, "tcp", "LDAPS"), (3268, "tcp", "GC"),
         (3269, "tcp", "GC LDAPS"), (8095, "tcp", "Astral"),
-        (49152, "tcp", "RPC high ports (range checked separately)"),
+        (49152, "tcp", "RPC high ports (TCP 49152-65535)"),
+        (49152, "udp", "RPC high ports (UDP 49152-65535)"),
     ];
 
     let mut ports_open = Vec::new();
