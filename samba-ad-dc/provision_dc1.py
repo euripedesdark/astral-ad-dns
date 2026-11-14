@@ -1501,7 +1501,13 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             tls_pairs=configure_pki(request,root,run,services[0],steps)
             text=config.read_text()
             for key,value in tls_pairs:
-                text=re.sub(r'(?im)^\\s*'+re.escape(key)+r'\\s*=.*
+                text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
+                text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
+            atomic_write(config,text,0o644)
+            run(['systemctl','restart',services[0]])
+            if run(['systemctl','is-active',services[0]]).strip()!='active':
+                raise OperationError('Samba nao iniciou apos ativacao LDAPS; AD preservado para recuperacao.')
+            steps.append('Step-CA instalada e LDAPS configurado somente apos Samba AD ativo.')
         if request['domain_role'] == 'MEMBER':
             run(['net', 'ads', 'testjoin', '-s', str(config)])
             run(['chattr','+i',str(root/'etc/resolv.conf')])
