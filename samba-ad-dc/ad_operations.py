@@ -296,14 +296,11 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     port = choose_bind_port(root, run)
     # Never change a previously deployed BIND listener implicitly. A migration
     # from 15353 to 5353 is an explicit, separate maintenance procedure.
-    if root == Path('/') and not request.get('dry_run'):
-        import subprocess
-        current = subprocess.run(
-            ['testparm', '-s', '--parameter-name=dns forwarder'],
-            capture_output=True, text=True, check=False)
-        if current.returncode == 0:
-            old_forwarder = current.stdout.strip().splitlines()
-            old_value = old_forwarder[-1].strip() if old_forwarder else ''
+    if not request.get('dry_run'):
+        samba_config = root / 'etc/samba/smb.conf'
+        if samba_config.is_file():
+            forwarders = re.findall(r'(?im)^\s*dns forwarder\s*=\s*(\S+)', samba_config.read_text())
+            old_value = forwarders[-1] if forwarders else ''
             if old_value.startswith('127.0.0.1:') and old_value != '127.0.0.1:5353':
                 raise OperationError('O Samba ja encaminha para '+old_value+
                                      '. Migracao para 5353 exige manutencao '
