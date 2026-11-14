@@ -264,7 +264,7 @@ class OperationsTests(unittest.TestCase):
                 return ('dns_port_t udp 5353\nmdns_port_t udp 5353\n'
                         'other_port_t udp 15353\ncustom_port_t udp 15353\n')
             return ''
-        with self.assertRaisesRegex(operations.OperationError,'SELinux ambiguo'):
+        with self.assertRaisesRegex(operations.OperationError,'Porta alternativa'):
             operations.configure_bind({'forwarders':['9.9.9.9']},self.root,run)
         self.assertEqual(config.read_text(),original)
         self.assertFalse(any(args[:2]==['systemctl','restart'] or args[:2]==['semanage','port'] and '-m' in args for args in calls))
