@@ -646,17 +646,17 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           <div className="space-y-2">
             <div className="flex items-center gap-2.5">
               <span className="text-xs px-2.5 py-1 rounded-md bg-emerald-950 border border-emerald-700 text-emerald-400 font-mono font-bold uppercase tracking-wider">
-                Active Directory 2016
+                {status?.ad_configured ? `Active Directory ${status?.functional_level_domain || 'configurado'}` : 'Active Directory não provisionado'}
               </span>
               <span className="text-xs px-2.5 py-1 rounded-md bg-sky-950 border border-sky-700 text-sky-400 font-mono">
-                FQDN: {status?.hostname || 'dc-erp.srvcloud.cloud'}
+                Host: {status?.hostname || 'Não identificado'}
               </span>
             </div>
             <h2 className="text-2xl font-bold text-white tracking-tight">
-              {status?.realm || 'SRVCLOUD.CLOUD'}
+              {status?.ad_configured ? (status?.realm || 'Domínio não identificado') : 'Domínio não provisionado'}
             </h2>
             <p className="text-xs text-slate-400 max-w-xl">
-              Controlador de domínio Samba 4 AD DC com níveis funcionais de Floresta e Domínio elevados para 2016. Encaminhamento recursivo isolado via BIND 9 na porta 5353.
+              {status?.ad_configured ? 'Informações obtidas da configuração Samba e da base AD local.' : 'Este servidor ainda não possui um domínio Active Directory provisionado. Utilize o Assistente AD para criar ou ingressar em um domínio.'}
             </p>
           </div>
 
@@ -679,7 +679,7 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
               <span>{t.domainLevel} / {t.forestLevel}</span>
             </div>
             <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-800">
-              {status?.functional_level_domain || '2016'}
+              {status?.ad_configured ? (status?.functional_level_domain || 'Não identificado') : 'Não provisionado'}
             </span>
           </div>
           <div className="space-y-2 text-xs">
@@ -693,11 +693,11 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">{t.dnsForwarder}:</span>
-              <span className="font-mono text-cyan-400">{status?.dns_forwarder || '127.0.0.1:5353'}</span>
+              <span className="font-mono text-cyan-400">{status?.ad_configured ? (status?.dns_forwarder || 'Não configurado') : 'Não configurado'}</span>
             </div>
             <div className="flex justify-between py-1">
               <span className="text-slate-400">NetBIOS DC:</span>
-              <span className="font-mono text-slate-200">{status?.netbios_name || 'DC-ERP'}</span>
+              <span className="font-mono text-slate-200">{status?.ad_configured ? (status?.netbios_name || 'Não identificado') : 'Não provisionado'}</span>
             </div>
           </div>
         </div>
@@ -718,7 +718,7 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           <div className="space-y-2 text-xs">
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">{t.listenResource}:</span>
-              <span className="font-mono text-slate-200">127.0.0.1:5353</span>
+              <span className="font-mono text-slate-200">{status?.ad_configured ? (status?.dns_forwarder?.startsWith('127.0.0.1:') ? status.dns_forwarder : 'Não configurado') : 'Não configurado'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">Modo:</span>
@@ -751,19 +751,19 @@ function DashboardTab({ status, t, fetchStatus, showToast }) {
           <div className="space-y-2 text-xs">
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">{t.refSource}:</span>
-              <span className="font-mono text-slate-200">{status?.ntp?.reference_id || 'gps.nu.ntp.br'}</span>
+              <span className="font-mono text-slate-200">{status?.ntp?.reference_id || 'Desconhecido'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">Stratum:</span>
-              <span className="font-mono text-slate-200">{status?.ntp?.stratum || 2}</span>
+              <span className="font-mono text-slate-200">{status?.ntp?.stratum ?? '-'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/40">
               <span className="text-slate-400">{t.offset}:</span>
-              <span className="font-mono text-emerald-400">{status?.ntp?.offset || '< 0.2ms'}</span>
+              <span className="font-mono text-emerald-400">{status?.ntp?.offset || '-'}</span>
             </div>
             <div className="flex justify-between py-1">
               <span className="text-slate-400">{t.kerberosSocket}:</span>
-              <span className="font-mono text-slate-300">/var/lib/samba/ntp_signd</span>
+              <span className="font-mono text-slate-300">{status?.ad_configured ? '/var/lib/samba/ntp_signd' : 'Não configurado'}</span>
             </div>
           </div>
         </div>
@@ -2474,7 +2474,7 @@ function DnsTab({ t, showToast }) {
                   required 
                   value={recData} 
                   onChange={(e) => setRecData(e.target.value)} 
-                  placeholder={recType === 'A' ? '192.168.2.50' : 'destino.srvcloud.cloud'}
+                  placeholder={recType === 'A' ? '192.168.2.50' : 'destino.exemplo.test'}
                   className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
                 />
               </div>
@@ -3754,8 +3754,8 @@ function WizardModal({ onClose, t, showToast }) {
   const dnsBackend = 'SAMBA_INTERNAL';
 
   // Form
-  const [realm, setRealm] = useState('SRVCLOUD.CLOUD');
-  const [workgroup, setWorkgroup] = useState('SRVCLOUD');
+  const [realm, setRealm] = useState('');
+  const [workgroup, setWorkgroup] = useState('');
   const [primaryHostname, setPrimaryHostname] = useState('');
   const [primaryIp, setPrimaryIp] = useState('');
   const [overwriteExisting, setOverwriteExisting] = useState(false);
@@ -3943,7 +3943,7 @@ function WizardModal({ onClose, t, showToast }) {
         static_ip: primaryIp.trim(),
         admin_password: adminPassword,
         dns_backend: dnsBackend,
-        dns_forwarder: setupBind ? '127.0.0.1:5353' : '8.8.8.8',
+        dns_forwarder: setupBind ? '' : (upstreams[0] || ''),
         setup_bind_hybrid: setupBind,
       } : {
         realm,
