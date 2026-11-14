@@ -48,6 +48,23 @@ class SystemTests(unittest.TestCase):
         rules=system.firewall_rules('DC',True,9443)
         self.assertIn(['-p','tcp','--dport','9443','-j','ACCEPT'],rules)
         self.assertNotIn(['-p','tcp','--dport','8443','-j','ACCEPT'],rules)
+    def test_high_rpc_ports_tcp_udp_open_for_dc1_dc2_and_rodc(self):
+        import importlib.util
+        dc1_path=Path(__file__).resolve().parents[1]/'samba-ad-dc/provision_dc1.py'
+        spec=importlib.util.spec_from_file_location('dc1_firewall_stack',dc1_path)
+        dc1=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dc1)
+        high_tcp=['-p','tcp','--dport','49152:65535','-j','ACCEPT']
+        high_udp=['-p','udp','--dport','49152:65535','-j','ACCEPT']
+        for role in ('DC','RODC'):
+            for generator in (system.firewall_rules,dc1.firewall_rules):
+                with self.subTest(role=role, generator=generator.__module__):
+                    rules=generator(role,False)
+                    self.assertEqual(rules.count(high_tcp),1)
+                    self.assertEqual(rules.count(high_udp),1)
+                    self.assertIn(['-p','tcp','--dport','3268','-j','ACCEPT'],rules)
+                    self.assertIn(['-p','tcp','--dport','3269','-j','ACCEPT'],rules)
+
     def test_existing_ca_is_never_reinitialized(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=root/'etc/step-ca/config/ca.json';config.parent.mkdir(parents=True);config.write_text('{}')
