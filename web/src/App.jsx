@@ -2651,7 +2651,7 @@ function BindTab({ t, showToast }) {
   return (
     <div className="space-y-6">
       {bindStatus && <div className="text-xs space-y-2 p-4 bg-slate-900 border border-slate-700 rounded-xl">
-        <p>Serviço: {bindStatus.service_name} · Sintaxe: {bindStatus.syntax_valid ? 'válida' : 'verificar'} · Listener TCP/UDP: {bindStatus.listening_on_5353 ? 'ativo' : 'incompleto'} · Loopback: {bindStatus.loopback_only ? 'restrito' : 'verificar'}</p>
+        <p>Serviço: {bindStatus.service_name} · Endpoint: {bindStatus.listen_address || 'Não configurado'} · Sintaxe: {bindStatus.syntax_valid ? 'válida' : 'verificar'} · Listener TCP/UDP: {bindStatus.listening_on_5353 ? 'ativo' : 'incompleto'} · Loopback: {bindStatus.loopback_only ? 'restrito' : 'verificar'}</p>
         {(bindStatus.warnings || []).map((warning, index) => <p key={index} className="text-amber-300">{warning}</p>)}
       </div>}
       {/* Hybrid DNS Architectural Overview */}
@@ -2678,7 +2678,7 @@ function BindTab({ t, showToast }) {
           </div>
           <div className="bg-sky-950/60 border border-sky-700/60 p-3 rounded-lg space-y-1">
             <span className="text-[10px] text-sky-300 uppercase">BIND 9 Híbrido</span>
-            <div className="text-white font-bold">127.0.0.1:5353</div>
+            <div className="text-white font-bold">{bindStatus?.listen_address || "Não configurado"}</div>
             <span className="text-[10px] text-sky-400">Recursivo Seguro</span>
           </div>
           <div className="bg-slate-950 border border-slate-800 p-3 rounded-lg space-y-1">
