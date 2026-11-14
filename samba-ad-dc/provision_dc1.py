@@ -1169,12 +1169,25 @@ def verify_new_domain_prerequisites(root, run, bind_requested, steps):
             required.append('semanage')
     # Other supported installs may ship iptables-save under sbin.
     missing=[tool for tool in required if not shutil.which(tool)]
-    if missing:
+    if missing and missing != ['samba']:
         raise OperationError(
             'Novo dominio bloqueado antes do provisionamento: pacotes/comandos '
             'obrigatorios ausentes: '+', '.join(missing)+
             '. Instale pela distribuicao e execute a checagem novamente. '
             'Apenas Step-CA podera ser instalada durante o fluxo do wizard.')
+    # EL/RHEL commonly ships Samba clients and smbd but not the AD DC daemon.
+    # Never interpret 'rpm -q samba' or smb.service as a working AD DC.
+    if not shutil.which('samba'):
+        os_release=(root/'etc/os-release').read_text() if (root/'etc/os-release').is_file() else ''
+        el_variant=bool(re.search(r'(?m)^(?:ID|ID_LIKE)=.*(?:rhel|centos|rocky|almalinux)',os_release,re.I))
+        explanation=('Esta familia EL/RHEL pode fornecer Samba para compartilhamentos '
+                     'sem o daemon de controlador AD DC. ' if el_variant else '')
+        raise OperationError(
+            'Novo dominio bloqueado antes de qualquer alteracao: '
+            'daemon Samba AD DC ausente (comando samba). ' + explanation +
+            'O pacote samba, o servico smb/smbd e o samba-tool nao substituem '
+            'o controlador AD DC. Use distribuicao/build que forneca daemon e '
+            'unidade AD DC compativeis; nao crie unidade systemd apontando para smbd.')
     # Distros can ship binaries without the matching Samba Python modules.
     # The wizard later runs the local directory/GC logic with /usr/bin/python3.
     run(['/usr/bin/python3','-c',

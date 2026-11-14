@@ -112,29 +112,35 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
         return False
 
 def check_prerequisites():
-    """Valida ferramentas de build e dependencias AD antes do deploy do painel.
+    """Fail on build tools; report AD DC capability separately.
 
-    O instalador do painel nao instala Samba ou ferramentas de desenvolvimento.
-    Apenas Step-CA pode ser instalada posteriormente pelo wizard, depois do AD.
+    In RHEL/EL10, the samba RPM may provide smbd but not the 'samba'
+    AD-DC daemon. The panel must remain deployable to report that condition
+    in its wizard, without asserting that the installed package is a DC.
     """
-    required = {
-        "Build Rust": ["rustc", "cargo"],
-        "Build React": ["node", "npm"],
-        "Ferramentas do deploy": ["git", "curl"],
-        "Samba AD / identidade": ["samba", "samba-tool", "testparm", "smbclient", "net", "winbindd"],
-        "DNS e rede": ["dig", "ip", "iptables", "iptables-save"],
-        "Sincronizacao e criptografia": ["chronyd", "openssl"],
-    }
-    missing = {group: [tool for tool in tools if not shutil.which(tool)]
-               for group, tools in required.items()}
-    missing = {group: tools for group, tools in missing.items() if tools}
+    required_build = ["rustc", "cargo", "node", "npm", "git", "curl"]
+    missing = [tool for tool in required_build if not shutil.which(tool)]
     if missing:
-        for group, tools in missing.items():
-            log_error(f"{group}: dependencias ausentes: {', '.join(tools)}")
-        log_error("Instale os pacotes ausentes pelo gerenciador da distribuicao antes do deploy. "
-                  "Nenhum build, arquivo ou servico foi alterado.")
+        log_error("Ferramentas obrigatorias para build/deploy ausentes: " + ", ".join(missing))
         sys.exit(1)
-    log_success("Rust/Cargo, Node/npm, Samba AD, DNS, iptables, Chrony e OpenSSL verificados.")
+
+    required_host = ["samba-tool", "testparm", "smbclient", "net",
+                     "dig", "ip", "iptables", "iptables-save",
+                     "chronyd", "openssl"]
+    missing_host = [tool for tool in required_host if not shutil.which(tool)]
+    if missing_host:
+        log_warning("Ferramentas do host para o wizard AD/DNS ausentes: " + ", ".join(missing_host))
+        log_warning("O painel pode ser instalado, mas Novo dominio deve bloquear a "
+                    "configuracao ate completar os pre-requisitos.")
+
+    dc_binary = shutil.which("samba")
+    if not dc_binary:
+        log_warning("Daemon do Samba AD DC ausente (executavel 'samba'). "
+                    "Pacote RPM 'samba' e servico 'smb' nao equivalem ao runtime AD DC. "
+                    "O deploy da interface continua; a criacao do dominio deve ser bloqueada.")
+    else:
+        log_success("Daemon do Samba AD DC localizado: " + dc_binary)
+    log_success("Rust/Cargo, Node/npm e ferramentas de build verificadas.")
 
 def main():
     parser = argparse.ArgumentParser(description="Compilação, Deploy em Sistema e Sync Git do Astral AD & DNS")
