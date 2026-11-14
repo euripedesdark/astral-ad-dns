@@ -119,68 +119,41 @@ def credentials(request):
 
 
 def verify_partner_gpo(request, run):
-    """Check remote SYSVOL via SMB and then GPO ACLs before destructive steps.
+    """Read-only reachability check suitable for a host not yet joined to AD.
 
-    SMB must be validated separately because samba-tool gpo aclcheck reaches
-    SMB internally; a transport failure is not evidence of invalid ACLs.
+    The remote source DC should validate its own GPO ACLs. Samba's
+    'gpo aclcheck' is NOT a remote SYSVOL connectivity probe; its Python SMB
+    binding may fail on an unjoined host even when smbclient works.
     """
-    partner = request.get('target_dc_ip')
-    if request['domain_role'] == 'MEMBER' or not partner:
+    partner=request.get('target_dc_ip')
+    if request['domain_role']=='MEMBER' or not partner:
         return
     try:
-        run(['smbclient', '//' + partner + '/sysvol', '-I', partner,
-             '--client-protection=sign', '-c', 'ls'] + credentials(request))
+        run(['smbclient','//'+partner+'/sysvol','-I',partner,
+             '--client-protection=sign','-c','ls'] + credentials(request))
+        run(['smbclient','//'+partner+'/netlogon','-I',partner,
+             '--client-protection=sign','-c','ls'] + credentials(request))
     except OperationError as error:
         raise OperationError(
-            'Preflight SYSVOL/SMB do DC parceiro falhou antes da limpeza. '
-            'Verifique TCP 445 entre este servidor e ' + partner +
-            ', disponibilidade do compartilhamento SYSVOL, autenticacao SMB e '
-            'assinatura SMB. A falha nao comprova problema de ACL de GPO. '
-            + str(error)) from error
-    check_gpo_acl(request, run, partner)
+            'Preflight SYSVOL/NETLOGON SMB no DC parceiro falhou antes da limpeza. '
+            'Verifique porta 445, acesso aos compartilhamentos, credenciais '
+            'e assinatura SMB. Nenhuma limpeza iniciada. '+str(error)) from error
 
 
-def check_gpo_acl(request, run, partner):
-    """Verify GPO ACLs, with an explicitly targeted SMB retry if transport fails.
+def configure_sysvol(request,root,run,steps):
+    """Copy SYSVOL, set local ACLs and verify against the newly joined SAM DB."""
+    partner=request['target_dc_ip']
+    sysvol=root/'var/lib/samba/sysvol'
+    if not (root/'var/lib/samba/private/sam.ldb').is_file():
+        raise OperationError('Verificacao SYSVOL local exige sam.ldb apos o ingresso; nenhuma ACL sera alterada.')
+    sysvol.mkdir(parents=True,exist_ok=True)
+    run(['smbclient','//'+partner+'/sysvol','-I',partner,
+         '--client-protection=sign',
+         '-c','recurse ON; prompt OFF; lcd '+str(sysvol)+'; mget *'] + credentials(request))
+    run(['samba-tool','ntacl','sysvolreset'])
+    run(['samba-tool','ntacl','sysvolcheck'])
+    steps.append('SYSVOL copiado do parceiro; ACLs locais restauradas e validadas contra a base AD local apos o ingresso.')
 
-    A direct smbclient check alone is not sufficient: Samba's GPO Python SMB
-    client may select different credentials, a DC or a Kerberos mechanism.
-    Never treat a failed GPO ACL check as successful.
-    """
-    basic=['samba-tool', 'gpo', 'aclcheck', '-H', 'ldap://' + partner] + credentials(request)
-    try:
-        run(basic)
-        return
-    except OperationError as error:
-        detail=str(error)
-        if not any(item in detail for item in ('using SMB', 'NT_STATUS_IO_TIMEOUT', 'NT_STATUS_CONNECTION')):
-            raise OperationError(
-                'ACL de GPO falhou antes da limpeza, apos SYSVOL via SMB ter sido validado. '
-                'Verifique permissoes reais do SYSVOL/GPO; nenhuma limpeza iniciada. ' + detail) from error
-    # Pin the SMB destination while retaining the Samba authentication policy.
-    # In particular, do not downgrade or disable Kerberos automatically.
-    explicit=['samba-tool','gpo','aclcheck','-H','ldap://' + partner,
-              '--ipaddress='+partner] + credentials(request)
-    try:
-        run(explicit)
-    except OperationError as retry_error:
-        raise OperationError(
-            'SYSVOL acessivel com smbclient, mas samba-tool gpo aclcheck '
-            'falhou com a descoberta padrao e com IP explicito. '
-            'A verificacao das ACLs continua pendente e nenhuma limpeza foi iniciada. '
-            'Confira as configuracoes cliente Samba, versao das bibliotecas Python '
-            'Samba e politica de autenticacao SMB. Detalhe: '+str(retry_error)) from retry_error
-
-
-def configure_sysvol(request, root, run, steps):
-    partner = request['target_dc_ip']
-    sysvol = root / 'var/lib/samba/sysvol'
-    sysvol.mkdir(parents=True, exist_ok=True)
-    run(['smbclient', '//' + partner + '/sysvol', '--client-protection=sign',
-         '-c', 'recurse ON; prompt OFF; lcd ' + str(sysvol) + '; mget *'] + credentials(request))
-    run(['samba-tool', 'ntacl', 'sysvolreset'])
-    check_gpo_acl(request, run, partner)
-    steps.append('SYSVOL sincronizado; ACLs locais restauradas e GPOs do parceiro verificadas com credenciais administrativas.')
 
 
 def read_level(text):
