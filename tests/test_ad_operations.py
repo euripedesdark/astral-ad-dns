@@ -239,9 +239,9 @@ class OperationsTests(unittest.TestCase):
         def run(args):
             calls.append(args)
             if args==['semanage','port','-l']:
-                return ('dns_port_t tcp 53,5353\\n'
-                        'mdns_port_t udp 5353\\n'
-                        'custom_port_t udp 5353\\n')
+                return ('dns_port_t tcp 53,5353\n'
+                        'mdns_port_t udp 5353\n'
+                        'custom_port_t udp 5353\n')
             if args==['semanage','port','-l','-C']:
                 return ''
             return runner(args)
@@ -261,8 +261,8 @@ class OperationsTests(unittest.TestCase):
         def run(args):
             calls.append(args)
             if args==['semanage','port','-l']:
-                return ('dns_port_t udp 5353\\nmdns_port_t udp 5353\\n'
-                        'other_port_t udp 15353\\ncustom_port_t udp 15353\\n')
+                return ('dns_port_t udp 5353\nmdns_port_t udp 5353\n'
+                        'other_port_t udp 15353\ncustom_port_t udp 15353\n')
             return ''
         with self.assertRaisesRegex(operations.OperationError,'SELinux ambiguo'):
             operations.configure_bind({'forwarders':['9.9.9.9']},self.root,run)
