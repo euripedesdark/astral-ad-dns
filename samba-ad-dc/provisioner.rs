@@ -44,13 +44,19 @@ impl AdConfig {
             }
         }
 
+        // Fail closed: this standalone legacy provisioner must never create
+        // a developer's sample domain when values are omitted.
+        let required = |name: &str| -> Result<String, String> {
+            map.get(name).filter(|value| !value.trim().is_empty())
+                .cloned().ok_or_else(|| format!("Campo obrigatorio ausente em {}: {}", path, name))
+        };
         Ok(Self {
-            hostname_completo: map.get("HOSTNAME_COMPLETO").cloned().unwrap_or_else(|| "dc1.srvcloud.cloud".into()),
-            nome_netbios: map.get("NOME_NETBIOS").cloned().unwrap_or_else(|| "SRVCLOUD".into()),
-            realm: map.get("REALM").cloned().unwrap_or_else(|| "SRVCLOUD.CLOUD".into()),
-            ip_estatico: map.get("IP_ESTATICO").cloned().unwrap_or_else(|| "192.168.2.2".into()),
-            interface_rede: map.get("INTERFACE_REDE").cloned().unwrap_or_else(|| "eth0".into()),
-            senha_admin: map.get("SENHA_ADMIN").cloned().unwrap_or_else(|| "Copa@@2026".into()),
+            hostname_completo: required("HOSTNAME_COMPLETO")?,
+            nome_netbios: required("NOME_NETBIOS")?,
+            realm: required("REALM")?,
+            ip_estatico: required("IP_ESTATICO")?,
+            interface_rede: required("INTERFACE_REDE")?,
+            senha_admin: required("SENHA_ADMIN")?,
             cert_pwd: map.get("CERT_PWD").cloned(),
         })
     }
@@ -204,18 +210,10 @@ fn main() {
     };
 
     let cfg = match AdConfig::load_from_env_file(env_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[AVISO] Usando configuração padrão: {}", e);
-            AdConfig {
-                hostname_completo: "dc1.srvcloud.cloud".into(),
-                nome_netbios: "SRVCLOUD".into(),
-                realm: "SRVCLOUD.CLOUD".into(),
-                ip_estatico: "192.168.2.2".into(),
-                interface_rede: "eth0".into(),
-                senha_admin: "Copa@@2026".into(),
-                cert_pwd: Some("Btf1_Mk3".into()),
-            }
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("[ERRO] Provisionamento bloqueado: {}", error);
+            std::process::exit(1);
         }
     };
 

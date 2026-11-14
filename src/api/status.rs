@@ -49,12 +49,21 @@ pub struct CheckResultItem {
 
 pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResponse> {
     let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
+
 
     let smb_conf_path = "/etc/samba/smb.conf";
     let smb_content = fs::read_to_string(smb_conf_path).unwrap_or_default();
-    let ad_configured = smb_content.contains("server role = active directory domain controller")
-        || smb_content.contains("server role = active directory");
+    // A template smb.conf is not proof of an initialized AD database.
+    let has_ad_role = smb_content.lines().any(|line| {
+        let line = line.trim();
+        !line.starts_with('#') && !line.starts_with(';')
+            && line.split_once('=').map_or(false, |(key, value)|
+                key.trim().eq_ignore_ascii_case("server role")
+                && (value.trim().eq_ignore_ascii_case("active directory domain controller")
+                    || value.trim().eq_ignore_ascii_case("active directory")))
+    });
+    let ad_configured = has_ad_role
+        && std::path::Path::new("/var/lib/samba/private/sam.ldb").is_file();
 
     let mut realm = String::new();
     let mut workgroup = String::new();
@@ -79,8 +88,17 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         }
     }
 
-    let mut forest_level = "2016".to_string();
-    let mut domain_level = "2016".to_string();
+    if !ad_configured {
+        // smb.conf can hold defaults for a file server or stale remnants of
+        // a previous domain. None are verified AD metadata without sam.ldb.
+        realm.clear();
+        workgroup.clear();
+        netbios_name.clear();
+        dns_forwarder.clear();
+    }
+
+    let mut forest_level = String::new();
+    let mut domain_level = String::new();
     if ad_configured {
         let level_cmd = "samba-tool domain level show";
         let res = run_safe_cmd(level_cmd, sudo);
@@ -150,15 +168,8 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         let c_res = run_safe_cmd("samba-tool computer list", sudo);
         computers_count = c_res.stdout.lines().filter(|l| !l.trim().is_empty()).count();
 
-        let z_cmd = format!("samba-tool dns zonelist 127.0.0.1 -U administrator --password='{}'", admin_pass);
-        let z_res = run_safe_cmd(&z_cmd, sudo);
-        for line in z_res.stdout.lines() {
-            if line.contains("zone(s) found") {
-                if let Some(num_str) = line.split_whitespace().next() {
-                    zones_count = num_str.parse().unwrap_or(0);
-                }
-            }
-        }
+        // Avoid putting any administrative password in a subprocess command.
+        // DNS zone totals need an authenticated endpoint with secure credential handling.
     }
 
     let host_res = run_safe_cmd("hostname -f 2>/dev/null || hostname", sudo);
@@ -202,12 +213,12 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
 pub async fn run_quick_checks(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<CheckResultItem>>> {
     let sudo = config.sudo_password.as_deref();
     let smb_content = fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
-    let realm = smb_content
-        .lines()
-        .find(|l| l.trim().to_lowercase().starts_with("realm"))
-        .and_then(|l| l.split_once('='))
-        .map(|(_, v)| v.trim().to_lowercase())
-        .unwrap_or_else(|| "srvcloud.cloud".to_string());
+    let realm = smb_content.lines()
+        .filter(|line| !line.trim().starts_with('#') && !line.trim().starts_with(';'))
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case("realm"))
+        .map(|(_, value)| value.trim().to_lowercase())
+        .unwrap_or_default();
 
     let mut results = Vec::new();
 
@@ -256,6 +267,8 @@ pub async fn run_quick_checks(State(config): State<Arc<AppConfig>>) -> Json<ApiR
     });
 
     // 5. SRV Records (_ldap._tcp, _kerberos._tcp)
+    if !realm.is_empty()
+        && std::path::Path::new("/var/lib/samba/private/sam.ldb").is_file() {
     for srv in ["_ldap._tcp", "_kerberos._tcp", "_kerberos._udp", "_kpasswd._udp"] {
         let t0 = Instant::now();
         let cmd = format!("host -t SRV {}.{} 127.0.0.1 2>&1", srv, realm);
@@ -267,6 +280,8 @@ pub async fn run_quick_checks(State(config): State<Arc<AppConfig>>) -> Json<ApiR
             output: if rx.success { "Registro SRV resolvido com sucesso".to_string() } else { rx.stdout },
             latency_ms: t0.elapsed().as_millis() as u64,
         });
+    }
+
     }
 
     Json(ApiResponse {

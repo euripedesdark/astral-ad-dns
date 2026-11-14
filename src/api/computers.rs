@@ -140,13 +140,13 @@ pub async fn get_computer_properties(
             .join(".")
             .to_uppercase()
     } else {
-        "SRVCLOUD.CLOUD".to_string()
+        String::new()
     };
 
     let fqdn = if !dns_hostname.is_empty() {
         dns_hostname
     } else {
-        format!("{}.{}", clean_name.to_lowercase(), realm.to_lowercase())
+        if realm.is_empty() { clean_name.to_lowercase() } else { format!("{}.{}", clean_name.to_lowercase(), realm.to_lowercase()) }
     };
 
     // 3. Resolução de IP
@@ -162,7 +162,7 @@ pub async fn get_computer_properties(
         }
     } else {
         // Tenta resolver via DNS primário/local
-        let dns_res = run_cmd_dry(&format!("host '{}' 192.168.2.10 2>/dev/null || host '{}' 127.0.0.1 2>/dev/null", fqdn, fqdn), sudo, false);
+        let dns_res = run_cmd_dry(&format!("host {} 127.0.0.1 2>/dev/null", shell_quote(&fqdn)), sudo, false);
         for l in dns_res.stdout.lines() {
             if l.contains("has address") {
                 if let Some(ip) = l.split_whitespace().last() {

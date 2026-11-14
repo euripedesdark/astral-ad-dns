@@ -140,10 +140,11 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
     let ready_for_provision = samba_installed && missing_dependencies.is_empty()
         && !ad_is_active && !sam_ldb_exists;
 
-    // Verificação de integração do DNS do AD no DC2
-    let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-    let ad_dns_configured = resolv_content.contains("192.168.2.10") || resolv_content.contains("127.0.0.1");
-    let ad_dns_resolves = run_cmd_dry("host -t srv _ldap._tcp.dc._msdcs.srvcloud.cloud 2>/dev/null", sudo, false).success;
+    // The generic preflight has no partner or realm: do not probe a
+    // developer's former domain or equate loopback DNS with AD membership.
+    // Target-specific discovery belongs to verify_ad_dns with explicit inputs.
+    let ad_dns_configured = false;
+    let ad_dns_resolves = false;
     // Nunca embutir credenciais administrativas no codigo ou nos processos de diagnostico.
     // A presenca de um DC remoto exige consulta autenticada dedicada; nao inferir sucesso.
     let dc2_dns_added = false;
