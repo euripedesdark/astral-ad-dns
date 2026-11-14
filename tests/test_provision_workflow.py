@@ -256,59 +256,36 @@ class WorkflowTests(unittest.TestCase):
         host=Host(self.root,fail=lambda args:args[:1]==['smbclient'])
         result=self.execute(host=host)
         self.assertFalse(result['success'])
-        self.assertIn('TCP 445',result['message'])
-        self.assertIn('SYSVOL/SMB',result['message'])
+        self.assertIn('SYSVOL/NETLOGON SMB',result['message'])
         self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
         self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
         self.assertEqual(self.db.read_text(),'old database')
 
-    def test_sysvol_check_is_directed_at_partner_ip(self):
+    def test_prejoin_checks_both_shares_without_gpo_aclcheck(self):
         host=Host(self.root)
         result=self.execute(host=host)
         self.assertTrue(result['success'],result)
         probes=[args for args in host.calls if args[:1]==['smbclient'] and '-c' in args and 'ls' in args]
-        self.assertEqual(len(probes),1)
-        self.assertIn('//192.0.2.10/sysvol',probes[0])
-        self.assertEqual(probes[0][probes[0].index('-I')+1],'192.0.2.10')
-        self.assertLess(host.calls.index(probes[0]),next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','gpo','aclcheck']))
+        self.assertEqual(len(probes),2)
+        for share in ('sysvol','netlogon'):
+            found=next(args for args in probes if '//192.0.2.10/'+share in args)
+            self.assertEqual(found[found.index('-I')+1],'192.0.2.10')
+        self.assertFalse(any(args[:3]==['samba-tool','gpo','aclcheck'] for args in host.calls))
+        self.assertIn(['samba-tool','ntacl','sysvolcheck'],host.calls)
+        join_idx=next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','domain','join'])
+        acl_idx=host.calls.index(['samba-tool','ntacl','sysvolcheck'])
+        self.assertLess(join_idx,acl_idx)
 
-    def test_gpo_smb_transport_error_retries_with_pinned_ip(self):
-        host=Host(self.root)
-        def run(args):
-            if args[:3]==['samba-tool','gpo','aclcheck'] and not any(a.startswith('--ipaddress=') for a in args):
-                raise OperationError("ERROR: Error connecting to '192.0.2.10' using SMB")
-            return host(args)
-        result=self.execute(host=run)
-        self.assertTrue(result['success'],result)
-        retries=[args for args in host.calls if args[:3]==['samba-tool','gpo','aclcheck']]
-        self.assertTrue(retries)
-        self.assertTrue(all('--ipaddress=192.0.2.10' in args for args in retries))
-        self.assertFalse(any('--use-kerberos=off' in args for args in retries))
-
-    def test_gpo_smb_retry_failure_does_not_demote(self):
-        host=Host(self.root)
-        def run(args):
-            if args[:3]==['samba-tool','gpo','aclcheck']:
-                raise OperationError("ERROR: Error connecting to '192.0.2.10' using SMB")
-            return host(args)
-        result=self.execute(host=run)
-        self.assertFalse(result['success'])
-        self.assertIn('verificacao das ACLs continua pendente',result['message'])
-        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
-        self.assertEqual(self.db.read_text(),'old database')
-
-    def test_gpo_permission_failure_is_detected_before_stop_or_demotion(self):
-        host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','gpo','aclcheck'])
+    def test_post_join_sysvolcheck_failure_preserves_membership(self):
+        host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','ntacl','sysvolcheck'])
         result=self.execute(host=host)
         self.assertFalse(result['success'])
-        self.assertIn('antes da limpeza',result['message'])
-        self.assertEqual(self.db.read_text(),'old database')
-        self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
-        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
-        check=next(args for args in host.calls if args[:3]==['samba-tool','gpo','aclcheck'])
-        self.assertIn('ldap://192.0.2.10',check)
-        self.assertIn('-UAdministrator',check)
-        self.assertIn('--password=secret-test-only',check)
+        self.assertTrue(result['joined'])
+        self.assertTrue(result['configuration_pending'])
+        self.assertFalse(result['recovery_required'])
+        self.assertTrue((Path(result['backup_path'])/'previous-state.tar.gz').exists())
+        self.assertTrue(any(args[:3]==['samba-tool','ntacl','sysvolcheck'] for args in host.calls))
+        self.assertFalse(any(args[:3]==['samba-tool','gpo','aclcheck'] for args in host.calls))
 
     def test_post_join_sysvol_failure_preserves_membership_and_reapply_retries_sysvol(self):
         host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','ntacl','sysvolreset'])
