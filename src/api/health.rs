@@ -181,13 +181,34 @@ pub async fn run_sysvolreset(State(config): State<Arc<AppConfig>>) -> (StatusCod
 }
 
 pub async fn get_powershell_sync_script(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<String>> {
-    let realm = config.admin_password.as_deref().unwrap_or("SRVCLOUD.CLOUD");
+    // Use the local provisioned domain, not an admin password or a sample realm.
+    let smb_conf = std::fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
+    let realm = smb_conf.lines()
+        .filter(|line| !line.trim().starts_with('#') && !line.trim().starts_with(';'))
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case("realm"))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    let configured = std::path::Path::new("/var/lib/samba/private/sam.ldb").is_file()
+        && !realm.is_empty();
+    if !configured {
+        return Json(ApiResponse {
+            success: false,
+            message: "Dominio AD ainda nao provisionado; script SYSVOL indisponivel.".to_string(),
+            data: None,
+            dry_run: false,
+            correlation_id: None,
+        });
+    }
+    let sudo = config.sudo_password.as_deref();
+    let primary_dc = run_cmd_dry("hostname -f 2>/dev/null || hostname", sudo, false)
+        .stdout.trim().to_string();
     let script = format!(r#"# ==============================================================================
 # Samba AD DC to Windows Server DC2 SYSVOL Replication Script
 # Baseado na Arquitetura Euripedes Batista - Samba 4 AD Hardened (Part 18.9)
 # ==============================================================================
 param(
-    [string]$PrimaryDC = "dc-erp.srvcloud.cloud",
+    [string]$PrimaryDC = "{}",
     [string]$Domain = "{}",
     [string]$LocalSysvol = "C:\Windows\SYSVOL\sysvol"
 )
@@ -234,7 +255,7 @@ try {{
 }} catch {{
     Write-Log "ERRO CRÍTICO durante sincronização SYSVOL: $_"
 }}
-"#, realm);
+"#, primary_dc, realm);
 
     Json(ApiResponse {
         success: true,
