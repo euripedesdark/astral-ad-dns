@@ -546,7 +546,7 @@ def transition_controller(request):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('operation', choices=['restore', 'bind', 'demote', 'transition', 'forensic', 'provision'])
+    parser.add_argument('operation', choices=['restore', 'bind', 'demote', 'transition', 'forensic', 'provision', 'pki'])
     parser.add_argument('--request')
     parser.add_argument('--request-stdin', action='store_true')
     args = parser.parse_args()
@@ -568,6 +568,11 @@ def main():
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if args.operation == 'pki':
+                from pki_management import execute
+                data = execute(request)
+                print(json.dumps({'success': True, 'data': data}, ensure_ascii=False))
+                return
             if args.operation == 'provision':
                 if request.get('kind') == 'new':
                     from provision_dc1 import execute
