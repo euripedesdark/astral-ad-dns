@@ -13,7 +13,7 @@ import time
 import uuid
 from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
-from provision_pki import configure_pki
+from provision_pki import configure_pki, verify_remote_ca_before_join
 from provision_tls import prepare_existing_tls, install_existing_tls
 
 SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'chrony', 'chronyd']
@@ -384,7 +384,307 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request['kind']=='join' and not (local_db or joined_member) and not request.get('rejoin'):
             account=optional(run,['samba-tool','computer','show',request['netbios_name'],'-H','ldap://'+request['target_dc_ip']]+credentials(request))
             if account: raise OperationError('Ja existe uma conta com este nome no AD. Selecione Reingresso para autorizar sua substituicao apos backup.')
-        previous_tls = re.findall(r'(?im)^\s*(tls (?:enabled|keyfile|certfile|cafile|verify peer))\s*=\s*(.+)$',config.read_text()) if config.exists() else []
+        # The GUI checks the CA and pins trust BEFORE any Samba stop, demotion or cleanup.
+        verify_remote_ca_before_join(request,root,run,steps)
+        previous_tls = re.findall(r'(?im)^\s*(tls (?:enabled|keyfile|certfile|cafile|verify peer))\s*=\s*(.+)
+        manifest.update(old_name=old_name, old_realm=old_realm, target_role=request['domain_role'], partner=request.get('target_dc_ip',''), forwarders=request['upstream_forwarders'], setup_bind_hybrid=request.get('setup_bind_hybrid',False),global_catalog=request.get('global_catalog',True))
+        save_manifest(backup, manifest)
+        if request['kind'] != 'configure':
+            stop_names={'samba','samba-ad-dc','samba-dc','smb','smbd','nmb','nmbd','winbind'}
+            if request['domain_role']!='MEMBER': stop_names.update(['named','bind9','systemd-resolved'])
+            for name, state in states.items():
+                if state['active'] and name in stop_names:
+                    run(['systemctl', 'stop', name])
+            stopped = True
+            snapshot(root, backup, True)
+            manifest['captured_paths'] = PATHS
+        archive = backup / 'previous-state.tar.gz'
+        with tarfile.open(archive, 'w:gz', dereference=False) as tar:
+            tar.add(backup / 'files', arcname='files')
+        archive.chmod(0o600)
+        digest = hashlib.sha256()
+        with archive.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024*1024), b''):
+                digest.update(block)
+        manifest['archive_sha256'] = digest.hexdigest()
+        with tarfile.open(archive) as tar:
+            if not tar.getmembers():
+                raise OperationError('Backup automatico vazio; limpeza bloqueada.')
+        manifest['phase'] = 'backup_verified'
+        save_manifest(backup, manifest)
+        steps.append('Backup verificado (SHA256); base/configuracao anteriores preservadas antes de qualquer limpeza.')
+        if request['kind'] in ['join','new']:
+            resolver=root/'etc/resolv.conf'
+            optional(run,['chattr','-i',str(resolver)])
+            remove(resolver)
+            servers=[request['target_dc_ip']] if request['kind']=='join' else request['upstream_forwarders']
+            atomic_write(resolver,'search '+request['realm'].lower()+'\n'+''.join('nameserver '+server+'\n' for server in servers),0o644)
+        if request.get('setup_step_ca') and request.get('initialize_ca') and (root/'etc/step-ca/config/ca.json').exists():
+            address=json.loads((root/'etc/step-ca/config/ca.json').read_text()).get('address','')
+            if ':' in address: request['ca_port']=int(address.rsplit(':',1)[1])
+        configure_firewall(request, root, backup, run, steps)
+        primary_tls = []
+        if request['kind']=='new':
+            if request.get('overwrite_existing'):
+                manifest['phase']='replacing_local_domain'
+                save_manifest(backup,manifest)
+                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
+                    remove(root/relative)
+                (root/'var/lib/samba').mkdir(parents=True,exist_ok=True)
+                (root/'etc/samba').mkdir(parents=True,exist_ok=True)
+                previous_tls=[]
+                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
+            configure_identity(request,root,run,steps)
+            if request.get('setup_step_ca'):
+                manifest['phase']='primary_pki'
+                save_manifest(backup,manifest)
+                remote_mutated=True  # Preserve any newly created CA on later failure.
+                primary_tls=configure_pki(request,root,run,unit(run,['samba','samba-ad-dc','samba-dc']),steps)
+            configure_ntp(request,root,run,steps)
+        elif request['kind']=='configure':
+            candidates=local_ipv4s(run)
+            request['host_ip']=request.get('static_ip') or next((value for value in candidates if value.count('.')==3),'')
+            request['hostname_fqdn']=(old_name or request['netbios_name']).lower()+'.'+request['realm'].lower()
+        if request['kind'] == 'join':
+            partner = request['target_dc_ip']
+            # Detect an account left by a failed join as well as a currently provisioned DC.
+            account = optional(run, ['samba-tool', 'computer', 'show', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
+            is_dc = bool(re.search(r'(?im)^primaryGroupID:\s*(516|521)\s*$', account))
+            if is_dc or local_db:
+                manifest['phase'] = 'demotion_attempted'
+                save_manifest(backup, manifest)
+                remote_mutated = True  # A failed demotion can still have replicated partial changes.
+                dc_stopped = True
+                try:
+                    if not local_db:
+                        raise OperationError('Existe uma conta DC no parceiro, mas nao existe sam.ldb local para despromocao normal.')
+                    # The offline snapshot is complete. Native demotion asks the
+                    # partner to pull final changes from this DC via DRS RPC.
+                    # Samba must run for that synchronization, even though it
+                    # must be stopped again before any cleanup or dead-DC removal.
+                    dc_service = unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])
+                    try:
+                        dc_stopped = False
+                        run(['systemctl', 'start', dc_service])
+                        if run(['systemctl', 'is-active', dc_service]).strip() != 'active':
+                            raise OperationError('Samba local nao ficou ativo para a despromocao: ' + dc_service)
+                        steps.append('Backup offline concluido; Samba local ativo para sincronizacao final da despromocao.')
+                        run(['samba-tool', 'domain', 'demote', '--server=' + partner, '-s', str(config)] + credentials(request))
+                    finally:
+                        run(['systemctl', 'stop', dc_service])
+                        dc_stopped = True
+                except OperationError as demotion_error:
+                    if not dc_stopped:
+                        raise OperationError('Nao foi possivel parar o Samba apos tentativa de despromocao; limpeza bloqueada. ' + str(demotion_error)) from demotion_error
+                    if not request.get('clean_existing'):
+                        raise OperationError('Despromocao nao concluiu. Causa: ' + str(demotion_error) +
+                                             '. Backup preservado; se a base/conta anterior estiver inutilizavel, autorize a limpeza de registros orfaos na interface e retome o reingresso.') from demotion_error
+                    steps.append('Despromocao normal indisponivel; limpeza do DC anterior explicitamente autorizada, com Samba local parado.')
+                    run(['samba-tool', 'domain', 'demote', '--remove-other-dead-server=' + (old_name or request['netbios_name']), '-H', 'ldap://' + partner] + credentials(request))
+                steps.append('DC secundario anterior despromovido; funcoes FSMO do parceiro preservadas.')
+            elif account:
+                remote_mutated = True
+                run(['samba-tool', 'computer', 'delete', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
+            for relative in ['var/lib/samba', 'var/cache/samba', 'etc/samba/smb.conf']:
+                remove(root / relative)
+            (root / 'etc/samba').mkdir(parents=True, exist_ok=True)
+            (root / 'var/lib/samba').mkdir(parents=True, exist_ok=True)
+            steps.append('Estado Samba anterior limpo somente apos backup e despromocao/remocao da conta local.')
+            configure_identity(request,root,run,steps)
+            resolver = root / 'etc/resolv.conf'
+            optional(run, ['chattr', '-i', str(resolver)])
+            remove(resolver)
+            atomic_write(resolver, 'search ' + request['realm'].lower() + '\nnameserver ' + partner + '\n', 0o644)
+            configure_ntp(request,root,run,steps)
+            args = ['samba-tool', 'domain', 'join', request['realm'], request['domain_role'], '--server=' + partner,
+                    '--realm=' + request['realm'], '--option=netbios name = ' + request['netbios_name']]
+            if request['domain_role'] != 'MEMBER':
+                args += ['--dns-backend=SAMBA_INTERNAL', '--option=ad dc functional level = ' + level]
+            manifest['phase'] = 'join_attempted'
+            save_manifest(backup, manifest)
+            remote_mutated = True
+            run(args + credentials(request))
+            manifest['joined'] = True
+            save_manifest(backup,manifest)
+            if request['domain_role'] != 'MEMBER':
+                manifest['phase'] = 'sysvol_configuration'
+                save_manifest(backup, manifest)
+                configure_sysvol(request, root, run, steps)
+        elif request['kind'] == 'new':
+            remove(config)
+            manifest['phase'] = 'provision_attempted'
+            save_manifest(backup, manifest)
+            run(['samba-tool', 'domain', 'provision', '--use-rfc2307', '--realm=' + request['realm'],
+                 '--domain=' + request['workgroup'].upper(), '--server-role=dc', '--dns-backend=SAMBA_INTERNAL',
+                 '--option=netbios name = ' + request['netbios_name'], '--adminpass=' + request['admin_password']])
+            level = '2016'
+            manifest['joined'] = True
+            remote_mutated = True
+            save_manifest(backup,manifest)
+        if request['kind'] == 'configure' and request['domain_role'] != 'MEMBER' and request.get('target_dc_ip'):
+            remote_mutated = True  # SYSVOL ACL reset must not restore a raw old database.
+            manifest['phase'] = 'sysvol_configuration'
+            save_manifest(backup, manifest)
+            configure_sysvol(request, root, run, steps)
+        if not config.exists():
+            raise OperationError('Samba nao produziu smb.conf; backup preservado.')
+        if request['kind']=='new':
+            directory=str(Path(__file__).with_name('directory_config.py'))
+            observed=json.loads(run(['/usr/bin/python3',directory,'--inspect']))
+            if observed.get('schema_version',0)<88:
+                run(['samba-tool','domain','schemaupgrade','--schema=2019'])
+                run(['samba-tool','domain','functionalprep','--function-level=2016'])
+            levels = run(['samba-tool','domain','level','show','-s',str(config)])
+            if any(not re.search(re.escape(label)+r':\s*(?:\(Windows\)\s*)?2016\s*$', levels, re.M) for label in ['Domain function level','Forest function level']):
+                run(['samba-tool','domain','functionalprep','--function-level=2016'])
+                run(['samba-tool','domain','level','raise','--domain-level=2016','--forest-level=2016','--option=ad dc functional level = 2016'])
+            steps.append('Novo dominio: schema 2019 ou superior verificado; nivel funcional 2016 selecionado no provisionamento.')
+        if request['kind']=='join' and not request.get('setup_step_ca') and not request.get('_existing_tls'):
+            previous_tls_dir=backup/'files/var/lib/samba/private/tls'
+            if previous_tls_dir.is_dir():
+                shutil.copytree(previous_tls_dir,root/'var/lib/samba/private/tls',dirs_exist_ok=True)
+                cert=root/'var/lib/samba/private/tls/cert.pem'
+                if cert.exists():
+                    try: run(['openssl','x509','-in',str(cert),'-noout','-checkhost',request['hostname_fqdn']])
+                    except OperationError:
+                        raise OperationError('Ingresso concluido, mas o certificado anterior nao corresponde ao novo FQDN. Selecione TLS/Step-CA em Reaplicar configuracao pela interface.')
+        manifest['phase'] = 'configuration'
+        save_manifest(backup, manifest)
+        forwarder = request['upstream_forwarders'][0] if request['kind'] == 'new' else request.get('target_dc_ip') or request['upstream_forwarders'][0]
+        bind_error = None
+        if request.get('setup_bind_hybrid') and request['domain_role'] != 'MEMBER':
+            try:
+                steps.extend(bind({'forwarders': request['upstream_forwarders']}, root, run))
+                forwarder = '127.0.0.1:5353'
+            except Exception as error:
+                bind_error = str(error)
+        text = tune_config(config.read_text(), forwarder, level)
+        for key,value in (primary_tls or install_existing_tls(request, root) or previous_tls):
+            text = re.sub(r'(?im)^\s*' + re.escape(key) + r'\s*=.*$', '', text)
+            text = text.replace('[global]','[global]\n    ' + key + ' = ' + value,1)
+        if request.get('network_interface'):
+            interface=request['network_interface']
+            run(['ip','link','show','dev',interface])
+            for key,value in [('interfaces','lo '+interface),('bind interfaces only','yes')]:
+                text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
+                text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
+        atomic_write(config,text,0o644)
+        kerberos = root / 'var/lib/samba/private/krb5.conf'
+        if kerberos.exists():
+            atomic_write(root / 'etc/krb5.conf', kerberos.read_bytes(), 0o644)
+        else:
+            atomic_write(root/'etc/krb5.conf','[libdefaults]\n default_realm = '+request['realm']+'\n dns_lookup_realm = false\n dns_lookup_kdc = true\n rdns = false\n[domain_realm]\n .'+request['realm'].lower()+' = '+request['realm']+'\n '+request['realm'].lower()+' = '+request['realm']+'\n',0o644)
+        if root == Path('/') and shutil.which('restorecon'):
+            run(['restorecon', '-R', str(root / 'var/lib/samba'), str(config)])
+        if request['kind']=='configure':
+            configure_ntp(request,root,run,steps)
+        if request['domain_role'] == 'MEMBER':
+            services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
+        else:
+            services = [unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])]
+        if request.get('setup_step_ca') and request['domain_role']!='MEMBER' and request['kind']!='new':
+            remote_mutated=True  # PKI initialization/issuance must never trigger raw old-domain restoration.
+            tls_pairs=configure_pki(request,root,run,services[0],steps)
+            text=config.read_text()
+            for key,value in tls_pairs:
+                text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
+                text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
+            atomic_write(config,text,0o644)
+        for name in services:
+            run(['systemctl', 'unmask', name])
+            run(['systemctl', 'enable', name])
+            run(['systemctl', 'restart', name])
+            if run(['systemctl', 'is-active', name]).strip() != 'active':
+                raise OperationError('Servico nao ficou ativo: ' + name)
+        if request['domain_role'] != 'MEMBER' and request['kind'] == 'configure':
+            remote_mutated = True
+        if request['domain_role'] == 'MEMBER':
+            run(['net', 'ads', 'testjoin', '-s', str(config)])
+            run(['chattr','+i',str(root/'etc/resolv.conf')])
+        else:
+            for attempt in range(15):
+                try:
+                    run(['samba-tool', 'domain', 'level', 'show', '-s', str(config)])
+                    break
+                except OperationError:
+                    if attempt==14: raise
+                    time.sleep(1)
+            directory = str(Path(__file__).with_name('directory_config.py'))
+            directory_args=['/usr/bin/python3',directory]
+            if request['domain_role']=='RODC':
+                if not request.get('target_dc_ip'): raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
+                directory_args+=['--server='+request['target_dc_ip'],'--username='+request['admin_username'],'--password='+request['admin_password']]
+            configured=json.loads(run(directory_args+([] if request.get('global_catalog',True) else ['--disable-gc'])))
+            steps.append('Catalogo global configurado; particoes DNS verificadas: '+json.dumps(configured))
+            run(['systemctl','restart',services[0]])
+            if request.get('global_catalog',True):
+                for attempt in range(15):
+                    try:
+                        run(['/usr/bin/python3',directory,'--verify'])
+                        break
+                    except OperationError:
+                        if attempt == 14: raise
+                        time.sleep(1)
+                # During DC join, the local DNS listener may not yet be ready.
+                # Use the previously validated partner DNS to verify GC SRV records.
+                gc_dns_server = request.get('target_dc_ip') or request['host_ip']
+                gc_records = run(['dig', '@' + gc_dns_server, '-p', '53',
+                                  '_gc._tcp.' + request['realm'].lower(), 'SRV',
+                                  '+short', '+tries=1', '+time=3'])
+                if not gc_records.strip():
+                    raise OperationError('Catalogo global pronto, mas nenhum registro SRV _gc foi retornado pelo DNS ' + gc_dns_server + '. Ingresso preservado; verifique o DNS do dominio e reaplique a configuracao.')
+                steps.append('Catalogo global confirmado por isGlobalCatalogReady; portas 3268/3269 garantidas no firewall.')
+            configure_dns_records(request,run,steps)
+            resolver=root/'etc/resolv.conf'
+            optional(run,['chattr','-i',str(resolver)])
+            remove(resolver)
+            content='search '+request['realm'].lower()+'\nnameserver 127.0.0.1\n'
+            if request.get('target_dc_ip'): content+='nameserver '+request['target_dc_ip']+'\n'
+            atomic_write(resolver,content,0o644)
+            run(['chattr','+i',str(resolver)])
+            if request['kind'] == 'join':
+                health = json.loads(run(['samba-tool', 'drs', 'showrepl', '--json'] + credentials(request)))
+                inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
+                if not inbound or any(entry.get('consecutive failures', 1) != 0 or entry.get('last success') in [None,0,'0','NTTIME(0)'] for entry in inbound):
+                    raise OperationError('Ingresso efetuado, mas replicacao nao foi confirmada. Configuracao e backup disponiveis para reaplicacao pela interface.')
+        manifest.update(phase='configuration_pending' if bind_error else 'complete', joined=True,ca_port=request.get('ca_port') if request.get('setup_step_ca') else None,ca_url=request.get('ca_url'))
+        save_manifest(backup, manifest)
+        steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')
+        if bind_error:
+            steps.append('[AVISO] BIND solicitado nao foi concluido. Use Reaplicar configuracao pela interface; o ingresso foi preservado. ' + bind_error)
+        return {'success': not bool(bind_error), 'joined': True, 'configuration_pending': bool(bind_error),
+                'message': 'Configuracao BIND pendente; ingresso preservado.' if bind_error else 'Provisionamento concluido.',
+                'steps_completed': steps, 'ca_port':manifest.get('ca_port'),'ca_url':manifest.get('ca_url'), 'backup_id': identifier, 'backup_path': str(backup), 'plan_only': False}
+    except Exception as error:
+        message = str(error)
+        recovery_required = remote_mutated and not manifest.get('joined',False)
+        if backup:
+            manifest['failure_phase'] = manifest.get('phase')
+            manifest['phase'] = 'configuration_pending' if manifest.get('joined') else ('recovery_required' if remote_mutated else 'failed_before_remote_change')
+            try:
+                if not remote_mutated:
+                    optional(run, ['chattr', '-i', str(root / 'etc/resolv.conf')])
+                    restore_configuration(root, backup)
+                    if manifest.get('resolver_immutable'): run(['chattr','+i',str(root/'etc/resolv.conf')])
+                    if manifest.get('previous_hostname'): run(['hostnamectl','set-hostname',manifest['previous_hostname']])
+                    if stopped:
+                        restore_services(states, run)
+                    steps.append('Configuracao anterior restaurada; nenhuma alteracao remota AD foi confirmada.')
+                elif manifest.get('joined'):
+                    steps.append('[AVISO] Ingresso preservado; use Reaplicar configuracao para concluir a etapa pendente. Nao e necessario refazer o ingresso.')
+                else:
+                    steps.append('[AVISO] Alteracoes remotas podem ter ocorrido. Base antiga nao sera reativada automaticamente; retome o reingresso pela interface com o backup preservado.')
+            except Exception as rollback:
+                message += '; restauracao pendente: ' + str(rollback)
+            save_manifest(backup, manifest)
+        # Redact credentials even if a third-party command includes them in its error.
+        for secret in [request.get('admin_password'),request.get('cert_password')]:
+            if secret:
+                message = message.replace(secret, '[REDACTED]')
+        return {'success': False, 'message': message, 'error': message, 'steps_completed': steps,
+                'backup_id': manifest.get('id'), 'backup_path': str(backup) if backup else None,
+                'recovery_required': recovery_required, 'joined': bool(manifest.get('joined')), 'configuration_pending': bool(manifest.get('joined')), 'plan_only': bool(request.get('dry_run'))}
+,config.read_text()) if config.exists() else []
         manifest.update(old_name=old_name, old_realm=old_realm, target_role=request['domain_role'], partner=request.get('target_dc_ip',''), forwarders=request['upstream_forwarders'], setup_bind_hybrid=request.get('setup_bind_hybrid',False),global_catalog=request.get('global_catalog',True))
         save_manifest(backup, manifest)
         if request['kind'] != 'configure':
