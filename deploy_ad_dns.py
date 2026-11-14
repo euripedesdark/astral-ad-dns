@@ -34,7 +34,6 @@ SYSTEM_OPT_DIR = "/opt/astral-ad-dns"
 SYSTEMD_SERVICE = "astral-ad-dns.service"
 SYSTEMD_FILE = f"/etc/systemd/system/{SYSTEMD_SERVICE}"
 SYMLINK_BIN = "/usr/local/bin/astral-ad-dns"
-SUDO_PASS = os.environ.get("ASTRAL_SUDO_PASS", "Btf1_Mk3")
 
 class Colors:
     BLUE = "\033[94m"
@@ -64,52 +63,27 @@ def log_error(msg):
     print(f"  {Colors.RED}✗ {msg}{Colors.RESET}")
 
 def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
-    """Executa um comando local ou com sudo encapsulado via bash -c."""
+    """Use sudo normally; never embed passwords into commands or unit files."""
     if use_sudo and os.geteuid() != 0:
-        if isinstance(cmd, list):
-            cmd_str = subprocess.list2cmdline(cmd)
-        else:
-            cmd_str = cmd
-        escaped_cmd = cmd_str.replace("'", "'\\''")
-        final_cmd = f"echo '{SUDO_PASS}' | sudo -S bash -c '{escaped_cmd}'"
-        is_shell = True
+        command = ["sudo", "--", *(["bash", "-c", cmd] if isinstance(cmd, str) else cmd)]
+        shell = False
     else:
-        if isinstance(cmd, list):
-            final_cmd = cmd
-            is_shell = False
-        else:
-            final_cmd = cmd
-            is_shell = True
-
-    cmd_display = cmd if isinstance(cmd, str) else " ".join(cmd)
+        command = cmd
+        shell = isinstance(cmd, str)
+    display = cmd if isinstance(cmd, str) else " ".join(cmd)
     try:
-        if capture:
-            res = subprocess.run(
-                final_cmd,
-                shell=is_shell,
-                cwd=cwd,
-                check=check,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            return res.stdout.strip()
-        else:
-            subprocess.run(
-                final_cmd,
-                shell=is_shell,
-                cwd=cwd,
-                check=check,
-                text=True
-            )
-            return True
-    except subprocess.CalledProcessError as e:
-        log_error(f"Erro ao executar: {cmd_display}")
-        if capture and e.stderr:
-            print(f"{Colors.RED}{e.stderr.strip()}{Colors.RESET}")
+        result = subprocess.run(command, shell=shell, cwd=cwd, check=check, text=True,
+                                stdout=subprocess.PIPE if capture else None,
+                                stderr=subprocess.PIPE if capture else None)
+        return result.stdout.strip() if capture else (result.returncode == 0)
+    except subprocess.CalledProcessError as error:
+        log_error(f"Erro ao executar: {display}")
+        if capture and error.stderr:
+            log_error(error.stderr.strip())
         if check:
             sys.exit(1)
         return False
+
 
 def check_prerequisites():
     """Fail on build tools; report AD DC capability separately.
@@ -261,22 +235,32 @@ ExecStart={system_bin}
 Restart=always
 RestartSec=5
 Environment=ASTRAL_BIND_ADDR=0.0.0.0:8095
-Environment=ASTRAL_ADMIN_PASS=Copa@@2026
-Environment=ASTRAL_SUDO_PASS={SUDO_PASS}
 Environment=ASTRAL_WEB_DIST={SYSTEM_OPT_DIR}/web/dist
 
 [Install]
 WantedBy=multi-user.target
 """
-    temp_unit = "/tmp/astral-ad-dns.service.tmp"
-    with open(temp_unit, "w") as f:
-        f.write(unit_content)
-
-    run_cmd(f"mv {temp_unit} {SYSTEMD_FILE}", use_sudo=True)
-    run_cmd(f"chmod 644 {SYSTEMD_FILE}", use_sudo=True)
-    run_cmd("systemctl daemon-reload", use_sudo=True)
-    run_cmd(f"systemctl enable {SYSTEMD_SERVICE}", use_sudo=True)
-    run_cmd(f"systemctl restart {SYSTEMD_SERVICE}", use_sudo=True)
+    # Install with elevated permissions; never trust a successful sudo command
+    # without verifying the unit was actually loaded by systemd.
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".service", delete=False) as staged:
+        staged.write(unit_content)
+        staged_path = staged.name
+    try:
+        run_cmd(["install", "-D", "-m", "0644", staged_path, SYSTEMD_FILE], use_sudo=True)
+    finally:
+        os.unlink(staged_path)
+    run_cmd(["test", "-s", SYSTEMD_FILE], use_sudo=True)
+    run_cmd(["systemd-analyze", "verify", SYSTEMD_FILE], use_sudo=True)
+    run_cmd(["systemctl", "daemon-reload"], use_sudo=True)
+    loaded = run_cmd(["systemctl", "show", SYSTEMD_SERVICE, "-p", "LoadState", "--value"], use_sudo=True, capture=True)
+    unit_file = run_cmd(["systemctl", "show", SYSTEMD_SERVICE, "-p", "FragmentPath", "--value"], use_sudo=True, capture=True)
+    if loaded != "loaded" or unit_file != SYSTEMD_FILE:
+        log_error(f"Systemd unit invalid: LoadState={loaded}, FragmentPath={unit_file}")
+        sys.exit(1)
+    log_success(f"Systemd unit loaded from {unit_file}")
+    run_cmd(["systemctl", "enable", SYSTEMD_SERVICE], use_sudo=True)
+    run_cmd(["systemctl", "restart", SYSTEMD_SERVICE], use_sudo=True)
 
     time.sleep(2.0)
 
