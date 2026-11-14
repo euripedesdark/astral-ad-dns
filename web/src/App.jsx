@@ -11,6 +11,7 @@ import DonationModal from './components/DonationModal';
 import ComputerPropertiesModal from './components/ComputerPropertiesModal';
 import UserPropertiesModal from './components/UserPropertiesModal';
 import RestoreBackupModal from './components/RestoreBackupModal';
+import PKIManagementTab from './components/PKIManagementTab';
 import OUTab from './components/OUTab';
 import ConfirmationDialog, { confirmAction } from './components/ConfirmationDialog';
 import GpoTab from './components/GpoTab';
@@ -530,6 +531,7 @@ function Application() {
           <NavItem active={activeTab === 'gpo'} onClick={() => setActiveTab('gpo')} icon={<Sliders className="w-4 h-4 text-amber-400" />} label={t.gpos || "Políticas (GPO)"} />
           <NavItem active={activeTab === 'dns'} onClick={() => setActiveTab('dns')} icon={<Globe className="w-4 h-4" />} label={t.dns} badge={status?.zones_count} />
           <NavItem active={activeTab === 'bind'} onClick={() => setActiveTab('bind')} icon={<Network className="w-4 h-4" />} label={t.bind} />
+          <NavItem active={activeTab === 'pki'} onClick={() => setActiveTab('pki')} icon={<Key className="w-4 h-4" />} label="PKI / Certificados" />
           <NavItem active={activeTab === 'health'} onClick={() => setActiveTab('health')} icon={<Layers className="w-4 h-4" />} label={t.health} />
           <NavItem active={activeTab === 'diagnostics'} onClick={() => setActiveTab('diagnostics')} icon={<Activity className="w-4 h-4 text-emerald-400" />} label={t.diagnostics} />
           <NavItem active={activeTab === 'forensics'} onClick={() => setActiveTab('forensics')} icon={<Shield className="w-4 h-4 text-cyan-400" />} label={t.forensics || 'Forense AD'} />
@@ -548,6 +550,7 @@ function Application() {
           {activeTab === 'gpo' && <GpoTab t={t} showToast={showToast} customFetch={customFetch} />}
           {activeTab === 'dns' && <DnsTab t={t} showToast={showToast} />}
           {activeTab === 'bind' && <BindTab t={t} showToast={showToast} />}
+          {activeTab === 'pki' && <PKIManagementTab customFetch={customFetch} showToast={showToast} />}
           {activeTab === 'health' && <HealthTab t={t} showToast={showToast} />}
           {activeTab === 'diagnostics' && <DiagnosticsTab t={t} showToast={showToast} />}
           {activeTab === 'forensics' && <ForensicsTab customFetch={customFetch} showToast={showToast} />}
