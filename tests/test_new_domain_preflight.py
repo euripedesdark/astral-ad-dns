@@ -19,6 +19,13 @@ class NewDomainPreflightTests(unittest.TestCase):
                 stack.verify_new_domain_prerequisites(Path('/'),lambda args: calls.append(args) or '',False,[])
         self.assertEqual(calls,[])
 
+    def test_el_samba_rpm_without_ad_dc_daemon_fails_with_actionable_message(self):
+        calls=[]
+        with patch.object(stack.shutil,'which',side_effect=lambda name: None if name=='samba' else '/usr/bin/'+name):
+            with self.assertRaisesRegex(stack.OperationError,'daemon Samba AD DC ausente'):
+                stack.verify_new_domain_prerequisites(Path('/'),lambda args: calls.append(args) or '',False,[])
+        self.assertEqual(calls,[])
+
     def test_python_samba_bindings_checked_without_install(self):
         calls=[]
         with patch.object(stack.shutil,'which',return_value='/usr/bin/tool'):
