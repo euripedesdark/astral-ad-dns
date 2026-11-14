@@ -15,7 +15,8 @@ use crate::api::users::{ApiResponse, ActionQuery};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BindStatus {
     pub service_active: bool,
-    pub listening_on_5353: bool,
+    pub listening_on_5353: bool, // legacy API field: now means configured listener ready
+    pub listen_address: String,
     pub forwarders: Vec<String>,
     pub config_path: String,
     pub recursion: bool,
@@ -63,23 +64,43 @@ fn bind_config() -> (&'static str, &'static str, &'static str) {
 pub async fn get_bind_status(State(config): State<Arc<AppConfig>>) -> Json<BindStatus> {
     let sudo = config.sudo_password.as_deref();
     let (config_path, main, service) = bind_config();
-    let service_active = check_service_active(service, sudo);
     let content = fs::read_to_string(config_path).unwrap_or_default();
     let forwarders = Regex::new(r"forwarders\s*\{([^}]+)\};").unwrap().captures(&content)
         .map(|caps| caps[1].split(';').map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect()).unwrap_or_default();
-    let listen_res = run_cmd_dry("ss -H -lntu '( sport = :5353 )'", sudo, false);
-    let listeners: Vec<_> = listen_res.stdout.lines().filter_map(|line| line.split_whitespace().nth(4)).collect();
-    let tcp = listen_res.stdout.lines().any(|line| line.starts_with("tcp") && line.contains("127.0.0.1:5353"));
-    let udp = listen_res.stdout.lines().any(|line| line.starts_with("udp") && line.contains("127.0.0.1:5353"));
-    let loopback_only = !listeners.is_empty() && listeners.iter().all(|v| *v == "127.0.0.1:5353");
+    // Read the Samba DNS forwarding target; the BIND port may be 15353 when
+    // SELinux reserves 5353 for mDNS. Never assume either port.
+    let smb = fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
+    let configured_port = smb.lines()
+        .filter(|line| !line.trim().starts_with('#') && !line.trim().starts_with(';'))
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim().eq_ignore_ascii_case("dns forwarder"))
+        .and_then(|(_, value)| value.trim().strip_prefix("127.0.0.1:"))
+        .and_then(|value| value.parse::<u16>().ok());
+    let listen_address = configured_port
+        .map(|port| format!("127.0.0.1:{port}"))
+        .unwrap_or_default();
+    let listen_res = run_cmd_dry("ss -H -lntup", sudo, false);
+    let listeners: Vec<_> = listen_res.stdout.lines()
+        .filter(|line| !listen_address.is_empty() && line.split_whitespace().nth(4) == Some(listen_address.as_str()))
+        .collect();
+    let tcp = listeners.iter().any(|line| line.starts_with("tcp") && (line.contains("named") || line.contains("bind9")));
+    let udp = listeners.iter().any(|line| line.starts_with("udp") && (line.contains("named") || line.contains("bind9")));
+    let loopback_only = tcp && udp && listeners.iter().all(|line| line.split_whitespace().nth(4) == Some(listen_address.as_str()));
+    let service_active = check_service_active(service, sudo)
+        || check_service_active("named-9", sudo)
+        || check_service_active("named", sudo)
+        || check_service_active("bind9", sudo)
+        || (tcp && udp);
     let syntax_valid = run_cmd_dry(&format!("named-checkconf {}", shell_quote(main)), sudo, false).success;
     let mut warnings = Vec::new();
     if !syntax_valid { warnings.push("Configuração BIND inválida ou named-checkconf indisponível.".into()); }
-    if !loopback_only { warnings.push("A porta 5353 deve escutar somente em 127.0.0.1.".into()); }
-    if !tcp || !udp { warnings.push("Verifique listeners TCP e UDP na porta 5353.".into()); }
-    Json(BindStatus { service_active, listening_on_5353: tcp && udp, forwarders, config_path: config_path.into(),
-        recursion: Regex::new(r"recursion\s+yes\s*;").unwrap().is_match(&content), syntax_valid, loopback_only,
-        service_name: service.into(), warnings })
+    if configured_port.is_none() { warnings.push("Samba não aponta para um BIND recursivo local com porta definida.".into()); }
+    if configured_port.is_some() && (!tcp || !udp) {
+        warnings.push(format!("Verifique listeners BIND TCP e UDP na porta {}.", configured_port.unwrap()));
+    }
+    Json(BindStatus { service_active, listening_on_5353: tcp && udp, listen_address, forwarders,
+        config_path: config_path.into(), recursion: Regex::new(r"recursion\s+yes\s*;").unwrap().is_match(&content),
+        syntax_valid, loopback_only, service_name: service.into(), warnings })
 }
 
 pub async fn update_forwarders(
