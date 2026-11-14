@@ -252,6 +252,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue((Path(result['backup_path'])/'previous-state.tar.gz').exists())
         attempt=next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','domain','demote'])
         self.assertNotIn(['systemctl','start','samba'],host.calls[attempt+1:])
+    def test_sysvol_smb_failure_is_diagnosed_before_demotion(self):
+        host=Host(self.root,fail=lambda args:args[:1]==['smbclient'])
+        result=self.execute(host=host)
+        self.assertFalse(result['success'])
+        self.assertIn('TCP 445',result['message'])
+        self.assertIn('SYSVOL/SMB',result['message'])
+        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
+        self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
+        self.assertEqual(self.db.read_text(),'old database')
+
+    def test_sysvol_check_is_directed_at_partner_ip(self):
+        host=Host(self.root)
+        result=self.execute(host=host)
+        self.assertTrue(result['success'],result)
+        probes=[args for args in host.calls if args[:1]==['smbclient'] and '-c' in args and 'ls' in args]
+        self.assertEqual(len(probes),1)
+        self.assertIn('//192.0.2.10/sysvol',probes[0])
+        self.assertEqual(probes[0][probes[0].index('-I')+1],'192.0.2.10')
+        self.assertLess(host.calls.index(probes[0]),next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','gpo','aclcheck']))
+
     def test_gpo_permission_failure_is_detected_before_stop_or_demotion(self):
         host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','gpo','aclcheck'])
         result=self.execute(host=host)

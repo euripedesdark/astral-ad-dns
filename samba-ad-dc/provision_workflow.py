@@ -119,15 +119,38 @@ def credentials(request):
 
 
 def verify_partner_gpo(request, run):
-    """Read-only check before touching the existing membership or services."""
+    """Check remote SYSVOL via SMB and then GPO ACLs before destructive steps.
+
+    SMB must be validated separately because samba-tool gpo aclcheck reaches
+    SMB internally; a transport failure is not evidence of invalid ACLs.
+    """
     partner = request.get('target_dc_ip')
     if request['domain_role'] == 'MEMBER' or not partner:
         return
     try:
+        run(['smbclient', '//' + partner + '/sysvol', '-I', partner,
+             '--client-protection=sign', '-c', 'ls'] + credentials(request))
+    except OperationError as error:
+        raise OperationError(
+            'Preflight SYSVOL/SMB do DC parceiro falhou antes da limpeza. '
+            'Verifique TCP 445 entre este servidor e ' + partner +
+            ', disponibilidade do compartilhamento SYSVOL, autenticacao SMB e '
+            'assinatura SMB. A falha nao comprova problema de ACL de GPO. '
+            + str(error)) from error
+    try:
         run(['samba-tool', 'gpo', 'aclcheck', '-H', 'ldap://' + partner] + credentials(request))
     except OperationError as error:
-        raise OperationError('Validacao de GPO/SYSVOL no DC parceiro falhou antes da limpeza. '
-                             'Verifique as credenciais administrativas do dominio e as ACLs no parceiro. ' + str(error)) from error
+        detail = str(error)
+        if 'using SMB' in detail or 'NT_STATUS_IO_TIMEOUT' in detail or 'NT_STATUS_CONNECTION' in detail:
+            raise OperationError(
+                'GPO/SYSVOL: o samba-tool falhou ao conectar por SMB, embora '
+                'o acesso direto ao SYSVOL tenha passado. Verifique resolucao '
+                'DNS dos nomes do DC, registros A multihomed, TCP 445 e '
+                'autenticacao/negociacao SMB. Nenhuma limpeza iniciada. '
+                + detail) from error
+        raise OperationError('Validacao das ACLs de GPO no DC parceiro falhou antes da limpeza. '
+                             'O acesso SMB direto ao SYSVOL passou; verifique as permissoes '
+                             'e credenciais administrativas. ' + detail) from error
 
 
 def configure_sysvol(request, root, run, steps):
