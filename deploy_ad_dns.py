@@ -163,7 +163,21 @@ def prepare_ad_packages(os_release="/etc/os-release"):
     log_header(f"Preparando Samba AD DC para {distro} {major} (TIS Samba 4.24)")
     # Every privileged operation explicitly goes through run_cmd(use_sudo=True).
     run_cmd(["dnf", "install", "-y", "dnf-plugins-core"], use_sudo=True)
-    run_cmd(["dnf", "config-manager", "--set-enabled", "crb"], use_sudo=True)
+    # RHEL uses subscription-manager and a full CodeReady Builder repo ID;
+    # Alma/Rocky/CentOS use 'crb', Oracle Linux uses olX_codeready_builder.
+    import platform
+    if distro == "rhel":
+        codeready_repo = f"codeready-builder-for-rhel-{major}-{platform.machine()}-rpms"
+        run_cmd(["subscription-manager", "repos", "--enable", codeready_repo],
+                use_sudo=True)
+    elif distro == "ol":
+        codeready_repo = f"ol{major}_codeready_builder"
+        run_cmd(["dnf", "config-manager", "--set-enabled", codeready_repo],
+                use_sudo=True)
+    else:
+        codeready_repo = "crb"
+        run_cmd(["dnf", "config-manager", "--set-enabled", codeready_repo],
+                use_sudo=True)
     if not run_cmd(["rpm", "-q", "epel-release"], use_sudo=True, check=False):
         if not run_cmd(["dnf", "install", "-y", "epel-release"], use_sudo=True, check=False):
             epel_url = (
@@ -226,7 +240,7 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         log_warning("Removendo apenas samba-winexe antigo, incompatível com bibliotecas TIS Samba.")
         run_cmd(["dnf", "remove", "-y", "samba-winexe"], use_sudo=True)
 
-    run_cmd(["dnf", "--enablerepo=crb", "install", "-y", *EL_AD_PACKAGES],
+    run_cmd(["dnf", f"--enablerepo={codeready_repo}", "install", "-y", *EL_AD_PACKAGES],
             use_sudo=True)
     for command in ("samba", "samba-tool", "named", "chronyd"):
         if not shutil.which(command):
