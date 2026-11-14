@@ -118,7 +118,25 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
     let samba_active = check_service_active("samba", sudo) 
         || check_service_active("samba-dc", sudo) 
         || check_service_active("samba-ad-dc", sudo);
-    let named_active = check_service_active("named", sudo);
+    // The hybrid resolver may run under named-9.service or another unit,
+    // while the distro's named.service remains inactive. Verify the configured
+    // listener rather than marking a functional DC degraded from one unit name.
+    let bind_forward_port = dns_forwarder.strip_prefix("127.0.0.1:")
+        .and_then(|value| value.parse::<u16>().ok());
+    let listener_output = run_safe_cmd("ss -H -lntup", sudo).stdout;
+    let bind_listener_ok = bind_forward_port.map_or(false, |port| {
+        ["tcp", "udp"].iter().all(|proto| listener_output.lines().any(|line| {
+            let cols: Vec<_> = line.split_whitespace().collect();
+            cols.first().map_or(false, |v| v.starts_with(proto))
+                && cols.get(4).map_or(false, |v| *v == format!("127.0.0.1:{port}"))
+                && (line.contains("named") || line.contains("bind9"))
+        }))
+    });
+    let named_active = check_service_active("named", sudo)
+        || check_service_active("named-9", sudo)
+        || check_service_active("bind9", sudo)
+        || bind_listener_ok;
+    let bind_required = bind_forward_port.is_some();
     let chrony_active = check_service_active("chronyd", sudo);
 
     // NTP tracking
@@ -179,7 +197,7 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         "not_provisioned".to_string()
     } else if !samba_active {
         "unavailable".to_string()
-    } else if !named_active || !chrony_active {
+    } else if (bind_required && !bind_listener_ok) || !chrony_active {
         "degraded".to_string()
     } else {
         "operational".to_string()
