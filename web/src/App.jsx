@@ -556,7 +556,7 @@ function Application() {
           {activeTab === 'forensics' && <ForensicsTab customFetch={customFetch} showToast={showToast} />}
           {activeTab === 'audit' && <AuditTab t={t} showToast={showToast} />}
           {activeTab === 'backups' && <BackupsTab t={t} showToast={showToast} />}
-          {activeTab === 'terminal' && <TerminalTab t={t} operator={operator} showToast={showToast} customFetch={customFetch} />}
+          {activeTab === 'terminal' && <TerminalTab t={t} operator={operator} status={status} showToast={showToast} customFetch={customFetch} />}
         </main>
       </div>
 
@@ -4492,7 +4492,7 @@ function WizardModal({ onClose, t, showToast }) {
 }
 
 
-function TerminalTab({ t, operator, showToast, customFetch }) {
+function TerminalTab({ t, operator, status, showToast, customFetch }) {
   const isDenied = operator?.provider === 'Postgres';
   const [lines, setLines] = useState([
     { output: 'Astral AD & Hybrid DNS Management Console [Terminal]' },
