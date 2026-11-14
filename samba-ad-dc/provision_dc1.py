@@ -1159,6 +1159,57 @@ def save_manifest(backup, manifest):
         atomic_write(PROGRESS_PATH,json.dumps(previous,ensure_ascii=False))
 
 
+def verify_new_domain_prerequisites(root, run, bind_requested, steps):
+    """Fail before any Samba/CA changes. No package manager is invoked here."""
+    required=['samba-tool','samba','testparm','smbclient','net','winbindd',
+              'dig','ip','iptables','iptables-save','chronyd','openssl','curl']
+    if bind_requested:
+        required += ['named','named-checkconf']
+        if (root/'sys/fs/selinux/enforce').exists():
+            required.append('semanage')
+    # Other supported installs may ship iptables-save under sbin.
+    missing=[tool for tool in required if not shutil.which(tool)]
+    if missing:
+        raise OperationError(
+            'Novo dominio bloqueado antes do provisionamento: pacotes/comandos '
+            'obrigatorios ausentes: '+', '.join(missing)+
+            '. Instale pela distribuicao e execute a checagem novamente. '
+            'Apenas Step-CA podera ser instalada durante o fluxo do wizard.')
+    # Distros can ship binaries without the matching Samba Python modules.
+    # The wizard later runs the local directory/GC logic with /usr/bin/python3.
+    run(['/usr/bin/python3','-c',
+         'import samba, ldb; from samba.samdb import SamDB; from samba.credentials import Credentials'])
+    run(['samba-tool','--help'])
+    run(['testparm','-s','/dev/null'])
+    run(['iptables-save'])
+    steps.append('Preflight novo dominio: Samba AD, DNS, iptables, Chrony, '
+                 'OpenSSL e BIND opcional instalados; nenhuma instalacao automatica executada.')
+
+
+def verify_new_domain_firewall(request, run, steps):
+    """Inspect INPUT port rules before changing Samba. The firewall setup below
+    inserts any missing rules, then checks the required rules again.
+    """
+    rules=firewall_rules(request['domain_role'],
+                         False)  # Step-CA is handled only after Samba is active.
+    missing=[]
+    for rule in rules:
+        try:
+            run(['iptables','-C','INPUT']+rule)
+        except OperationError:
+            missing.append(' '.join(rule))
+    steps.append('Preflight iptables: '+str(len(rules)-len(missing))+
+                 '/'+str(len(rules))+' regras esperadas presentes; '+
+                 str(len(missing))+' serao adicionadas antes de criar o AD.')
+    return rules
+
+
+def verify_firewall_after_prepare(rules, run, steps):
+    for rule in rules:
+        run(['iptables','-C','INPUT']+rule)
+    steps.append('iptables: regras necessarias verificadas antes de iniciar o novo dominio.')
+
+
 def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
     global PROGRESS_PATH, PROGRESS_STEPS
     request = dict(request)
@@ -1171,7 +1222,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
     try:
         validate(request)
         if request.get('dry_run'):
-            return {'success': True, 'steps_completed': ['Plano: instalar dependencias ausentes, validar DNS/FSMO, backup automatico, despromocao se necessaria, limpeza e ingresso como ' + request['domain_role'], 'Forwarders: ' + ', '.join(request['upstream_forwarders']), 'Nenhum arquivo, pacote, servico ou objeto AD foi alterado.'], 'plan_only': True}
+            return {'success': True, 'steps_completed': ['Plano: verificar pacotes/iptables antes de qualquer mudanca, validar DNS/FSMO, backup e criar dominio (Step-CA somente apos Samba ativo) como ' + request['domain_role'], 'Forwarders: ' + ', '.join(request['upstream_forwarders']), 'Nenhum arquivo, pacote, servico ou objeto AD foi alterado.'], 'plan_only': True}
+        if request['kind']=='new':
+            # Mandatory read-only checks before backup, service changes or package actions.
+            verify_new_domain_prerequisites(root,run,request.get('setup_bind_hybrid',False),steps)
+            firewall_to_verify=verify_new_domain_firewall(request,run,steps)
         identifier = uuid.uuid4().hex
         backup = root / 'var/backups/astral-ad-dns/provision' / identifier
         backup.mkdir(parents=True, mode=0o700)
@@ -1188,9 +1243,13 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         manifest['captured_paths'] = [path for path in PATHS if not path.startswith('var/')]
         save_manifest(backup, manifest)
         steps.append('Backup automatico da configuracao anterior: ' + str(backup))
-        manifest['phase']='installing_dependencies'
-        save_manifest(backup,manifest)
-        install_dependencies(root, run, request.get('setup_bind_hybrid', False), steps)
+        if request['kind']=='new':
+            manifest['phase']='dependencies_verified'
+            save_manifest(backup,manifest)
+        else:
+            manifest['phase']='installing_dependencies'
+            save_manifest(backup,manifest)
+            install_dependencies(root,run,request.get('setup_bind_hybrid',False),steps)
         config = root / 'etc/samba/smb.conf'
         local_db = (root / 'var/lib/samba/private/sam.ldb').exists()
         old_name = optional(run, ['testparm', '-s', '--parameter-name=netbios name', str(config)]).strip().upper() if config.exists() else ''
@@ -1267,6 +1326,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             address=json.loads((root/'etc/step-ca/config/ca.json').read_text()).get('address','')
             if ':' in address: request['ca_port']=int(address.rsplit(':',1)[1])
         configure_firewall(request, root, backup, run, steps)
+        if request['kind']=='new':
+            verify_firewall_after_prepare(firewall_to_verify,run,steps)
         primary_tls = []
         if request['kind']=='new':
             if request.get('overwrite_existing'):
@@ -1279,11 +1340,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 previous_tls=[]
                 steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
-            if request.get('setup_step_ca'):
-                manifest['phase']='primary_pki'
-                save_manifest(backup,manifest)
-                remote_mutated=True  # Preserve any newly created CA on later failure.
-                primary_tls=configure_pki(request,root,run,unit(run,['samba','samba-ad-dc','samba-dc']),steps)
+            # Step-CA is intentionally deferred until Samba is provisioned,
+            # configured, restarted and verified active.
             configure_ntp(request,root,run,steps)
         elif request['kind']=='configure':
             candidates=local_ipv4s(run)
@@ -1440,6 +1498,125 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             run(['systemctl', 'restart', name])
             if run(['systemctl', 'is-active', name]).strip() != 'active':
                 raise OperationError('Servico nao ficou ativo: ' + name)
+        if request['kind']=='new' and request.get('setup_step_ca'):
+            manifest['phase']='primary_pki_after_samba'
+            save_manifest(backup,manifest)
+            if run(['systemctl','is-active',services[0]]).strip() != 'active':
+                raise OperationError('Samba ainda nao esta ativo; instalacao da Step-CA bloqueada.')
+            if not (root/'var/lib/samba/private/sam.ldb').is_file():
+                raise OperationError('Base AD ausente; instalacao da Step-CA bloqueada.')
+            remote_mutated=True
+            tls_pairs=configure_pki(request,root,run,services[0],steps)
+            text=config.read_text()
+            for key,value in tls_pairs:
+                text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
+                text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
+            atomic_write(config,text,0o644)
+            run(['systemctl','restart',services[0]])
+            if run(['systemctl','is-active',services[0]]).strip()!='active':
+                raise OperationError('Samba nao iniciou apos ativacao LDAPS; AD preservado para recuperacao.')
+            steps.append('Step-CA instalada e LDAPS configurado somente apos Samba AD ativo.')
+        if request['domain_role'] == 'MEMBER':
+            run(['net', 'ads', 'testjoin', '-s', str(config)])
+            run(['chattr','+i',str(root/'etc/resolv.conf')])
+        else:
+            for attempt in range(15):
+                try:
+                    run(['samba-tool', 'domain', 'level', 'show', '-s', str(config)])
+                    break
+                except OperationError:
+                    if attempt==14: raise
+                    time.sleep(1)
+            directory = DIRECTORY_SCRIPT
+            directory_args=['/usr/bin/python3','-c',directory]
+            if request['domain_role']=='RODC':
+                if not request.get('target_dc_ip'): raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
+                directory_args+=['--server='+request['target_dc_ip'],'--username='+request['admin_username'],'--password='+request['admin_password']]
+            configured=json.loads(run(directory_args+([] if request.get('global_catalog',True) else ['--disable-gc'])))
+            steps.append('Catalogo global configurado; particoes DNS verificadas: '+json.dumps(configured))
+            run(['systemctl','restart',services[0]])
+            if request.get('global_catalog',True):
+                for attempt in range(15):
+                    try:
+                        run(['/usr/bin/python3','-c',directory,'--verify'])
+                        break
+                    except OperationError:
+                        if attempt == 14: raise
+                        time.sleep(1)
+                run(['dig','@127.0.0.1','_gc._tcp.' + request['realm'].lower(),'SRV','+short','+tries=1','+time=3'])
+                steps.append('Catalogo global confirmado por isGlobalCatalogReady; portas 3268/3269 garantidas no firewall.')
+            configure_dns_records(request,run,steps)
+            resolver=root/'etc/resolv.conf'
+            optional(run,['chattr','-i',str(resolver)])
+            remove(resolver)
+            content='search '+request['realm'].lower()+'\nnameserver 127.0.0.1\n'
+            if request.get('target_dc_ip'): content+='nameserver '+request['target_dc_ip']+'\n'
+            atomic_write(resolver,content,0o644)
+            run(['chattr','+i',str(resolver)])
+            if request['kind'] == 'join':
+                health = json.loads(run(['samba-tool', 'drs', 'showrepl', '--json'] + credentials(request)))
+                inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
+                if not inbound or any(entry.get('consecutive failures', 1) != 0 or entry.get('last success') in [None,0,'0','NTTIME(0)'] for entry in inbound):
+                    raise OperationError('Ingresso efetuado, mas replicacao nao foi confirmada. Configuracao e backup disponiveis para reaplicacao pela interface.')
+        manifest.update(phase='configuration_pending' if bind_error else 'complete', joined=True,ca_port=request.get('ca_port') if request.get('setup_step_ca') else None,ca_url=request.get('ca_url'))
+        save_manifest(backup, manifest)
+        steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')
+        if bind_error:
+            steps.append('[AVISO] BIND solicitado nao foi concluido. Use Reaplicar configuracao pela interface; o ingresso foi preservado. ' + bind_error)
+        return {'success': not bool(bind_error), 'joined': True, 'configuration_pending': bool(bind_error),
+                'message': 'Configuracao BIND pendente; ingresso preservado.' if bind_error else 'Provisionamento concluido.',
+                'steps_completed': steps, 'ca_port':manifest.get('ca_port'),'ca_url':manifest.get('ca_url'), 'backup_id': identifier, 'backup_path': str(backup), 'plan_only': False}
+    except Exception as error:
+        message = str(error)
+        recovery_required = remote_mutated and not manifest.get('joined',False)
+        if backup:
+            manifest['failure_phase'] = manifest.get('phase')
+            manifest['phase'] = 'configuration_pending' if manifest.get('joined') else ('recovery_required' if remote_mutated else 'failed_before_remote_change')
+            try:
+                if not remote_mutated:
+                    optional(run, ['chattr', '-i', str(root / 'etc/resolv.conf')])
+                    restore_configuration(root, backup)
+                    if manifest.get('resolver_immutable'): run(['chattr','+i',str(root/'etc/resolv.conf')])
+                    if manifest.get('previous_hostname'): run(['hostnamectl','set-hostname',manifest['previous_hostname']])
+                    if stopped:
+                        restore_services(states, run)
+                    steps.append('Configuracao anterior restaurada; nenhuma alteracao remota AD foi confirmada.')
+                elif manifest.get('joined'):
+                    steps.append('[AVISO] Ingresso preservado; use Reaplicar configuracao para concluir a etapa pendente. Nao e necessario refazer o ingresso.')
+                else:
+                    steps.append('[AVISO] Alteracoes remotas podem ter ocorrido. Base antiga nao sera reativada automaticamente; retome o reingresso pela interface com o backup preservado.')
+            except Exception as rollback:
+                message += '; restauracao pendente: ' + str(rollback)
+            save_manifest(backup, manifest)
+        # Redact credentials even if a third-party command includes them in its error.
+        for secret in [request.get('admin_password'),request.get('cert_password')]:
+            if secret:
+                message = message.replace(secret, '[REDACTED]')
+        return {'success': False, 'message': message, 'error': message, 'steps_completed': steps,
+                'backup_id': manifest.get('id'), 'backup_path': str(backup) if backup else None,
+                'recovery_required': recovery_required, 'joined': bool(manifest.get('joined')), 'configuration_pending': bool(manifest.get('joined')), 'plan_only': bool(request.get('dry_run'))}
+
+
+DIRECTORY_SCRIPT = '#!/usr/bin/python3\n"""Run with the Samba distro Python; local system session only, no passwords."""\nimport argparse\nimport json\nimport socket\nimport ldb\nfrom samba.auth import system_session\nfrom samba.param import LoadParm\nfrom samba.samdb import SamDB\n\n\ndef configure(gc=True, repair=True, inspect=False, server=None, username=None, password=None):\n    lp = LoadParm()\n    lp.load_default()\n    db = SamDB(session_info=system_session(), lp=lp)\n    schema = db.search(base=db.get_schema_basedn(), scope=ldb.SCOPE_BASE, attrs=[\'objectVersion\'])[0]\n    if inspect:\n        return {\'schema_version\': int(schema[\'objectVersion\'][0])}\n    root = db.search(base=\'\', scope=ldb.SCOPE_BASE, attrs=[\'dsServiceName\',\'isGlobalCatalogReady\'])[0]\n    ntds = ldb.Dn(db, root[\'dsServiceName\'][0].decode())\n    if server:\n        from samba.credentials import Credentials\n        credentials=Credentials();credentials.guess(lp)\n        credentials.set_username(username);credentials.set_password(password)\n        # The DN was obtained from the local DC, so this changes that DC\'s GC flag,\n        # never the partner\'s NTDS settings. A RODC sends the write to a writable DC.\n        db=SamDB(url=\'ldap://\'+server,credentials=credentials,lp=lp)\n        ntds=ldb.Dn(db,str(ntds))\n    current = db.search(base=ntds, scope=ldb.SCOPE_BASE, attrs=[\'options\'])[0]\n    options = int(current.get(\'options\',[b\'0\'])[0])\n    updated = options | 1 if gc else options & ~1\n    if updated != options:\n        message = ldb.Message()\n        message.dn = ntds\n        message[\'options\'] = ldb.MessageElement(str(updated), ldb.FLAG_MOD_REPLACE, \'options\')\n        db.modify(message)\n    repaired = []\n    if repair:\n        realm = lp.get(\'realm\').lower()\n        partitions = db.search(base=\'CN=Partitions,\' + str(db.get_config_basedn()), scope=ldb.SCOPE_ONELEVEL,\n            expression=\'(|(dnsRoot=DomainDnsZones.\' + realm + \')(dnsRoot=ForestDnsZones.\' + realm + \'))\', attrs=[\'msDS-SDReferenceDomain\'])\n        for partition in partitions:\n            if \'msDS-SDReferenceDomain\' not in partition:\n                message = ldb.Message()\n                message.dn = partition.dn\n                message[\'msDS-SDReferenceDomain\'] = ldb.MessageElement(str(db.get_default_basedn()), ldb.FLAG_MOD_ADD, \'msDS-SDReferenceDomain\')\n                db.modify(message)\n                repaired.append(str(partition.dn))\n    return {\'global_catalog_enabled\': bool(updated & 1), \'previous_options\': options, \'options\': updated,\n            \'dns_partitions_repaired\': repaired}\n\n\nif __name__ == \'__main__\':\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\'--disable-gc\', action=\'store_true\')\n    parser.add_argument(\'--inspect\', action=\'store_true\')\n    parser.add_argument(\'--verify\', action=\'store_true\')\n    parser.add_argument(\'--server\')\n    parser.add_argument(\'--username\')\n    parser.add_argument(\'--password\')\n    args = parser.parse_args()\n    if args.verify:\n        lp=LoadParm(); lp.load_default()\n        db=SamDB(session_info=system_session(),lp=lp)\n        value=db.search(base=\'\',scope=ldb.SCOPE_BASE,attrs=[\'isGlobalCatalogReady\'])[0]\n        ready=value.get(\'isGlobalCatalogReady\',[b\'FALSE\'])[0].decode().upper() == \'TRUE\'\n        if ready:\n            for port in [3268,3269]:\n                with socket.create_connection((\'127.0.0.1\',port),timeout=3): pass\n        print(json.dumps({\'ready\':ready}))\n        raise SystemExit(0 if ready else 1)\n    print(json.dumps(configure(not args.disable_gc, inspect=args.inspect,server=args.server,username=args.username,password=args.password)))\n'
+
+if __name__ == '__main__':
+    import sys
+    request = json.load(sys.stdin)
+    if request.get('kind', 'new') != 'new':
+        raise SystemExit('Esta pilha e exclusiva do DC1.')
+    request['kind'] = 'new'
+    lock_path = Path('/run/lock/astral-ad-operations.lock')
+    lock_path.parent.mkdir(parents=True,exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        print(json.dumps(execute(request),ensure_ascii=False))
+,'',text)
+                text=text.replace('[global]','[global]\\n    '+key+' = '+value,1)
+            atomic_write(config,text,0o644)
+            run(['systemctl','restart',services[0]])
+            if run(['systemctl','is-active',services[0]]).strip()!='active':
+                raise OperationError('Samba nao iniciou apos ativacao LDAPS; AD preservado para recuperacao.')
+            steps.append('Step-CA instalada e LDAPS configurado somente apos Samba AD ativo.')
         if request['domain_role'] != 'MEMBER' and request['kind'] == 'configure':
             remote_mutated = True
         if request['domain_role'] == 'MEMBER':

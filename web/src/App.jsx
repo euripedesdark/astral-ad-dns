@@ -4050,6 +4050,15 @@ function WizardModal({ onClose, t, showToast }) {
                     </div>
                   </div>
 
+                   <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2">
+                     <span className="font-bold text-slate-200">Dependências para novo domínio</span>
+                     {preflight.missing_dependencies?.length ? (
+                       <p className="text-amber-300 text-xs">Ausentes: {preflight.missing_dependencies.join(', ')}. Instale antes de criar o domínio. Somente Step-CA será instalada pelo wizard depois do Samba estar ativo.</p>
+                     ) : (
+                       <p className="text-emerald-300 text-xs">Samba, BIND, DNS, iptables, Chrony e OpenSSL: comandos verificados.</p>
+                     )}
+                     <p className="text-slate-400 text-[11px]">O firewall será verificado antes do provisionamento; regras ausentes serão preparadas e conferidas antes de alterar o AD.</p>
+                   </div>
                   <div className="space-y-1.5">
                     <span className="font-bold text-slate-200">{t.adFirewallPortsLabel}:</span>
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
