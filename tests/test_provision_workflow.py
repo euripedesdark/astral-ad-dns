@@ -272,6 +272,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(probes[0][probes[0].index('-I')+1],'192.0.2.10')
         self.assertLess(host.calls.index(probes[0]),next(i for i,args in enumerate(host.calls) if args[:3]==['samba-tool','gpo','aclcheck']))
 
+    def test_gpo_smb_transport_error_retries_with_pinned_ip(self):
+        host=Host(self.root)
+        def run(args):
+            if args[:3]==['samba-tool','gpo','aclcheck'] and not any(a.startswith('--ipaddress=') for a in args):
+                raise OperationError("ERROR: Error connecting to '192.0.2.10' using SMB")
+            return host(args)
+        result=self.execute(host=run)
+        self.assertTrue(result['success'],result)
+        retries=[args for args in host.calls if args[:3]==['samba-tool','gpo','aclcheck']]
+        self.assertTrue(retries)
+        self.assertTrue(all('--ipaddress=192.0.2.10' in args for args in retries))
+        self.assertFalse(any('--use-kerberos=off' in args for args in retries))
+
+    def test_gpo_smb_retry_failure_does_not_demote(self):
+        host=Host(self.root)
+        def run(args):
+            if args[:3]==['samba-tool','gpo','aclcheck']:
+                raise OperationError("ERROR: Error connecting to '192.0.2.10' using SMB")
+            return host(args)
+        result=self.execute(host=run)
+        self.assertFalse(result['success'])
+        self.assertIn('verificacao das ACLs continua pendente',result['message'])
+        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
+        self.assertEqual(self.db.read_text(),'old database')
+
     def test_gpo_permission_failure_is_detected_before_stop_or_demotion(self):
         host=Host(self.root,fail=lambda args:args[:3]==['samba-tool','gpo','aclcheck'])
         result=self.execute(host=host)
