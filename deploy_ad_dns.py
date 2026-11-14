@@ -85,6 +85,38 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
         return False
 
 
+def verify_web_firewall():
+    """Check 8095/tcp without confusing an empty ACCEPT chain with a closed port."""
+    if not shutil.which("iptables"):
+        log_warning("iptables ausente: nao foi possivel verificar acesso externo a 8095/tcp.")
+        return
+    listing = run_cmd(["iptables", "-S", "INPUT"], use_sudo=True, capture=True)
+    accepted = run_cmd(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "8095", "-j", "ACCEPT"],
+                       use_sudo=True, check=False)
+    if accepted:
+        log_success("iptables: regra explicita ACCEPT para 8095/tcp ja existe.")
+        return
+    # INPUT ACCEPT with no other rules already permits traffic. Opening a
+    # listener is the service's job, not the firewall's job.
+    lines = listing.splitlines()
+    if lines == ["-P INPUT ACCEPT"] or lines == ["-P INPUT ACCEPT", ""]:
+        log_success("iptables: INPUT ACCEPT sem bloqueios; 8095/tcp ja esta liberada.")
+        return
+    if listing.startswith("-P INPUT ACCEPT") and not any(
+            "-j DROP" in line or "-j REJECT" in line or "-j " in line
+            for line in lines[1:]):
+        log_success("iptables: INPUT ACCEPT e sem regras de bloqueio; 8095/tcp liberada.")
+        return
+    run_cmd(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "8095", "-j", "ACCEPT"],
+            use_sudo=True)
+    if not run_cmd(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "8095", "-j", "ACCEPT"],
+                   use_sudo=True, check=False):
+        log_error("iptables: falha ao confirmar regra de 8095/tcp.")
+        sys.exit(1)
+    log_success("iptables: regra 8095/tcp adicionada e confirmada.")
+    log_warning("Verifique a persistencia das regras iptables da distribuicao apos reiniciar.")
+
+
 def check_prerequisites():
     """Fail on build tools; report AD DC capability separately.
 
@@ -259,6 +291,7 @@ WantedBy=multi-user.target
         log_error(f"Systemd unit invalid: LoadState={loaded}, FragmentPath={unit_file}")
         sys.exit(1)
     log_success(f"Systemd unit loaded from {unit_file}")
+    verify_web_firewall()
     run_cmd(["systemctl", "enable", SYSTEMD_SERVICE], use_sudo=True)
     run_cmd(["systemctl", "restart", SYSTEMD_SERVICE], use_sudo=True)
 
@@ -279,11 +312,16 @@ WantedBy=multi-user.target
     log_success(f"Serviço {SYSTEMD_SERVICE} ativo e em execução!")
 
     # Teste de endpoint HTTP local
-    health_check = run_cmd("curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8095/api/auth/providers", capture=True)
-    if health_check in ["200", "401"]:
-        log_success(f"Endpoint HTTP 8095 respondendo com sucesso (Código HTTP: {health_check})")
+    health_check = run_cmd(["curl", "--connect-timeout", "3", "--max-time", "8",
+                            "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                            "http://127.0.0.1:8095/api/auth/providers"],
+                           capture=True, check=False)
+    if health_check in ("200", "401"):
+        log_success(f"Endpoint HTTP 8095 respondeu (HTTP {health_check}).")
     else:
-        log_warning(f"Endpoint retornou código HTTP {health_check}. Verifique os logs se necessário.")
+        log_error(f"API nao respondeu corretamente na porta 8095: {health_check!r}.")
+        run_cmd(["journalctl", "-u", SYSTEMD_SERVICE, "-n", "60", "--no-pager"], use_sudo=True)
+        sys.exit(1)
 
     # -------------------------------------------------------------------------
     # PASSO 6: Commit e Push para o Git
