@@ -135,7 +135,9 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
     let resolv_content = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
     let ad_dns_configured = resolv_content.contains("192.168.2.10") || resolv_content.contains("127.0.0.1");
     let ad_dns_resolves = run_cmd_dry("host -t srv _ldap._tcp.dc._msdcs.srvcloud.cloud 2>/dev/null", sudo, false).success;
-    let dc2_dns_added = run_cmd_dry("samba-tool dns query 192.168.2.10 srvcloud.cloud dc2 A -U administrator%Copa@@2026 2>/dev/null", sudo, false).success;
+    // Nunca embutir credenciais administrativas no codigo ou nos processos de diagnostico.
+    // A presenca de um DC remoto exige consulta autenticada dedicada; nao inferir sucesso.
+    let dc2_dns_added = false;
 
     Json(PreflightCheck {
         hostname,
