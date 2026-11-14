@@ -34,8 +34,11 @@ class HostPreparationTests(unittest.TestCase):
 
     def mock_preparation(self, release, existing_repo=False):
         commands=[]
+        self.repo_text=""
         def fake_run(args, **kw):
             commands.append((args,kw))
+            if args and args[0]=="install" and args[-1]=="/etc/yum.repos.d/tissamba.repo":
+                self.repo_text=pathlib.Path(args[-2]).read_text(encoding="utf-8")
             if args[:3]==["rpm","-q","samba-winexe"]:
                 return False
             if args[:3]==["rpm","-q","epel-release"]:
@@ -76,7 +79,7 @@ class HostPreparationTests(unittest.TestCase):
         joined="\n".join(" ".join(cmd) for cmd,_ in commands)
         self.assertIn("subscription-manager repos --enable codeready-builder-for-rhel-9-",joined)
         self.assertIn("RPM-GPG-KEY-TISSAMBA-9",joined)
-        self.assertIn("redhat9/samba-4.24/",joined)
+        self.assertIn("redhat9/samba-4.24/",self.repo_text)
 
     def test_existing_equivalent_repo_without_enabled_is_preserved(self):
         commands=self.mock_preparation(self.make_release("ID=almalinux\nVERSION_ID=10\n"), True)
