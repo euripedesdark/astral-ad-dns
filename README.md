@@ -41,52 +41,39 @@ Os testes locais validam os comandos e argumentos; a replicacao real deve ser
 verificada no dominio apos o ingresso (`samba-tool drs showrepl`).
 
 
-### DNS do AD e BIND local no ingresso
+### AD DNS and Local BIND During Domain Join
 
-O assistente exige o IP do DC parceiro. O preflight consulta diretamente
-`dig @IP_DO_AD -p 53 _ldap._tcp.dc._msdcs.DOMINIO SRV`; localhost nao e aceito
-como parceiro. Durante o ingresso, o resolver consulta somente esse parceiro.
-O diagnostico da tela usa IP/dominio informados, sem credenciais embutidas.
+The wizard requires the IP address of the partner Domain Controller (DC). The pre-flight check queries the partner directly using:
+`dig @AD_IP -p 53 _ldap._tcp.dc._msdcs.DOMAIN SRV`. `localhost` is not accepted as a partner. During the join process, the resolver queries only this specified partner. The diagnostic screen uses the provided IP/domain without employing any embedded credentials.
 
-`127.0.0.1:5353` e somente o BIND recursivo local opcional. A opcao vem
-desmarcada e nao participa da descoberta do AD. O encaminhamento para esse
-listener so e ativado depois de validar UDP/TCP. Falha apos o join aparece
-como aviso nas etapas, preservando o encaminhamento para o parceiro; nao e
-motivo para limpar a base ou repetir o join. Em um novo dominio, uma falha do
-BIND opcional mantem um forwarder externo valido em vez de apontar para um
-listener local indisponivel.
+`127.0.0.1:5353` refers exclusively to an optional local recursive BIND instance. This option is unchecked by default and plays no role in AD discovery. Forwarding to this listener is only enabled after UDP/TCP connectivity has been validated. Should a failure occur after the join, it is flagged as a warning within the process steps, while maintaining the existing forwarder to the partner; this does not necessitate clearing the database or repeating the join operation. In the case of a new domain, a failure of the optional BIND instance ensures that a valid external forwarder remains in place, rather than pointing to an unavailable local listener.
 
-O teste do BIND aguarda brevemente a inicializacao e, se persistir a falha,
-coleta estado e logs da unit antes de restaurar a configuracao anterior.
-Os testes locais nao comprovam conectividade com o dominio ou o servico BIND
-do servidor de producao.
+The BIND test waits briefly for initialization to complete; if the failure persists, it collects the unit's status and logs before restoring the previous configuration. Note that these local tests do not verify connectivity to the domain itself or to the BIND service running on the production server.
 
 
-### BIND ativo, mas sem listener 5353 no Fedora
+### BIND Active, but No Listener on Port 5353 (Fedora)
 
-O configurador verifica conflitos na porta 5353 e o arquivo efetivamente usado
-pelo processo named/NAMEDCONF. Se outro processo (por exemplo, mDNS) ocupa a
-porta, preserva esse processo e informa o conflito. Nao desativa outros servicos.
+The configuration tool checks for conflicts on port 5353 and identifies the specific file currently in use by the `named` process (`NAMEDCONF`). If another process (such as mDNS) is occupying the port, the tool leaves that process intact and reports the conflict; it does not disable other services.
 
-Com SELinux ativo, requer `policycoreutils-python-utils` e autoriza TCP/UDP 5353
-como `dns_port_t`, sem desabilitar SELinux. A porta fica dedicada ao BIND local;
-se a ativacao falhar, restaura os rotulos locais anteriores junto da configuracao.
-O diagnostico inclui erros de listener, estado dos sockets e eventos AVC quando
-a ferramenta de auditoria esta disponivel. Isso nao substitui a verificacao no
-host: servico ativo sozinho nao comprova DNS nem replicacao AD.
+When SELinux is enabled, the `policycoreutils-python-utils` package is required. The tool authorizes TCP/UDP port 5353 by assigning it the `dns_port_t` label, without requiring SELinux to be disabled. The port is then dedicated to the local BIND instance. If activation fails, the previous local labels and configuration are restored.
+Diagnostics include listener errors, socket status, and AVC events (when the
+audit tool is available). Note that this does not replace verification on the
+host itself: an active service alone does not confirm proper DNS or AD replication.
 
-Depois de atualizar este helper, aplique novamente pela aba **BIND 9 Recursivo**.
-Nao repita o ingresso ou a limpeza da base AD por uma falha dessa etapa opcional.
+After updating this helper, re-apply the configuration via the **BIND 9 Recursive** tab.
+Do not repeat the domain join process or clear the AD database if this optional step fails.
 
 
-## Provisionamento web com backup e reingresso
+## Web-based provisioning with backup and re-joining
 
-O assistente agora oferece **Reingresso com backup automático** e **Reaplicar
-configuração**, com histórico/download dos backups e acompanhamento assíncrono.
-Instala dependências por gerenciador da distribuição, trata iptables, NTP, BIND,
-catálogo global e TLS/Step-CA selecionados na tela. A porta da nova CA é escolhida
-automaticamente se a preferida estiver ocupada, com regras TCP/UDP persistentes.
-As rotas Nginx e o auth-service são preservados. Um alvo com FSMO não é limpo.
+The wizard now offers **Re-join with automatic backup** and **Re-apply
+configuration**, featuring a backup history/download option and asynchronous
+progress tracking. It handles the installation of dependencies via the
+distribution's package manager, and configures iptables, NTP, BIND, the
+Global Catalog, and TLS/Step-CA as selected on the screen. If the preferred
+port for the new CA is already in use, an alternative port is automatically
+assigned, with persistent TCP/UDP rules applied. Nginx routes and the
+auth-service are preserved. A target holding FSMO roles will not be cleared.
 
-[Fluxo completo, comparação com fedoradc-SSL(3).py e limites de recuperação](docs/provisionamento-web.md).
-Este fluxo substitui as antigas instruções de limpeza manual do ingresso.
+[Full workflow, comparison with fedoradc-SSL(3).py, and recovery limitations](docs/provisionamento-web.md).
+This workflow replaces the previous instructions for manually clearing a domain join.
