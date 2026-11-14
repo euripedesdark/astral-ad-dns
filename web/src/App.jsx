@@ -419,7 +419,7 @@ function Application() {
               </h1>
               {status && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-950 border border-indigo-700 text-indigo-300 font-mono font-medium">
-                  {status.realm || 'AD 2016'}
+                  {status.ad_configured ? (status.realm || 'AD configurado') : 'Sem domínio'}
                 </span>
               )}
             </div>
@@ -2446,7 +2446,7 @@ function DnsTab({ t, showToast }) {
                   required 
                   value={recName} 
                   onChange={(e) => setRecName(e.target.value)} 
-                  placeholder="@ para raiz ou subdomínio (ex: dc-erp, fileserver)"
+                  placeholder="@ para raiz ou subdomínio (ex: dc1, fileserver)"
                   className="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-lg text-slate-100 focus:border-indigo-500 focus:outline-none font-mono"
                 />
               </div>
@@ -4592,7 +4592,7 @@ function TerminalTab({ t, operator, showToast, customFetch }) {
             <div key={idx}>
               {l.cmd && (
                 <div className="text-sky-400 font-semibold flex items-center gap-1.5">
-                  <span className="text-emerald-400">[{operator?.username}@dc-erp ~]$</span>
+                  <span className="text-emerald-400">[{operator?.username}@{status?.hostname?.split('.')[0] || 'localhost'} ~]$</span>
                   <span className="text-slate-100">{l.cmd}</span>
                 </div>
               )}
