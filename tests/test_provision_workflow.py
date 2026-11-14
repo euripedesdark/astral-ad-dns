@@ -303,6 +303,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(any(args[0]=='smbclient' for args in retry_host.calls))
         self.assertFalse(any(args[:3]==['samba-tool','domain','join'] for args in retry_host.calls))
 
+    def test_configuration_reapply_uses_selected_alternate_bind_port(self):
+        host=Host(self.root)
+        def bind(req, root, run):
+            req['bind_port']=15353
+            return ['BIND recursivo local 15353 OK']
+        result=self.execute(dict(self.request,kind='configure'),host,bind)
+        self.assertTrue(result['success'],result)
+        self.assertIn('dns forwarder = 127.0.0.1:15353',self.config.read_text())
+        self.assertFalse(any(args[:3]==['samba-tool','domain','join'] for args in host.calls))
+        self.assertFalse(any(args[:3]==['samba-tool','domain','demote'] for args in host.calls))
+
     def test_configure_only_never_demotes_or_rejoins(self):
         host=Host(self.root)
         result=self.execute(dict(self.request,kind='configure'),host)

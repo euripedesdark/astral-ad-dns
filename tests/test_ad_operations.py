@@ -232,6 +232,43 @@ class OperationsTests(unittest.TestCase):
         self.assertIn(['semanage', 'port', '-m', '-t', 'dns_port_t', '-p', 'udp', '5353'], calls)
         self.assertEqual(undo, [['semanage', 'port', '-d', '-p', 'tcp', '5353'], ['semanage', 'port', '-d', '-p', 'udp', '5353']])
 
+    def test_ambiguous_selinux_5353_selects_alternative_without_changing_mdns(self):
+        config=self.selinux_fixture()
+        runner=FakeRunner(self.root)
+        calls=[]
+        def run(args):
+            calls.append(args)
+            if args==['semanage','port','-l']:
+                return ('dns_port_t tcp 53,5353\n'
+                        'mdns_port_t udp 5353\n'
+                        'custom_port_t udp 5353\n')
+            if args==['semanage','port','-l','-C']:
+                return ''
+            return runner(args)
+        request={'forwarders':['9.9.9.9']}
+        with patch.object(operations.shutil,'which',return_value='/usr/sbin/semanage'):
+            result=operations.configure_bind(request,self.root,run)
+        self.assertEqual(request['bind_port'],15353)
+        self.assertIn('listen-on port 15353 { 127.0.0.1; };',config.read_text())
+        self.assertTrue(any('Porta alternativa 15353' in step for step in result))
+        self.assertIn(['semanage','port','-a','-t','dns_port_t','-p','udp','15353'],calls)
+        self.assertFalse(any(args[:3]==['semanage','port','-m'] and '5353' in args for args in calls))
+
+    def test_alternative_port_ambiguous_does_not_modify_config_or_selinux(self):
+        config=self.selinux_fixture()
+        original=config.read_text()
+        calls=[]
+        def run(args):
+            calls.append(args)
+            if args==['semanage','port','-l']:
+                return ('dns_port_t udp 5353\nmdns_port_t udp 5353\n'
+                        'other_port_t udp 15353\ncustom_port_t udp 15353\n')
+            return ''
+        with self.assertRaisesRegex(operations.OperationError,'Porta alternativa'):
+            operations.configure_bind({'forwarders':['9.9.9.9']},self.root,run)
+        self.assertEqual(config.read_text(),original)
+        self.assertFalse(any(args[:2]==['systemctl','restart'] or args[:2]==['semanage','port'] and '-m' in args for args in calls))
+
     def test_selinux_failure_undoes_previous_port_and_preserves_config(self):
         config = self.selinux_fixture()
         runner = FakeRunner(self.root)

@@ -96,10 +96,10 @@ def normalize_forwarders(values):
     return output
 
 
-def hybrid_options(forwarders, directory):
+def hybrid_options(forwarders, directory, port=5353):
     return ('options {\n'
             f'    directory "{directory}";\n'
-            '    listen-on port 5353 { 127.0.0.1; };\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
             '    listen-on-v6 { none; };\n'
             '    allow-query { localhost; };\n'
             '    allow-recursion { localhost; };\n'
@@ -146,7 +146,7 @@ def replace_options(content, options):
     raise OperationError('Bloco options incompleto.')
 
 
-def check_bind_runtime(root, main, service, run):
+def check_bind_runtime(root, main, service, run, port=5353):
     # A successful restart does not prove that the daemon loaded the file we edited.
     expected = '/' + str(main.relative_to(root))
     sysconfig = root / 'etc/sysconfig/named'
@@ -172,13 +172,13 @@ def check_bind_runtime(root, main, service, run):
     # BIND binds only IPv4 127.0.0.1. A multicast socket (Chrome mDNS,
     # e.g. 224.0.0.251:5353) does not occupy that local address.
     # Keep wildcard and loopback conflicts protected; never stop their owners.
-    listeners = run(['ss', '-H', '-lntup', '( sport = :5353 )'])
+    listeners = run(['ss', '-H', '-lntup', '( sport = :' + str(port) + ' )'])
     for line in listeners.splitlines():
         if not line.strip() or re.search(r'"named(?:-sdb)?"', line):
             continue
         fields = line.split()
         if len(fields) < 5:
-            raise OperationError('Nao foi possivel identificar o endereco local do listener 5353: ' + line)
+            raise OperationError('Nao foi possivel identificar o endereco local do listener '+str(port)+': ' + line)
         address = fields[4].rsplit(':', 1)[0].strip('[]').split('%', 1)[0]
         if address not in ['*', '0.0.0.0', '::', '127.0.0.1']:
             try:
@@ -186,11 +186,11 @@ def check_bind_runtime(root, main, service, run):
                 if parsed != ipaddress.ip_address('::ffff:127.0.0.1'):
                     continue
             except ValueError:
-                raise OperationError('Endereco do listener 5353 nao reconhecido: ' + line)
-        raise OperationError('Endereco local 127.0.0.1:5353 ou wildcard ocupado por outro processo; nenhum servico foi parado: ' + line)
+                raise OperationError('Endereco do listener '+str(port)+' nao reconhecido: ' + line)
+        raise OperationError('Endereco local 127.0.0.1:'+str(port)+' ou wildcard ocupado por outro processo; nenhum servico foi parado: ' + line)
 
 
-def port_labels(output, protocol):
+def port_labels(output, protocol, port=5353):
     labels = []
     for line in output.splitlines():
         match = re.match(r'^(\w+_port_t)\s+(tcp|udp)\s+(.+)$', line.strip())
@@ -198,42 +198,63 @@ def port_labels(output, protocol):
             continue
         for item in match[3].split(','):
             item = item.strip()
-            if item == '5353':
+            if item == str(port):
                 labels.append(match[1])
     return labels
 
 
-def prepare_bind_selinux(root, run, undo):
+def choose_bind_port(root, run):
+    """Use the existing local DNS port unless SELinux has overlapping policies.
+
+    A separate port avoids rewriting the distribution mDNS label for UDP/5353.
+    Refuse ambiguous labels on both candidates instead of guessing ownership.
+    """
+    if not (root/'sys/fs/selinux/enforce').exists():
+        return 5353
+    policies=run(['semanage','port','-l'])
+    if all(len(set(port_labels(policies,proto)))<=1 for proto in ('tcp','udp')):
+        return 5353
+    fallback=15353
+    for proto in ('tcp','udp'):
+        previous=set(port_labels(policies,proto,fallback))
+        if previous and previous != {'dns_port_t'}:
+            raise OperationError('Porta alternativa '+str(fallback)+' ja possui rotulo SELinux '+
+                                 ','.join(sorted(previous))+' para '+proto+
+                                 '; nenhuma politica existente modificada.')
+    return fallback
+
+
+def prepare_bind_selinux(root, run, undo, port=5353):
     if not (root / 'sys/fs/selinux/enforce').exists():
         return []
     if not shutil.which('semanage'):
-        raise OperationError('SELinux ativo: instale policycoreutils-python-utils (dnf install policycoreutils-python-utils) para autorizar o BIND na porta 5353. SELinux foi preservado.')
+        raise OperationError('SELinux ativo: instale policycoreutils-python-utils para autorizar o BIND na porta '+str(port)+'. SELinux preservado.')
     labels = run(['semanage', 'port', '-l'])
     local = run(['semanage', 'port', '-l', '-C'])
     steps = []
     for protocol in ['tcp', 'udp']:
-        previous = port_labels(labels, protocol)
-        if previous == ['dns_port_t']:
+        previous = port_labels(labels, protocol, port)
+        if set(previous) == {'dns_port_t'}:
             continue
-        if len(previous) > 1:
-            raise OperationError('Politica SELinux ambigua para ' + protocol + '/5353; nenhuma politica global sera substituida.')
-        local_previous = port_labels(local, protocol)
+        if len(set(previous)) > 1:
+            raise OperationError('Politica SELinux ambigua para ' + protocol + '/' + str(port) + '; nenhuma politica global sera substituida.')
+        local_previous = port_labels(local, protocol, port)
         action = '-m' if previous else '-a'
-        run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, '5353'])
+        run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
         # Removing a new local override restores the distribution policy (including mDNS).
-        undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, '5353']
-                    if local_previous else ['semanage', 'port', '-d', '-p', protocol, '5353'])
-        steps.append('SELinux: ' + protocol + '/5353 autorizado como dns_port_t para o BIND.')
+        undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]
+                    if local_previous else ['semanage', 'port', '-d', '-p', protocol, str(port)])
+        steps.append('SELinux: ' + protocol + '/' + str(port) + ' autorizado como dns_port_t para o BIND.')
     return steps
 
 
-def wait_bind_ready(run, service, attempts=6):
+def wait_bind_ready(run, service, attempts=6, port=5353):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
     for attempt in range(attempts):
         try:
             for transport in [[], ['+tcp']]:
-                reply = run(['dig', '@127.0.0.1', '-p', '5353', '.', 'SOA', '+tries=1', '+time=1'] + transport)
+                reply = run(['dig', '@127.0.0.1', '-p', str(port), '.', 'SOA', '+tries=1', '+time=1'] + transport)
                 if 'status: NOERROR' not in reply:
                     raise OperationError('BIND respondeu sem NOERROR: ' + reply[-400:])
             return
@@ -245,7 +266,7 @@ def wait_bind_ready(run, service, attempts=6):
     for command in [
         ['systemctl', 'show', service, '-p', 'ActiveState', '-p', 'SubState', '-p', 'ExecStart'],
         ['journalctl', '-u', service, '-n', '80', '--no-pager'],
-        ['ss', '-H', '-lntup', '( sport = :5353 )'],
+        ['ss', '-H', '-lntup', '( sport = :' + str(port) + ' )'],
         ['getenforce'],
         ['ausearch', '-m', 'AVC,USER_AVC', '-ts', 'recent', '-c', 'named'],
     ]:
@@ -257,7 +278,7 @@ def wait_bind_ready(run, service, attempts=6):
             details.append(output[-1800:])
         except (OperationError, OSError):
             pass
-    raise OperationError('BIND recursivo LOCAL nao respondeu em TCP/UDP 127.0.0.1:5353; '
+    raise OperationError('BIND recursivo LOCAL nao respondeu em TCP/UDP 127.0.0.1:'+str(port)+'; '
                          'este teste nao e o ingresso nem o DNS do DC parceiro na porta 53. '
                          + last_error + ('; diagnostico: ' + ' '.join(details) if any(details) else ''))
 
@@ -271,9 +292,11 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     config, main, service, directory = bind_paths(root)
     original_stat = config.stat() if config.exists() else None
     original = config.read_bytes() if config.exists() else None
-    candidate = replace_options(original.decode() if original else '', hybrid_options(forwarders, directory))
+    port = choose_bind_port(root, run)
+    request['bind_port'] = port
+    candidate = replace_options(original.decode() if original else '', hybrid_options(forwarders, directory, port))
     if request.get('dry_run'):
-        return ['Plano BIND: TCP/UDP 127.0.0.1:5353, ACL localhost, forward only, DNSSEC e cache 64 MiB.',
+        return ['Plano BIND: TCP/UDP 127.0.0.1:'+str(port)+', ACL localhost, forward only, DNSSEC e cache 64 MiB.',
                 'Forwarders validados: ' + ', '.join(forwarders),
                 'Nenhuma configuração ou serviço foi alterado.']
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -284,7 +307,7 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     selinux_undo = []
     selinux_steps = []
     try:
-        check_bind_runtime(root, main, service, run)
+        check_bind_runtime(root, main, service, run, port)
         # named runs unprivileged on Arch: do not inherit an unreadable
         # root-only configuration mode from a previous deployment.
         atomic_write(staged, candidate, 0o640)
@@ -302,11 +325,11 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         run(['named-checkconf', str(main)])
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
-        selinux_steps = prepare_bind_selinux(root, run, selinux_undo)
+        selinux_steps = prepare_bind_selinux(root, run, selinux_undo, port)
         run(['systemctl', 'restart', service])
-        wait_bind_ready(run, service)
+        wait_bind_ready(run, service, port=port)
         run(['systemctl', 'enable', service])
-        return package_steps + selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
+        return package_steps + (['Porta alternativa '+str(port)+' selecionada para preservar SELinux udp/5353.'] if port != 5353 else []) + selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:{port}.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']
     except Exception as error:
         rollback_errors = []
