@@ -216,9 +216,11 @@ def choose_bind_port(root, run):
         return 5353
     fallback=15353
     for proto in ('tcp','udp'):
-        if len(set(port_labels(policies,proto,fallback)))>1:
-            raise OperationError('SELinux ambiguo tanto em 5353 quanto em '+str(fallback)+
-                                 ' ('+proto+'); nenhuma politica existente modificada.')
+        previous=set(port_labels(policies,proto,fallback))
+        if previous and previous != {'dns_port_t'}:
+            raise OperationError('Porta alternativa '+str(fallback)+' ja possui rotulo SELinux '+
+                                 ','.join(sorted(previous))+' para '+proto+
+                                 '; nenhuma politica existente modificada.')
     return fallback
 
 
