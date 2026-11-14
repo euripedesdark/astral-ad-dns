@@ -204,24 +204,25 @@ def port_labels(output, protocol, port=5353):
 
 
 def choose_bind_port(root, run):
-    """Use the existing local DNS port unless SELinux has overlapping policies.
+    """Require canonical local BIND port 5353 on new installations.
 
-    A separate port avoids rewriting the distribution mDNS label for UDP/5353.
-    Refuse ambiguous labels on both candidates instead of guessing ownership.
+    An ambiguous SELinux mDNS policy must be resolved explicitly by an
+    administrator; silently falling back to 15353 can surprise later topology
+    changes. Do not rewrite system-wide SELinux port ownership here.
     """
     if not (root/'sys/fs/selinux/enforce').exists():
         return 5353
     policies=run(['semanage','port','-l'])
-    if all(len(set(port_labels(policies,proto)))<=1 for proto in ('tcp','udp')):
-        return 5353
-    fallback=15353
-    for proto in ('tcp','udp'):
-        previous=set(port_labels(policies,proto,fallback))
-        if previous and previous != {'dns_port_t'}:
-            raise OperationError('Porta alternativa '+str(fallback)+' ja possui rotulo SELinux '+
-                                 ','.join(sorted(previous))+' para '+proto+
-                                 '; nenhuma politica existente modificada.')
-    return fallback
+    for protocol in ('tcp','udp'):
+        labels=set(port_labels(policies,protocol,5353))
+        if len(labels)>1:
+            raise OperationError(
+                'SELinux possui politicas concorrentes para '+protocol+
+                '/5353 ('+', '.join(sorted(labels))+'). Porta BIND padrao '
+                '5353 preservada; corrija o conflito de politicas SELinux '
+                'explicitamente antes do provisionamento. Nenhuma porta '
+                'alternativa sera escolhida automaticamente.')
+    return 5353
 
 
 def prepare_bind_selinux(root, run, undo, port=5353):
@@ -293,6 +294,21 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     original_stat = config.stat() if config.exists() else None
     original = config.read_bytes() if config.exists() else None
     port = choose_bind_port(root, run)
+    # Never change a previously deployed BIND listener implicitly. A migration
+    # from 15353 to 5353 is an explicit, separate maintenance procedure.
+    if root == Path('/') and not request.get('dry_run'):
+        import subprocess
+        current = subprocess.run(
+            ['testparm', '-s', '--parameter-name=dns forwarder'],
+            capture_output=True, text=True, check=False)
+        if current.returncode == 0:
+            old_forwarder = current.stdout.strip().splitlines()
+            old_value = old_forwarder[-1].strip() if old_forwarder else ''
+            if old_value.startswith('127.0.0.1:') and old_value != '127.0.0.1:5353':
+                raise OperationError('O Samba ja encaminha para '+old_value+
+                                     '. Migracao para 5353 exige manutencao '
+                                     'explicita e validacao SELinux/DNS; '
+                                     'o provisionamento nao mudara a porta.')
     request['bind_port'] = port
     candidate = replace_options(original.decode() if original else '', hybrid_options(forwarders, directory, port))
     if request.get('dry_run'):
