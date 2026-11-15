@@ -68,10 +68,15 @@ class SystemTests(unittest.TestCase):
     def test_existing_ca_is_never_reinitialized(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);config=root/'etc/step-ca/config/ca.json';config.parent.mkdir(parents=True);config.write_text('{}')
-            req={'setup_step_ca':True,'initialize_ca':True,'kind':'new','cert_password':'pki-secret','host_ip':'192.0.2.20','hostname_fqdn':'dc.example.test','realm':'EXAMPLE.TEST'}
+            req={'setup_step_ca':True,'initialize_ca':True,'kind':'new','cert_password':'pki-secret','host_ip':'192.0.2.20','hostname_fqdn':'dc.example.test','netbios_name':'DC','realm':'EXAMPLE.TEST'}
             calls=[]
-            with patch.object(pki.shutil,'which',return_value='/usr/bin/step'),self.assertRaisesRegex(OperationError,'Ja existe uma CA'):
-                pki.configure_pki(req,root,lambda args:calls.append(args) or '', 'samba',[])
+            def run(args):
+                calls.append(args)
+                if args[:2]==['systemctl','start']:
+                    raise OperationError('Step-CA unavailable')
+                return ''
+            with patch.object(pki.shutil,'which',return_value='/usr/bin/step'),self.assertRaisesRegex(OperationError,'Step-CA unavailable'):
+                pki.configure_pki(req,root,run, 'samba',[])
             self.assertEqual(config.read_text(),'{}')
             self.assertFalse(any('init' in args for args in calls))
     def test_nginx_listener_conflict_stops_ca_before_initialization(self):
@@ -89,7 +94,7 @@ class SystemTests(unittest.TestCase):
             (ca.parent/'intermediate_ca.crt').write_text('-----BEGIN CERTIFICATE-----\ntrusted intermediate\n-----END CERTIFICATE-----\n')
             req={'setup_step_ca':True,'initialize_ca':False,'kind':'configure','cert_password':'pki-secret','host_ip':'192.0.2.20','hostname_fqdn':'dc.example.test','netbios_name':'DC','realm':'EXAMPLE.TEST'}
             def run(args):
-                if args[:3]==['step','ca','certificate']:
+                if args[0].endswith('/step') and args[1:3]==['ca','certificate']:
                     Path(args[4]).write_text('signed certificate');Path(args[5]).write_text('private key')
                 return ''
             with patch.object(pki.shutil,'which',return_value='/usr/bin/step'):
