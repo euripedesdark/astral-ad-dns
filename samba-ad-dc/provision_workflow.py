@@ -164,6 +164,44 @@ def read_level(text):
     return levels[text], text
 
 
+def local_ad_identity(root, run, config):
+    """Read local AD identity from config and the local database's @ROOTDSE."""
+    database = root / 'var/lib/samba/private/sam.ldb'
+    configured_name = optional(run, ['testparm', '-s', '--parameter-name=netbios name',
+                                      str(config)]).strip().upper() if config.exists() else ''
+    configured_realm = optional(run, ['testparm', '-s', '--parameter-name=realm',
+                                       str(config)]).strip().upper() if config.exists() else ''
+    if not database.exists():
+        return configured_name, '', 'none'
+    rootdse = optional(run, ['ldbsearch', '-H', str(database),
+                              '-b', '@ROOTDSE', '-s', 'base',
+                              'defaultNamingContext', 'dsServiceName'])
+    if not rootdse:
+        rootdse = optional(run, ['ldbsearch', '-H', str(database),
+                                  '-b', '', '-s', 'base',
+                                  'defaultNamingContext', 'dsServiceName'])
+    values = {}
+    for line in rootdse.splitlines():
+        key, separator, value = line.partition(': ')
+        if separator:
+            values[key.lower()] = value.strip()
+    domain_dn = values.get('defaultnamingcontext', '')
+    settings_dn = values.get('dsservicename', '')
+    domain_components = [part[3:] for part in domain_dn.split(',')
+                         if part.upper().startswith('DC=')]
+    db_realm = '.'.join(domain_components).upper() if domain_components else ''
+    settings = settings_dn.split(',')
+    db_name = settings[1][3:].upper() if (
+        len(settings) >= 3 and settings[0].upper() == 'CN=NTDS SETTINGS'
+        and settings[1].upper().startswith('CN=')
+        and settings[2].upper() == 'CN=SERVERS') else ''
+    if db_name and configured_name and db_name != configured_name:
+        raise OperationError('Identidade AD local inconsistente entre smb.conf e sam.ldb; nenhuma limpeza autorizada.')
+    if db_realm and configured_realm and db_realm != configured_realm:
+        raise OperationError('Realm AD local inconsistente entre smb.conf e sam.ldb; nenhuma limpeza autorizada.')
+    return db_name or configured_name, db_realm or configured_realm, 'rootdse' if db_name and db_realm else 'config'
+
+
 def preflight(request, root, run, old_name, steps):
     if request['kind'] == 'configure':
         return None
@@ -362,8 +400,10 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         install_dependencies(root, run, request.get('setup_bind_hybrid', False), steps)
         config = root / 'etc/samba/smb.conf'
         local_db = (root / 'var/lib/samba/private/sam.ldb').exists()
-        old_name = optional(run, ['testparm', '-s', '--parameter-name=netbios name', str(config)]).strip().upper() if config.exists() else ''
-        old_realm = optional(run, ['testparm', '-s', '--parameter-name=realm', str(config)]).strip().upper() if local_db else ''
+        old_name, old_realm, identity_source = local_ad_identity(root, run, config)
+        if local_db:
+            steps.append('Identidade AD local: nome=' + (old_name or 'indisponivel') +
+                         ', realm=' + (old_realm or 'indisponivel') + ', origem=' + identity_source)
         if request.get('initialize_ca') and request['kind']!='new':
             raise OperationError('Inicializar CA so e permitido em novo dominio. No reingresso, selecione a CA existente.')
         if local_db and (not old_name or not old_realm) and not (request['kind']=='new' and request.get('overwrite_existing')):
