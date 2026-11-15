@@ -498,26 +498,49 @@ def restore_domain(request, root=Path('/'), run=checked_run):
 
 # Executed on the selected controller, never on a guessed server. Credentials
 # arrive on stdin and are neither logged nor included in the SSH command.
-DEMOTE_PROGRAM = r'''import json, re, subprocess, sys
+DEMOTE_PROGRAM = r'''import json, os, subprocess, sys
 request = json.load(sys.stdin)
 def run(args):
     result = subprocess.run(args, text=True, capture_output=True, timeout=300)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout)[-2000:])
     return result.stdout
+def demote_with_private_password():
+    # Same Samba command as manual use on the selected DC. PASSWD_FD is a
+    # supported Samba credential mechanism; no password appears in argv,
+    # shell history or environment.
+    read_fd, write_fd = os.pipe()
+    try:
+        password = request.pop('admin_password', '')
+        if not password:
+            raise RuntimeError('Senha administrativa ausente.')
+        os.write(write_fd, password.encode('utf-8') + bytes((10,)))
+        os.close(write_fd)
+        write_fd = -1
+        env = os.environ.copy()
+        env.pop('PASSWD', None)
+        env.pop('PASSWD_FILE', None)
+        env['PASSWD_FD'] = str(read_fd)
+        command = ['samba-tool', 'domain', 'demote',
+                   '-U' + request['admin_username']]
+        result = subprocess.run(command, text=True, capture_output=True,
+                                timeout=300, env=env, pass_fds=(read_fd,))
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout)[-2500:])
+    finally:
+        os.close(read_fd)
+        if write_fd != -1:
+            os.close(write_fd)
 try:
     name = run(['testparm', '-s', '--parameter-name=netbios name']).strip().upper()
     if name != request['target_name']:
-        raise RuntimeError('Servidor SSH não corresponde ao DC selecionado.')
+        raise RuntimeError('Servidor atual nao corresponde ao DC selecionado.')
     fsmo = run(['samba-tool', 'fsmo', 'show']).upper()
     if ('CN=NTDS SETTINGS,CN=' + name + ',') in fsmo:
         raise RuntimeError('DC ainda possui funções FSMO; despromoção bloqueada.')
-    run(['samba-tool', 'domain', 'demote', '--server=' + request['primary_hostname'],
-         '-U' + request['admin_username'], '--password=' + request['admin_password']])
-    for unit in ['samba', 'samba-dc', 'samba-ad-dc']:
-        state = subprocess.run(['systemctl', 'is-active', unit], text=True, capture_output=True)
-        if state.returncode == 0 and state.stdout.strip() == 'active':
-            run(['systemctl', 'stop', unit])
+    demote_with_private_password()
+    # samba-tool owns the state transition. Do not independently stop Samba
+    # or alter the remaining member account after a successful demotion.
     print(json.dumps({'success': True}))
 except Exception as error:
     print(json.dumps({'success': False, 'error': str(error)}))
