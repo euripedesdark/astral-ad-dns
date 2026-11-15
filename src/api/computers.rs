@@ -480,10 +480,27 @@ pub async fn demote_controller(
         "admin_username": payload.admin_username, "admin_password": payload.admin_password,
     });
     let result = run_ad_operation("demote", &request, sudo);
-    let id = config.audit.record(&_operator.0.username, None, "DC_DEMOTE", &name, false, result.is_ok(), "Despromoção de DC secundário");
+    // Samba errors can include command text. Never log the supplied password.
+    let sanitized_error = result.as_ref().err().map(|error| {
+        error.replace(payload.admin_password.as_str(), "[REDACTED]")
+            .chars().take(3000).collect::<String>()
+    });
+    let audit_details = sanitized_error.as_ref()
+        .map(|error| format!("Despromoção de DC secundário falhou: {error}"))
+        .unwrap_or_else(|| "Despromoção de DC secundário confirmada".to_string());
+    let id = config.audit.record(&_operator.0.username, None, "DC_DEMOTE", &name, false,
+                                 result.is_ok(), &audit_details);
+    if let Some(ref error) = sanitized_error {
+        tracing::error!(target: "astral_ad_demote", dc=%name, correlation_id=%id, error=%error,
+                        "Falha na despromoção do controlador");
+    }
     match result {
         Ok(steps) => (StatusCode::OK, Json(ApiResponse { success: true, message: "DC secundário despromovido.".into(), data: Some(steps), dry_run: false, correlation_id: Some(id) })),
-        Err(error) => fail(error),
+        Err(_) => (StatusCode::BAD_REQUEST, Json(ApiResponse {
+            success: false,
+            message: sanitized_error.unwrap_or_else(|| "Despromoção falhou".to_string()),
+            data: None, dry_run: false, correlation_id: Some(id),
+        })),
     }
 }
 
