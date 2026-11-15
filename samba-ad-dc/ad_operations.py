@@ -594,12 +594,12 @@ def prepare_resolver(primary_ip):
     if not resolver.is_file():
         raise RuntimeError("resolv.conf inexistente.")
     contents = resolver.read_text()
-    nameservers = re.findall(r"(?m)^\\s*nameserver\\s+(\\S+)", contents)
+    nameservers = re.findall(r"(?m)^\s*nameserver\s+(\S+)", contents)
     if nameservers and all(address in ("127.0.0.1", "127.0.0.53", "::1") for address in nameservers):
         if resolver.is_symlink():
             raise RuntimeError("resolv.conf gerenciado por symlink ainda aponta só para loopback; não será sobrescrito.")
-        search = "search " + request["realm"].lower() + "\\n"
-        resolver.write_text(search + "nameserver " + primary_ip + "\\n")
+        search = "search " + request["realm"].lower() + "\n"
+        resolver.write_text(search + "nameserver " + primary_ip + "\n")
         steps.append("DNS local redirecionado ao DC primário após backup.")
 
 def service_exists(unit):
@@ -619,18 +619,18 @@ def write_member_config(realm, workgroup, netbios):
         raise RuntimeError("Realm local inválido.")
     if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,14}", workgroup):
         raise RuntimeError("Workgroup local inválido.")
-    text = ("[global]\\n"
-            "    netbios name = " + netbios + "\\n"
-            "    workgroup = " + workgroup + "\\n"
-            "    realm = " + realm + "\\n"
-            "    security = ADS\\n"
-            "    server role = member server\\n"
-            "    kerberos method = secrets and keytab\\n"
-            "    idmap config * : backend = tdb\\n"
-            "    idmap config * : range = 3000-7999\\n"
-            "    idmap config " + workgroup + " : backend = rid\\n"
-            "    idmap config " + workgroup + " : range = 10000-999999\\n"
-            "    winbind use default domain = yes\\n")
+    text = ("[global]\n"
+            "    netbios name = " + netbios + "\n"
+            "    workgroup = " + workgroup + "\n"
+            "    realm = " + realm + "\n"
+            "    security = ADS\n"
+            "    server role = member server\n"
+            "    kerberos method = secrets and keytab\n"
+            "    idmap config * : backend = tdb\n"
+            "    idmap config * : range = 3000-7999\n"
+            "    idmap config " + workgroup + " : backend = rid\n"
+            "    idmap config " + workgroup + " : range = 10000-999999\n"
+            "    winbind use default domain = yes\n")
     target = pathlib.Path("/etc/samba/smb.conf")
     temp = target.with_name("smb.conf.astral-demote-" + uuid.uuid4().hex)
     temp.write_text(text)
