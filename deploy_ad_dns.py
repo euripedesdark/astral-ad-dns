@@ -318,7 +318,7 @@ def check_prerequisites():
         log_error("Ferramentas de build/deploy ausentes após preparação: " + ", ".join(remaining))
         sys.exit(1)
 
-    required_host = ["samba-tool", "testparm", "smbclient", "net",
+    required_host = ["samba-tool", "testparm", "smbclient", "net", "winbindd",
                      "dig", "ip", "iptables", "iptables-save",
                      "chronyd", "openssl"]
     missing_host = [tool for tool in required_host if not shutil.which(tool)]
