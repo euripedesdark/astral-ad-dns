@@ -571,6 +571,21 @@ def check_primary_reachable():
         raise RuntimeError("LDAP TCP 389 do DC primário inacessível.")
     return reachable[0]
 
+def validate_member_runtime():
+    for cmd in ("net", "smbd", "winbindd", "testparm"):
+        if shutil.which(cmd) is None:
+            raise RuntimeError("Componente de membro ausente: " + cmd)
+    for candidates in (("smb", "smbd"), ("winbind", "winbindd")):
+        if not any(service_exists(unit) for unit in candidates):
+            raise RuntimeError("Serviço de membro ausente: " + "/".join(candidates))
+    resolver = pathlib.Path("/etc/resolv.conf")
+    if not resolver.is_file():
+        raise RuntimeError("resolv.conf inexistente.")
+    nameservers = re.findall(r"(?m)^\s*nameserver\s+(\S+)", resolver.read_text())
+    if resolver.is_symlink() and nameservers and all(
+            address in ("127.0.0.1", "127.0.0.53", "::1") for address in nameservers):
+        raise RuntimeError("DNS do host usa apenas loopback por symlink; ajuste o resolvedor antes de converter o DC.")
+
 def create_backup():
     root = pathlib.Path("/var/backups/astral-ad-dns/demote")
     root.mkdir(parents=True, exist_ok=True)
@@ -659,6 +674,11 @@ try:
     request["realm"] = realm
     primary_ip = check_primary_reachable()
     state = remote_account()
+    # Fail BEFORE committing changes in the AD if this host cannot act as
+    # a member, and preserve the complete pre-demotion private database.
+    validate_member_runtime()
+    backup_dir = create_backup()
+    steps.append("Backup protegido em " + str(backup_dir))
     if state == "dc":
         # A live DC may be demoted only when no FSMO role remains here.
         fsmo = run(["samba-tool", "fsmo", "show"]).upper()
@@ -678,17 +698,20 @@ try:
         steps.append("O DC primário já reconhece esta máquina como membro; despromoção não repetida.")
     # Never convert an unverified DC. After remote commit, preserve its old
     # database and finish as a member without starting the stale DC daemon.
-    backup_dir = create_backup()
-    steps.append("Backup protegido em " + str(backup_dir))
-    for cmd in ("net", "smbd", "winbindd", "testparm"):
-        if shutil.which(cmd) is None:
-            raise RuntimeError("Componente de membro ausente: " + cmd)
     stop_old_dc()
     prepare_resolver(primary_ip)
     write_member_config(realm, workgroup, netbios)
     credential_run(["net", "ads", "join", "-S", partner, "-U" + admin])
     run(["net", "ads", "testjoin"])
     start_member_services()
+    # Keep the trusted DC used for LDAP reads in a separate Astral metadata
+    # file; the member Samba configuration itself remains standard.
+    metadata = pathlib.Path("/etc/astral-ad-dns/member-server.json")
+    metadata.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = metadata.with_name(metadata.name + ".tmp-" + uuid.uuid4().hex)
+    temp.write_text(json.dumps({"primary_hostname": partner, "netbios": netbios, "realm": realm}))
+    os.chmod(temp, 0o600)
+    os.replace(temp, metadata)
     if remote_account() != "member":
         raise RuntimeError("Estado da conta deixou de ser membro durante validação final.")
     if service_exists("samba") and subprocess.run(["systemctl", "is-active", "--quiet", "samba"]).returncode == 0:
