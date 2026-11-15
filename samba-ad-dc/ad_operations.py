@@ -498,7 +498,7 @@ def restore_domain(request, root=Path('/'), run=checked_run):
 
 # Executed on the selected controller, never on a guessed server. Credentials
 # arrive on stdin and are neither logged nor included in the SSH command.
-DEMOTE_PROGRAM = r'''import json, re, subprocess, sys
+DEMOTE_PROGRAM = r'''import json, os, subprocess, sys
 request = json.load(sys.stdin)
 def run(args):
     result = subprocess.run(args, text=True, capture_output=True, timeout=300)
@@ -506,27 +506,41 @@ def run(args):
         raise RuntimeError((result.stderr or result.stdout)[-2000:])
     return result.stdout
 try:
+    # Guard the selected controller before issuing the one native Samba operation.
     name = run(['testparm', '-s', '--parameter-name=netbios name']).strip().upper()
     if name != request['target_name']:
         raise RuntimeError('Servidor SSH não corresponde ao DC selecionado.')
     fsmo = run(['samba-tool', 'fsmo', 'show']).upper()
     if ('CN=NTDS SETTINGS,CN=' + name + ',') in fsmo:
         raise RuntimeError('DC ainda possui funções FSMO; despromoção bloqueada.')
-    run(['samba-tool', 'domain', 'demote', '--server=' + request['primary_hostname'],
-         '-U' + request['admin_username'], '--password=' + request['admin_password']])
-    for unit in ['samba', 'samba-dc', 'samba-ad-dc']:
-        state = subprocess.run(['systemctl', 'is-active', unit], text=True, capture_output=True)
-        if state.returncode == 0 and state.stdout.strip() == 'active':
-            run(['systemctl', 'stop', unit])
+    # Equivalent to: samba-tool domain demote -U Administrator
+    # PASSWD_FD keeps the secret out of argv, environment values and process titles.
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            os.write(write_fd, request['admin_password'].encode('utf-8') + b'\\n')
+        finally:
+            os.close(write_fd)
+        env = os.environ.copy()
+        env['PASSWD_FD'] = str(read_fd)
+        args = ['samba-tool', 'domain', 'demote', '-U', request['admin_username']]
+        result = subprocess.run(args, text=True, capture_output=True, timeout=360,
+                                env=env, pass_fds=(read_fd,))
+        if result.returncode:
+            message = (result.stderr or result.stdout)[-2000:]
+            raise RuntimeError(message.replace(request['admin_password'], '[REDACTED]'))
+    finally:
+        os.close(read_fd)
+    # Samba handles its own demotion and service lifecycle; no systemctl stop.
     print(json.dumps({'success': True}))
 except Exception as error:
-    print(json.dumps({'success': False, 'error': str(error)}))
+    print(json.dumps({'success': False, 'error': str(error).replace(request.get('admin_password', ''), '[REDACTED]')}))
     sys.exit(1)
 '''
 
 
 def demote_controller(request):
-    for key in ['target_hostname', 'primary_hostname', 'target_name']:
+    for key in ['target_hostname', 'target_name']:
         if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9.-]*', request.get(key, '')):
             raise OperationError('Nome de controlador inválido.')
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', request.get('ssh_user', 'root')):
@@ -547,8 +561,8 @@ def demote_controller(request):
         raise OperationError('Falha de conexão ao DC. Configure chave SSH e host conhecido; para usuário não root, sudo sem senha é necessário. ' + result.stderr[-1000:]) from error
     if result.returncode or not response.get('success'):
         raise OperationError(response.get('error', 'Despromoção falhou.'))
-    return ['DC secundário despromovido pelo Samba com validação de identidade e FSMO.',
-            'A conta de computador remanescente pode ser excluída após atualizar a lista.']
+    return ['Samba-tool domain demote executado no controlador selecionado.',
+            'Confira o estado do controlador e atualize as contas de computadores no AD.']
 
 
 def transition_controller(request):
