@@ -571,6 +571,15 @@ def check_primary_reachable():
         raise RuntimeError("LDAP TCP 389 do DC primário inacessível.")
     return reachable[0]
 
+def local_dns_addresses():
+    addresses = {"127.0.0.1", "127.0.0.53", "::1"}
+    result = subprocess.run(["ip", "-o", "-4", "addr", "show"], text=True,
+                            capture_output=True, timeout=15)
+    if result.returncode == 0:
+        for item in re.findall(r"\\binet\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)/", result.stdout):
+            addresses.add(item)
+    return addresses
+
 def validate_member_runtime():
     for cmd in ("net", "smbd", "winbindd", "testparm"):
         if shutil.which(cmd) is None:
@@ -583,7 +592,7 @@ def validate_member_runtime():
         raise RuntimeError("resolv.conf inexistente.")
     nameservers = re.findall(r"(?m)^\s*nameserver\s+(\S+)", resolver.read_text())
     if resolver.is_symlink() and nameservers and all(
-            address in ("127.0.0.1", "127.0.0.53", "::1") for address in nameservers):
+            address in local_dns_addresses() for address in nameservers):
         raise RuntimeError("DNS do host usa apenas loopback por symlink; ajuste o resolvedor antes de converter o DC.")
 
 def create_backup():
