@@ -498,52 +498,231 @@ def restore_domain(request, root=Path('/'), run=checked_run):
 
 # Executed on the selected controller, never on a guessed server. Credentials
 # arrive on stdin and are neither logged nor included in the SSH command.
-DEMOTE_PROGRAM = r'''import json, os, subprocess, sys
+DEMOTE_PROGRAM = r'''import json, os, pathlib, re, shutil, socket, subprocess, sys, time, uuid
 request = json.load(sys.stdin)
-def run(args):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=300)
+name = request["target_name"].upper()
+partner = request["primary_hostname"]
+admin = request["admin_username"]
+backup_dir = None
+steps = []
+
+def run(args, timeout=90):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
     if result.returncode:
         raise RuntimeError((result.stderr or result.stdout)[-2000:])
     return result.stdout
-def demote_with_private_password():
-    # Same Samba command as manual use on the selected DC. PASSWD_FD is a
-    # supported Samba credential mechanism; no password appears in argv,
-    # shell history or environment.
-    read_fd, write_fd = os.pipe()
+
+def credential_run(args, timeout=300):
+    # Samba's PASSWD_FD avoids command-line credentials and temporary files.
+    password = request.get("admin_password", "")
+    if not password:
+        raise RuntimeError("Senha administrativa ausente.")
+    rfd, wfd = os.pipe()
     try:
-        password = request.pop('admin_password', '')
-        if not password:
-            raise RuntimeError('Senha administrativa ausente.')
-        os.write(write_fd, password.encode('utf-8') + bytes((10,)))
-        os.close(write_fd)
-        write_fd = -1
+        os.write(wfd, password.encode("utf-8") + bytes((10,)))
+        os.close(wfd)
+        wfd = -1
         env = os.environ.copy()
-        env.pop('PASSWD', None)
-        env.pop('PASSWD_FILE', None)
-        env['PASSWD_FD'] = str(read_fd)
-        command = ['samba-tool', 'domain', 'demote',
-                   '-U' + request['admin_username']]
-        result = subprocess.run(command, text=True, capture_output=True,
-                                timeout=300, env=env, pass_fds=(read_fd,))
+        env.pop("PASSWD", None)
+        env.pop("PASSWD_FILE", None)
+        env["PASSWD_FD"] = str(rfd)
+        result = subprocess.run(args, text=True, capture_output=True, timeout=timeout,
+                                env=env, pass_fds=(rfd,))
         if result.returncode:
-            raise RuntimeError((result.stderr or result.stdout)[-2500:])
+            message = (result.stderr or result.stdout)[-2500:].replace(password, "[REDACTED]")
+            raise RuntimeError(message)
+        return result.stdout
     finally:
-        os.close(read_fd)
-        if write_fd != -1:
-            os.close(write_fd)
+        os.close(rfd)
+        if wfd != -1:
+            os.close(wfd)
+
+def remote_account():
+    # Force the primary's LDAP view, not this host's obsolete sam.ldb.
+    output = credential_run(["samba-tool", "computer", "show", name,
+                             "-H", "ldap://" + partner, "-U" + admin])
+    values = {}
+    for line in output.splitlines():
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            values[key.lower()] = value.strip()
+    flags = int(values.get("useraccountcontrol", "-1"))
+    group = values.get("primarygroupid", "")
+    if flags & 0x2000 or group in ("516", "521"):
+        return "dc"
+    if flags & 0x1000 and group == "515":
+        return "member"
+    raise RuntimeError("Estado da conta no DC primário não é DC nem membro confirmado; abortado.")
+
+def check_primary_reachable():
+    endpoints = socket.getaddrinfo(partner, 389, type=socket.SOCK_STREAM)
+    if not endpoints:
+        raise RuntimeError("Nome do DC primário não resolve.")
+    reachable = []
+    for family, kind, protocol, _, addr in endpoints:
+        try:
+            with socket.socket(family, kind, protocol) as sock:
+                sock.settimeout(4)
+                sock.connect(addr)
+            reachable.append(addr[0])
+        except OSError:
+            continue
+    if not reachable:
+        raise RuntimeError("LDAP TCP 389 do DC primário inacessível.")
+    return reachable[0]
+
+def validate_member_runtime():
+    for cmd in ("net", "smbd", "winbindd", "testparm"):
+        if shutil.which(cmd) is None:
+            raise RuntimeError("Componente de membro ausente: " + cmd)
+    for candidates in (("smb", "smbd"), ("winbind", "winbindd")):
+        if not any(service_exists(unit) for unit in candidates):
+            raise RuntimeError("Serviço de membro ausente: " + "/".join(candidates))
+    resolver = pathlib.Path("/etc/resolv.conf")
+    if not resolver.is_file():
+        raise RuntimeError("resolv.conf inexistente.")
+    nameservers = re.findall(r"(?m)^\s*nameserver\s+(\S+)", resolver.read_text())
+    if resolver.is_symlink() and nameservers and all(
+            address in ("127.0.0.1", "127.0.0.53", "::1") for address in nameservers):
+        raise RuntimeError("DNS do host usa apenas loopback por symlink; ajuste o resolvedor antes de converter o DC.")
+
+def create_backup():
+    root = pathlib.Path("/var/backups/astral-ad-dns/demote")
+    root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    dest = root / (time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])
+    dest.mkdir(mode=0o700)
+    source_conf = pathlib.Path("/etc/samba/smb.conf")
+    if not source_conf.is_file() or source_conf.is_symlink():
+        raise RuntimeError("smb.conf ausente ou link simbólico; backup seguro não disponível.")
+    shutil.copy2(source_conf, dest / "smb.conf")
+    private = pathlib.Path("/var/lib/samba/private")
+    if private.exists():
+        shutil.copytree(private, dest / "private", symlinks=True)
+    resolver = pathlib.Path("/etc/resolv.conf")
+    if resolver.is_file():
+        shutil.copy2(resolver, dest / "resolv.conf")
+    return dest
+
+def prepare_resolver(primary_ip):
+    resolver = pathlib.Path("/etc/resolv.conf")
+    if not resolver.is_file():
+        raise RuntimeError("resolv.conf inexistente.")
+    contents = resolver.read_text()
+    nameservers = re.findall(r"(?m)^\s*nameserver\s+(\S+)", contents)
+    if nameservers and all(address in ("127.0.0.1", "127.0.0.53", "::1") for address in nameservers):
+        if resolver.is_symlink():
+            raise RuntimeError("resolv.conf gerenciado por symlink ainda aponta só para loopback; não será sobrescrito.")
+        search = "search " + request["realm"].lower() + "\n"
+        resolver.write_text(search + "nameserver " + primary_ip + "\n")
+        steps.append("DNS local redirecionado ao DC primário após backup.")
+
+def service_exists(unit):
+    return subprocess.run(["systemctl", "cat", unit], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+def stop_old_dc():
+    for unit in ("samba", "samba-dc", "samba-ad-dc"):
+        if service_exists(unit):
+            run(["systemctl", "disable", "--now", unit], timeout=60)
+    steps.append("Daemon AD DC parado e desabilitado.")
+
+def write_member_config(realm, workgroup, netbios):
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,14}", netbios):
+        raise RuntimeError("NetBIOS local inválido.")
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9.-]+", realm):
+        raise RuntimeError("Realm local inválido.")
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,14}", workgroup):
+        raise RuntimeError("Workgroup local inválido.")
+    text = ("[global]\n"
+            "    netbios name = " + netbios + "\n"
+            "    workgroup = " + workgroup + "\n"
+            "    realm = " + realm + "\n"
+            "    security = ADS\n"
+            "    server role = member server\n"
+            "    kerberos method = secrets and keytab\n"
+            "    idmap config * : backend = tdb\n"
+            "    idmap config * : range = 3000-7999\n"
+            "    idmap config " + workgroup + " : backend = rid\n"
+            "    idmap config " + workgroup + " : range = 10000-999999\n"
+            "    winbind use default domain = yes\n")
+    target = pathlib.Path("/etc/samba/smb.conf")
+    temp = target.with_name("smb.conf.astral-demote-" + uuid.uuid4().hex)
+    temp.write_text(text)
+    os.chmod(temp, 0o600)
+    os.replace(temp, target)
+    run(["testparm", "-s", str(target)])
+    role = run(["testparm", "-s", "--parameter-name=server role"]).strip().lower()
+    if "member server" not in role:
+        raise RuntimeError("Configuração local não assumiu papel member server.")
+    steps.append("smb.conf convertido para Samba AD member server, configuração anterior preservada.")
+
+def start_member_services():
+    for candidates in (("smb", "smbd"), ("winbind", "winbindd")):
+        unit = next((u for u in candidates if service_exists(u)), None)
+        if not unit:
+            raise RuntimeError("Unidade de serviço membro não encontrada: " + "/".join(candidates))
+        run(["systemctl", "enable", "--now", unit], timeout=60)
+    steps.append("SMB e Winbind ativados sem reativar o daemon AD DC.")
+
 try:
-    name = run(['testparm', '-s', '--parameter-name=netbios name']).strip().upper()
-    if name != request['target_name']:
-        raise RuntimeError('Servidor atual nao corresponde ao DC selecionado.')
-    fsmo = run(['samba-tool', 'fsmo', 'show']).upper()
-    if ('CN=NTDS SETTINGS,CN=' + name + ',') in fsmo:
-        raise RuntimeError('DC ainda possui funções FSMO; despromoção bloqueada.')
-    demote_with_private_password()
-    # samba-tool owns the state transition. Do not independently stop Samba
-    # or alter the remaining member account after a successful demotion.
-    print(json.dumps({'success': True}))
+    netbios = run(["testparm", "-s", "--parameter-name=netbios name"]).strip().upper()
+    if netbios != name:
+        raise RuntimeError("Identidade local não corresponde ao DC selecionado.")
+    realm = run(["testparm", "-s", "--parameter-name=realm"]).strip().upper()
+    workgroup = run(["testparm", "-s", "--parameter-name=workgroup"]).strip().upper()
+    request["realm"] = realm
+    primary_ip = check_primary_reachable()
+    state = remote_account()
+    # Fail BEFORE committing changes in the AD if this host cannot act as
+    # a member, and preserve the complete pre-demotion private database.
+    validate_member_runtime()
+    backup_dir = create_backup()
+    steps.append("Backup protegido em " + str(backup_dir))
+    if state == "dc":
+        # A live DC may be demoted only when no FSMO role remains here.
+        fsmo = run(["samba-tool", "fsmo", "show"]).upper()
+        if ("CN=NTDS SETTINGS,CN=" + name + ",") in fsmo:
+            raise RuntimeError("DC ainda possui funções FSMO; despromoção bloqueada.")
+        try:
+            credential_run(["samba-tool", "domain", "demote", "-U" + admin])
+        except RuntimeError:
+            # Samba may commit on the partner then fail its local finalization.
+            if remote_account() != "member":
+                raise
+            steps.append("Despromoção remota já concluída; recuperando finalização local.")
+        if remote_account() != "member":
+            raise RuntimeError("O DC primário não confirmou a conta como membro após a despromoção.")
+        steps.append("Conta de domínio confirmada como membro pelo DC primário.")
+    else:
+        steps.append("O DC primário já reconhece esta máquina como membro; despromoção não repetida.")
+    # Never convert an unverified DC. After remote commit, preserve its old
+    # database and finish as a member without starting the stale DC daemon.
+    stop_old_dc()
+    prepare_resolver(primary_ip)
+    write_member_config(realm, workgroup, netbios)
+    credential_run(["net", "ads", "join", "-S", partner, "-U" + admin])
+    run(["net", "ads", "testjoin"])
+    start_member_services()
+    # Keep the trusted DC used for LDAP reads in a separate Astral metadata
+    # file; the member Samba configuration itself remains standard.
+    metadata = pathlib.Path("/etc/astral-ad-dns/member-server.json")
+    metadata.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temp = metadata.with_name(metadata.name + ".tmp-" + uuid.uuid4().hex)
+    temp.write_text(json.dumps({"primary_hostname": partner, "netbios": netbios, "realm": realm}))
+    os.chmod(temp, 0o600)
+    os.replace(temp, metadata)
+    if remote_account() != "member":
+        raise RuntimeError("Estado da conta deixou de ser membro durante validação final.")
+    if service_exists("samba") and subprocess.run(["systemctl", "is-active", "--quiet", "samba"]).returncode == 0:
+        raise RuntimeError("O serviço AD DC continuou ativo após a conversão.")
+    steps.append("Validação final: net ads testjoin OK e conta de membro confirmada no DC primário.")
+    print(json.dumps({"success": True, "steps": steps}))
 except Exception as error:
-    print(json.dumps({'success': False, 'error': str(error)}))
+    message = str(error).replace(request.get("admin_password", ""), "[REDACTED]")
+    if backup_dir:
+        message += " | Backup preservado: " + str(backup_dir) + " | Não reative o AD DC automaticamente."
+    print(json.dumps({"success": False, "error": message, "steps": steps}))
     sys.exit(1)
 '''
 
@@ -570,8 +749,7 @@ def demote_controller(request):
         raise OperationError('Falha de conexão ao DC. Configure chave SSH e host conhecido; para usuário não root, sudo sem senha é necessário. ' + result.stderr[-1000:]) from error
     if result.returncode or not response.get('success'):
         raise OperationError(response.get('error', 'Despromoção falhou.'))
-    return ['DC secundário despromovido pelo Samba com validação de identidade e FSMO.',
-            'A conta de computador remanescente pode ser excluída após atualizar a lista.']
+    return response.get('steps', ['Despromoção concluída e servidor membro validado.'])
 
 
 def transition_controller(request):

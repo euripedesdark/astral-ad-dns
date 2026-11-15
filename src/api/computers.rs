@@ -46,7 +46,34 @@ fn fsmo_primary(output: &str) -> Option<String> {
     Some(line[start..].split(',').next()?.to_uppercase())
 }
 
+// After a DC has been converted to a member server, read AD from the
+// retained primary through the machine account, not its stale local sam.ldb.
+fn member_ldap_suffix() -> String {
+    let Ok(raw) = std::fs::read_to_string("/etc/astral-ad-dns/member-server.json") else {
+        return String::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return String::new();
+    };
+    let Some(hostname) = value.get("primary_hostname").and_then(|s| s.as_str()) else {
+        return String::new();
+    };
+    if hostname.is_empty() || !hostname.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return String::new();
+    }
+    format!(" -H {} -P", shell_quote(&format!("ldap://{hostname}")))
+}
+
 fn configured_primary(sudo: Option<&str>) -> Option<String> {
+    if !member_ldap_suffix().is_empty() {
+        if let Ok(raw) = std::fs::read_to_string("/etc/astral-ad-dns/member-server.json") {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                if let Some(host) = value["primary_hostname"].as_str() {
+                    return Some(host.split('.').next().unwrap_or("").to_uppercase());
+                }
+            }
+        }
+    }
     let result = run_cmd_dry("samba-tool fsmo show", sudo, false);
     if result.success {
         if let Some(primary) = fsmo_primary(&result.stdout) { return Some(primary); }
@@ -99,7 +126,7 @@ pub async fn get_computer_properties(
     let sudo = config.sudo_password.as_deref();
     let clean_name = computername.trim_end_matches('$').trim().to_uppercase();
 
-    let ldb_cmd = format!("samba-tool computer show {}", shell_quote(&clean_name));
+    let ldb_cmd = format!("samba-tool computer show {}{}", shell_quote(&clean_name), member_ldap_suffix());
     let ldb_res = run_cmd_dry(&ldb_cmd, sudo, false);
     let raw_ldif = ldb_res.stdout.clone();
 
@@ -249,7 +276,8 @@ pub struct CreateComputerRequest {
 
 pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<ComputerItem>>> {
     let sudo = config.sudo_password.as_deref();
-    let res = run_cmd_dry("samba-tool computer list", sudo, false);
+    let list_cmd = format!("samba-tool computer list{}", member_ldap_suffix());
+    let res = run_cmd_dry(&list_cmd, sudo, false);
     if !res.success {
         return Json(ApiResponse {
             success: false,
@@ -266,7 +294,7 @@ pub async fn list_computers(State(config): State<Arc<AppConfig>>) -> Json<ApiRes
         .map(str::trim).filter(|name| !name.is_empty())
         .map(|name| {
             let clean = name.trim_end_matches('$');
-            let details = run_cmd_dry(&format!("samba-tool computer show {}", shell_quote(clean)), sudo, false);
+            let details = run_cmd_dry(&format!("samba-tool computer show {}{}", shell_quote(clean), member_ldap_suffix()), sudo, false);
             ComputerItem {
                 name: name.to_string(),
                 is_dc: is_domain_controller(&details.stdout),
