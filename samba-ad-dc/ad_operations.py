@@ -595,6 +595,26 @@ def validate_member_runtime():
             address in local_dns_addresses() for address in nameservers):
         raise RuntimeError("DNS do host usa apenas loopback por symlink; ajuste o resolvedor antes de converter o DC.")
 
+def copy_private_without_special(private, destination):
+    # Samba runtime sockets are not files and cannot be backed up. All
+    # regular databases must be copied, or copytree fails closed.
+    import stat
+    def skip_special(directory, names):
+        ignored = []
+        for entry in names:
+            path = pathlib.Path(directory) / entry
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                ignored.append(entry)
+                continue
+            if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+                ignored.append(entry)
+        return ignored
+    shutil.copytree(private, destination, symlinks=True, ignore=skip_special)
+    if (private / "sam.ldb").is_file() and not (destination / "sam.ldb").is_file():
+        raise RuntimeError("Backup da base AD sam.ldb incompleto; conversão bloqueada.")
+
 def create_backup():
     root = pathlib.Path("/var/backups/astral-ad-dns/demote")
     root.mkdir(parents=True, exist_ok=True)
@@ -607,27 +627,7 @@ def create_backup():
     shutil.copy2(source_conf, dest / "smb.conf")
     private = pathlib.Path("/var/lib/samba/private")
     if private.exists():
-        # Live Samba creates UNIX sockets under private/msg.sock. Those are
-        # process endpoints, not backup data: copytree raises ENXIO on them.
-        # Skip only special files; never silently skip regular AD databases.
-        import stat
-        def skip_special(directory, names):
-            ignored = []
-            for entry in names:
-                path = pathlib.Path(directory) / entry
-                try:
-                    mode = path.lstat().st_mode
-                except FileNotFoundError:
-                    # Ephemeral Samba IPC endpoint removed while scanning.
-                    ignored.append(entry)
-                    continue
-                if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
-                    ignored.append(entry)
-            return ignored
-        shutil.copytree(private, dest / "private", symlinks=True,
-                        ignore=skip_special)
-        if (private / "sam.ldb").is_file() and not (dest / "private" / "sam.ldb").is_file():
-            raise RuntimeError("Backup da base AD sam.ldb incompleto; conversão bloqueada.")
+        copy_private_without_special(private, dest / "private")
     resolver = pathlib.Path("/etc/resolv.conf")
     if resolver.is_file():
         shutil.copy2(resolver, dest / "resolv.conf")
