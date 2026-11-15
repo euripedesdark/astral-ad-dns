@@ -58,6 +58,24 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
   await click(button('Cancelar'));
   await click(button('Despromover'));
   assert(document.querySelector('[aria-label="Despromover DC secundário"]'));
+  // Simulate an API failure. The diagnosis must remain visible until dismissed.
+  const oldFetch = global.fetch;
+  global.fetch = async (url, opts = {}) => url.includes('/demote')
+    ? { ok: false, json: async () => ({success:false,message:'SSH authentication failed',correlation_id:'test-failure'}) }
+    : oldFetch(url, opts);
+  const demoteForm = document.querySelector('[aria-label="Despromover DC secundário"]');
+  await act(async () => {
+    const user = demoteForm.querySelector('input:not([type="password"])');
+    const pass = demoteForm.querySelector('input[type="password"]');
+    const {Simulate}=require('../web/node_modules/react-dom/test-utils');
+    Simulate.change(user,{target:{value:'administrator'}});
+    Simulate.change(pass,{target:{value:'test-password'}});
+  });
+  // Confirmation is handled by the app; no actual AD request is sent.
+  await click(button('Despromover secundário'));
+  assert(document.querySelector('[role="alert"]')?.textContent.includes('SSH authentication failed'));
+  assert(button('Copiar diagnóstico'));
+  global.fetch = oldFetch;
   await click(button('Cancelar'));
   await click(button('Forense AD'));
   assert(document.querySelector('[aria-label="Snapshot de referência"]'));
