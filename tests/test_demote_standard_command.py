@@ -86,6 +86,28 @@ class DemotionCommandTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Serviço de membro ausente"):
                 ctx["validate_member_runtime"]()
 
+    def test_live_samba_socket_is_skipped_but_databases_are_backed_up(self):
+        import socket
+        import tempfile
+        ctx = load_helpers()
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "private"
+            destination = Path(temp) / "backup"
+            source.mkdir()
+            (source / "sam.ldb").write_bytes(b"test AD DB")
+            (source / "secrets.ldb").write_bytes(b"test secrets DB")
+            ipc = source / "msg.sock"
+            ipc.mkdir()
+            endpoint = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                endpoint.bind(str(ipc / "1177"))
+                ctx["copy_private_without_special"](source, destination)
+                self.assertEqual((destination / "sam.ldb").read_bytes(), b"test AD DB")
+                self.assertEqual((destination / "secrets.ldb").read_bytes(), b"test secrets DB")
+                self.assertFalse((destination / "msg.sock" / "1177").exists())
+            finally:
+                endpoint.close()
+
     def test_no_implicit_reprovisioning_or_ad_database_deletion(self):
         source = ops.DEMOTE_PROGRAM
         self.assertNotIn("shutil.rmtree", source)
