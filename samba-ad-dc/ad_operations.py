@@ -576,7 +576,7 @@ def local_dns_addresses():
     result = subprocess.run(["ip", "-o", "-4", "addr", "show"], text=True,
                             capture_output=True, timeout=15)
     if result.returncode == 0:
-        for item in re.findall(r"\\binet\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)/", result.stdout):
+        for item in re.findall(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", result.stdout):
             addresses.add(item)
     return addresses
 
