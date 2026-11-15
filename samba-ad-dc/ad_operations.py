@@ -514,7 +514,7 @@ def demote_with_private_password():
         password = request.pop('admin_password', '')
         if not password:
             raise RuntimeError('Senha administrativa ausente.')
-        os.write(write_fd, password.encode('utf-8') + b'\\n')
+        os.write(write_fd, password.encode('utf-8') + bytes((10,)))
         os.close(write_fd)
         write_fd = -1
         env = os.environ.copy()
