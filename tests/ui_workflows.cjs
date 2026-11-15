@@ -71,8 +71,9 @@ const click = async node => { assert(node, 'Expected button'); await act(async (
     Simulate.change(user,{target:{value:'administrator'}});
     Simulate.change(pass,{target:{value:'test-password'}});
   });
-  // Confirmation is handled by the app; no actual AD request is sent.
   await click(button('Despromover secundário'));
+  assert(document.querySelector('[role="alertdialog"]'), 'Explicit demotion confirmation required');
+  await click(document.querySelector('[role="alertdialog"] button:last-child'));
   assert(document.querySelector('[role="alert"]')?.textContent.includes('SSH authentication failed'));
   assert(button('Copiar diagnóstico'));
   global.fetch = oldFetch;
