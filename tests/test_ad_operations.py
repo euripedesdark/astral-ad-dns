@@ -306,7 +306,7 @@ class OperationsTests(unittest.TestCase):
             if args[0] == 'ss':
                 return 'udp UNCONN 0 0 0.0.0.0:5353 0.0.0.0:* users:(("avahi-daemon",pid=1,fd=2))'
             return runner(args)
-        with self.assertRaisesRegex(operations.OperationError, 'ocupada por outro processo'):
+        with self.assertRaisesRegex(operations.OperationError, 'ocupad[oa] por outro processo'):
             operations.configure_bind({'forwarders': ['9.9.9.9']}, self.root, run)
         self.assertEqual(config.read_text(), 'options { recursion no; };')
         self.assertFalse(any(args[:2] in [['systemctl', 'stop'], ['systemctl', 'restart']] for args in runner.calls))
