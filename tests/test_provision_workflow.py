@@ -341,7 +341,7 @@ class WorkflowTests(unittest.TestCase):
         def issue(request,root,run,samba,steps):
             request['ca_url']='https://'+request['host_ip']+':'+str(request['ca_port'])
             return []
-        request=dict(self.request,kind='new',workgroup='EXAMPLE',domain_role='DC',netbios_name='PRIMARY',setup_step_ca=True,initialize_ca=True,cert_password='pki-secret',ca_port=8443)
+        request=dict(self.request,kind='new',workgroup='EXAMPLE',domain_role='DC',netbios_name='PRIMARY',hostname_fqdn='primary.example.test',host_ip='192.0.2.20',setup_step_ca=True,initialize_ca=True,cert_password='pki-secret',ca_port=8443)
         with patch.object(flow,'configure_pki',side_effect=issue): result=self.execute(request,run)
         self.assertTrue(result['success'],result)
         self.assertEqual(result['ca_port'],9443)
@@ -369,7 +369,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((self.root/'var/backups').exists())
     def test_first_primary_install_is_a_web_workflow(self):
         flow.remove(self.root/'var/lib/samba');self.config.unlink()
-        result=self.execute(dict(self.request,kind='new',workgroup='EXAMPLE',hostname_fqdn='primary.example.test',netbios_name='PRIMARY',domain_role='DC'))
+        result=self.execute(dict(self.request,kind='new',workgroup='EXAMPLE',hostname_fqdn='primary.example.test',netbios_name='PRIMARY',domain_role='DC',host_ip='192.0.2.20'))
         self.assertTrue(result['success'],result)
     def test_member_join_does_not_pass_dns_backend_or_enable_gc(self):
         host=Host(self.root);result=self.execute(dict(self.request,domain_role='MEMBER'),host)
