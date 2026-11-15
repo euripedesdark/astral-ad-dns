@@ -4650,7 +4650,7 @@ function TerminalTab({ t, operator, status, showToast, customFetch }) {
 
         <form onSubmit={handleExec} className="mt-4 pt-3 border-t border-slate-800/80 flex items-center gap-2">
           <span className="text-emerald-400 font-semibold text-xs whitespace-nowrap">
-            [{operator?.username}@dc-erp ~]$
+            [{operator?.username}@{status?.hostname?.split('.')[0] || 'localhost'} ~]$
           </span>
           <input
             type="text"
