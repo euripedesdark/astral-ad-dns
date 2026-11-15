@@ -518,7 +518,7 @@ try:
     read_fd, write_fd = os.pipe()
     try:
         try:
-            os.write(write_fd, request['admin_password'].encode('utf-8') + b'\\n')
+            os.write(write_fd, request['admin_password'].encode('utf-8') + b'\n')
         finally:
             os.close(write_fd)
         env = os.environ.copy()
