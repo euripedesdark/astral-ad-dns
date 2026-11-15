@@ -607,7 +607,27 @@ def create_backup():
     shutil.copy2(source_conf, dest / "smb.conf")
     private = pathlib.Path("/var/lib/samba/private")
     if private.exists():
-        shutil.copytree(private, dest / "private", symlinks=True)
+        # Live Samba creates UNIX sockets under private/msg.sock. Those are
+        # process endpoints, not backup data: copytree raises ENXIO on them.
+        # Skip only special files; never silently skip regular AD databases.
+        import stat
+        def skip_special(directory, names):
+            ignored = []
+            for entry in names:
+                path = pathlib.Path(directory) / entry
+                try:
+                    mode = path.lstat().st_mode
+                except FileNotFoundError:
+                    # Ephemeral Samba IPC endpoint removed while scanning.
+                    ignored.append(entry)
+                    continue
+                if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+                    ignored.append(entry)
+            return ignored
+        shutil.copytree(private, dest / "private", symlinks=True,
+                        ignore=skip_special)
+        if (private / "sam.ldb").is_file() and not (dest / "private" / "sam.ldb").is_file():
+            raise RuntimeError("Backup da base AD sam.ldb incompleto; conversão bloqueada.")
     resolver = pathlib.Path("/etc/resolv.conf")
     if resolver.is_file():
         shutil.copy2(resolver, dest / "resolv.conf")
