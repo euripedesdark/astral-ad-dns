@@ -705,7 +705,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 interface = request.get('network_interface', '').strip()
                 if interface:
                     interface_output = optional(run, ['ip', '-4', '-o', 'addr', 'show', 'dev', interface, 'scope', 'global'])
-                    match = re.search(r'\\binet\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)/', interface_output)
+                    match = re.search(r'\binet\s+(\d+\.\d+\.\d+\.\d+)/', interface_output)
                     if match:
                         preferred_ip = match.group(1)
                 local_drs_ip = preferred_ip or next((ip for ip in local_addresses if ip != request.get('target_dc_ip')), '')
