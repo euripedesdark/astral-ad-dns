@@ -726,7 +726,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     partner_dc = request.get('target_dc_ip') or '127.0.0.1'
                     rodc_name = request.get('hostname_netbios', '').upper()
                     try:
-                        drs_partner_cmd = ['samba-tool', '-s', str(config), 'drs', 'showrepl', partner_dc] + credentials(request)
+                        drs_partner_cmd = ['samba-tool', 'drs', 'showrepl', partner_dc, '--configfile=' + str(config)] + credentials(request)
                         partner_output = run(drs_partner_cmd)
                         if rodc_name and rodc_name not in partner_output.upper():
                             raise OperationError('O DC parceiro ' + partner_dc + ' nao listou o RODC ' + rodc_name + ' nos registros de replicacao DRS.')
@@ -735,7 +735,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                         detail = str(error)
                         raise OperationError('Nao foi possivel confirmar o estado DRS do RODC no DC parceiro ' + partner_dc + '. Ingresso preservado. Detalhe: ' + detail) from error
                 else:
-                    drs_command = ['samba-tool', '-s', str(config), 'drs', 'showrepl', '--json'] + credentials(request)
+                    drs_command = ['samba-tool', 'drs', 'showrepl', '--configfile=' + str(config), '--json'] + credentials(request)
                     try:
                         health = json.loads(run(drs_command))
                     except (OperationError, ValueError) as error:
