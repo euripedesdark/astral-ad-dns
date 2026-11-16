@@ -90,7 +90,7 @@ pub async fn run_preflight(State(config): State<Arc<AppConfig>>) -> Json<Preflig
     let fqdn_res = run_cmd_dry("hostname -f 2>/dev/null || hostname", sudo, false);
     let fqdn = fqdn_res.stdout.trim().to_string();
 
-    let ip_res = run_cmd_dry("ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
+    let ip_res = run_cmd_dry("ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \\K\\S+' || ip -4 route show default 2>/dev/null | grep -oP 'src \\K\\S+' | head -n1 || ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1", sudo, false);
     let ip_address = ip_res.stdout.trim().to_string();
 
     let se_res = run_cmd_dry("getenforce 2>/dev/null || echo 'Disabled'", sudo, false);

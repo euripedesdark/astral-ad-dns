@@ -129,10 +129,11 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
             let cols: Vec<_> = line.split_whitespace().collect();
             cols.first().map_or(false, |v| v.starts_with(*proto))
                 && cols.get(4).map_or(false, |v| *v == format!("127.0.0.1:{port}").as_str())
-                && (line.contains("named") || line.contains("bind9"))
+                && (line.contains("named") || line.contains("bind9") || line.contains("bind"))
         }))
     });
-    let named_active = check_service_active("named", sudo)
+    let named_active = check_service_active("bind", sudo)
+        || check_service_active("named", sudo)
         || check_service_active("named-9", sudo)
         || check_service_active("bind9", sudo)
         || bind_listener_ok;

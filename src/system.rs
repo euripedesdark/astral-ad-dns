@@ -210,7 +210,9 @@ pub fn is_ad_configured() -> bool {
 /// Detecta os serviços habilitados e configurados no host
 pub fn detect_enabled_services(sudo_pass: Option<&str>) -> EnabledServices {
     let samba_ad = is_ad_configured();
-    let bind = check_service_active("named", sudo_pass)
+    let bind = check_service_active("bind", sudo_pass)
+        || check_service_active("named", sudo_pass)
+        || check_service_active("named-9", sudo_pass)
         || check_service_active("named-chroot", sudo_pass)
         || check_service_active("bind9", sudo_pass)
         || std::path::Path::new("/etc/named.conf").exists();

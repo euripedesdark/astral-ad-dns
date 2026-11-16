@@ -1608,10 +1608,22 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             atomic_write(resolver,content,0o644)
             run(['chattr','+i',str(resolver)])
             if request['kind'] == 'join':
-                health = json.loads(run(['samba-tool', 'drs', 'showrepl', '--json'] + credentials(request)))
-                inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
-                if not inbound or any(entry.get('consecutive failures', 1) != 0 or entry.get('last success') in [None,0,'0','NTTIME(0)'] for entry in inbound):
-                    raise OperationError('Ingresso efetuado, mas replicacao nao foi confirmada. Configuracao e backup disponiveis para reaplicacao pela interface.')
+                if request.get('domain_role') == 'RODC':
+                    partner_dc = request.get('target_dc_ip') or '127.0.0.1'
+                    rodc_name = request.get('hostname_netbios', '').upper()
+                    try:
+                        partner_output = run(['samba-tool', 'drs', 'showrepl', partner_dc] + credentials(request))
+                        if rodc_name and rodc_name not in partner_output.upper():
+                            raise OperationError('O DC parceiro ' + partner_dc + ' nao listou o RODC ' + rodc_name + ' nos registros de replicacao DRS.')
+                        steps.append('DRS do RODC ' + rodc_name + ' validado com sucesso no DC parceiro ' + partner_dc + '.')
+                    except Exception as error:
+                        detail = str(error)
+                        raise OperationError('Nao foi possivel confirmar o estado DRS do RODC no DC parceiro ' + partner_dc + '. Ingresso preservado. Detalhe: ' + detail) from error
+                else:
+                    health = json.loads(run(['samba-tool', 'drs', 'showrepl', '--json'] + credentials(request)))
+                    inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
+                    if not inbound or any(entry.get('consecutive failures', 1) != 0 or entry.get('last success') in [None,0,'0','NTTIME(0)'] for entry in inbound):
+                        raise OperationError('Ingresso efetuado, mas replicacao nao foi confirmada. Configuracao e backup disponiveis para reaplicacao pela interface.')
         manifest.update(phase='configuration_pending' if bind_error else 'complete', joined=True,ca_port=request.get('ca_port') if request.get('setup_step_ca') else None,ca_url=request.get('ca_url'))
         save_manifest(backup, manifest)
         steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')

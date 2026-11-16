@@ -625,9 +625,20 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         atomic_write(config,text,0o644)
         kerberos = root / 'var/lib/samba/private/krb5.conf'
         if kerberos.exists():
-            atomic_write(root / 'etc/krb5.conf', kerberos.read_bytes(), 0o644)
+            krb_content = kerberos.read_text()
+            if request.get('target_dc_ip') and request.get('domain_role') == 'RODC':
+                partner_ip = request['target_dc_ip']
+                if f"kdc = {partner_ip}" not in krb_content:
+                    krb_content = re.sub(
+                        r'(\[' + re.escape(request['realm']) + r'\][^\n]*\n)',
+                        r'\1\tkdc = ' + partner_ip + '\n',
+                        krb_content,
+                        flags=re.IGNORECASE
+                    )
+            atomic_write(root / 'etc/krb5.conf', krb_content, 0o644)
         else:
-            atomic_write(root/'etc/krb5.conf','[libdefaults]\n default_realm = '+request['realm']+'\n dns_lookup_realm = false\n dns_lookup_kdc = true\n rdns = false\n[domain_realm]\n .'+request['realm'].lower()+' = '+request['realm']+'\n '+request['realm'].lower()+' = '+request['realm']+'\n',0o644)
+            kdc_line = ('\tkdc = ' + request['target_dc_ip'] + '\n') if request.get('target_dc_ip') else ''
+            atomic_write(root/'etc/krb5.conf','[libdefaults]\n default_realm = '+request['realm']+'\n dns_lookup_realm = false\n dns_lookup_kdc = true\n rdns = false\n[realms]\n' + request['realm'] + ' = {\n' + kdc_line + '}\n[domain_realm]\n .'+request['realm'].lower()+' = '+request['realm']+'\n '+request['realm'].lower()+' = '+request['realm']+'\n',0o644)
         if root == Path('/') and shutil.which('restorecon'):
             run(['restorecon', '-R', str(root / 'var/lib/samba'), str(config)])
         if request['kind']=='configure':
@@ -711,27 +722,40 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 local_drs_ip = preferred_ip or next((ip for ip in local_addresses if ip != request.get('target_dc_ip')), '')
                 if not local_drs_ip:
                     raise OperationError('Nao foi possivel identificar o IP local do DC para validar DRS; ingresso preservado e backup disponivel.')
-                drs_command = ['samba-tool', '-s', str(config), 'drs', 'showrepl', '--json'] + credentials(request)
-                try:
-                    health = json.loads(run(drs_command))
-                except (OperationError, ValueError) as error:
-                    detail = str(error)
-                    if 'C0000017' in detail.upper() or 'NOT_ENOUGH_QUOTA' in detail.upper() or 'NOT ENOUGH QUOTA' in detail.upper():
-                        raise OperationError('DRS local recusou a consulta com STATUS_NO_MEMORY (0xC0000017), mesmo usando o IP do DC e o smb.conf ativo. O ingresso foi preservado; nao sera marcado como concluido. Verifique a memoria/limites do processo Samba e a compatibilidade da versao Samba. Detalhe: ' + detail) from error
-                    raise OperationError('Nao foi possivel consultar o estado DRS do DC local pelo IP ' + local_drs_ip + '. Ingresso preservado. Detalhe: ' + detail) from error
-                if isinstance(health, dict):
-                    inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
-                    healthy = bool(inbound) and all(
-                        entry.get('consecutive failures', 1) == 0 and
-                        entry.get('last success') not in [None, 0, '0', 'NTTIME(0)']
-                        for entry in inbound)
+                if request.get('domain_role') == 'RODC':
+                    partner_dc = request.get('target_dc_ip') or '127.0.0.1'
+                    rodc_name = request.get('hostname_netbios', '').upper()
+                    try:
+                        drs_partner_cmd = ['samba-tool', '-s', str(config), 'drs', 'showrepl', partner_dc] + credentials(request)
+                        partner_output = run(drs_partner_cmd)
+                        if rodc_name and rodc_name not in partner_output.upper():
+                            raise OperationError('O DC parceiro ' + partner_dc + ' nao listou o RODC ' + rodc_name + ' nos registros de replicacao DRS.')
+                        steps.append('DRS do RODC ' + rodc_name + ' validado com sucesso no DC parceiro ' + partner_dc + '.')
+                    except Exception as error:
+                        detail = str(error)
+                        raise OperationError('Nao foi possivel confirmar o estado DRS do RODC no DC parceiro ' + partner_dc + '. Ingresso preservado. Detalhe: ' + detail) from error
                 else:
-                    # Samba releases differ in --json output shape. Never treat
-                    # an unrecognized payload as a successful replication check.
-                    inbound = []
-                    healthy = False
-                if not healthy:
-                    raise OperationError('Ingresso efetuado, mas o retorno DRS nao confirmou vizinhos de entrada saudaveis no formato esperado. Ingresso preservado; consulte samba-tool drs showrepl no IP ' + local_drs_ip + ' e reaplique a configuracao depois da correcao.')
+                    drs_command = ['samba-tool', '-s', str(config), 'drs', 'showrepl', '--json'] + credentials(request)
+                    try:
+                        health = json.loads(run(drs_command))
+                    except (OperationError, ValueError) as error:
+                        detail = str(error)
+                        if 'C0000017' in detail.upper() or 'NOT_ENOUGH_QUOTA' in detail.upper() or 'NOT ENOUGH QUOTA' in detail.upper():
+                            raise OperationError('DRS local recusou a consulta com STATUS_NO_MEMORY (0xC0000017), mesmo usando o IP do DC e o smb.conf ativo. O ingresso foi preservado; nao sera marcado como concluido. Verifique a memoria/limites do processo Samba e a compatibilidade da versao Samba. Detalhe: ' + detail) from error
+                        raise OperationError('Nao foi possivel consultar o estado DRS do DC local pelo IP ' + local_drs_ip + '. Ingresso preservado. Detalhe: ' + detail) from error
+                    if isinstance(health, dict):
+                        inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
+                        healthy = bool(inbound) and all(
+                            entry.get('consecutive failures', 1) == 0 and
+                            entry.get('last success') not in [None, 0, '0', 'NTTIME(0)']
+                            for entry in inbound)
+                    else:
+                        # Samba releases differ in --json output shape. Never treat
+                        # an unrecognized payload as a successful replication check.
+                        inbound = []
+                        healthy = False
+                    if not healthy:
+                        raise OperationError('Ingresso efetuado, mas o retorno DRS nao confirmou vizinhos de entrada saudaveis no formato esperado. Ingresso preservado; consulte samba-tool drs showrepl no IP ' + local_drs_ip + ' e reaplique a configuracao depois da correcao.')
         manifest.update(phase='configuration_pending' if bind_error else 'complete', joined=True,ca_port=request.get('ca_port') if request.get('setup_step_ca') else None,ca_url=request.get('ca_url'))
         save_manifest(backup, manifest)
         steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')

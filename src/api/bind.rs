@@ -76,17 +76,26 @@ pub async fn get_bind_status(State(config): State<Arc<AppConfig>>) -> Json<BindS
         .find(|(key, _)| key.trim().eq_ignore_ascii_case("dns forwarder"))
         .and_then(|(_, value)| value.trim().strip_prefix("127.0.0.1:"))
         .and_then(|value| value.parse::<u16>().ok());
-    let listen_address = configured_port
+    let listen_res = run_cmd_dry("ss -H -lntup", sudo, false);
+    let effective_port = configured_port.or_else(|| {
+        listen_res.stdout.lines()
+            .filter(|line| (line.contains("named") || line.contains("bind9") || line.contains("bind")) && line.contains("127.0.0.1:"))
+            .filter_map(|line| line.split_whitespace().nth(4))
+            .filter_map(|addr| addr.strip_prefix("127.0.0.1:"))
+            .filter_map(|p| p.parse::<u16>().ok())
+            .next()
+    });
+    let listen_address = effective_port
         .map(|port| format!("127.0.0.1:{port}"))
         .unwrap_or_default();
-    let listen_res = run_cmd_dry("ss -H -lntup", sudo, false);
     let listeners: Vec<_> = listen_res.stdout.lines()
         .filter(|line| !listen_address.is_empty() && line.split_whitespace().nth(4) == Some(listen_address.as_str()))
         .collect();
-    let tcp = listeners.iter().any(|line| line.starts_with("tcp") && (line.contains("named") || line.contains("bind9")));
-    let udp = listeners.iter().any(|line| line.starts_with("udp") && (line.contains("named") || line.contains("bind9")));
+    let tcp = listeners.iter().any(|line| line.starts_with("tcp") && (line.contains("named") || line.contains("bind9") || line.contains("bind")));
+    let udp = listeners.iter().any(|line| line.starts_with("udp") && (line.contains("named") || line.contains("bind9") || line.contains("bind")));
     let loopback_only = tcp && udp && listeners.iter().all(|line| line.split_whitespace().nth(4) == Some(listen_address.as_str()));
     let service_active = check_service_active(service, sudo)
+        || check_service_active("bind", sudo)
         || check_service_active("named-9", sudo)
         || check_service_active("named", sudo)
         || check_service_active("bind9", sudo)
@@ -95,8 +104,8 @@ pub async fn get_bind_status(State(config): State<Arc<AppConfig>>) -> Json<BindS
     let mut warnings = Vec::new();
     if !syntax_valid { warnings.push("Configuração BIND inválida ou named-checkconf indisponível.".into()); }
     if configured_port.is_none() { warnings.push("Samba não aponta para um BIND recursivo local com porta definida.".into()); }
-    if configured_port.is_some() && (!tcp || !udp) {
-        warnings.push(format!("Verifique listeners BIND TCP e UDP na porta {}.", configured_port.unwrap()));
+    if effective_port.is_some() && (!tcp || !udp) {
+        warnings.push(format!("Verifique listeners BIND TCP e UDP na porta {}.", effective_port.unwrap()));
     }
     Json(BindStatus { service_active, listening_on_5353: tcp && udp, listen_address, forwarders,
         config_path: config_path.into(), recursion: Regex::new(r"recursion\s+yes\s*;").unwrap().is_match(&content),

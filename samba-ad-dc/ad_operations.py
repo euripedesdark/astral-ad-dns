@@ -299,8 +299,8 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     if not request.get('dry_run'):
         samba_config = root / 'etc/samba/smb.conf'
         if samba_config.is_file():
-            forwarders = re.findall(r'(?im)^\s*dns forwarder\s*=\s*(\S+)', samba_config.read_text())
-            old_value = forwarders[-1] if forwarders else ''
+            smb_forwarders = re.findall(r'(?im)^\s*dns forwarder\s*=\s*(\S+)', samba_config.read_text())
+            old_value = smb_forwarders[-1] if smb_forwarders else ''
             if old_value.startswith('127.0.0.1:') and old_value != '127.0.0.1:5353':
                 raise OperationError('O Samba ja encaminha para '+old_value+
                                      '. Migracao para 5353 exige manutencao '
