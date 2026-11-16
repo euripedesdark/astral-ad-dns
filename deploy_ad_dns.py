@@ -85,6 +85,23 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
         return False
 
 
+def ensure_web_dist_writable(web_dir):
+    """Restore ownership of a root-created Vite output before rebuilding."""
+    dist_dir = os.path.join(web_dir, "dist")
+    if not os.path.isdir(dist_dir) or os.access(dist_dir, os.W_OK):
+        return
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        log_error(f"Diretório do frontend sem permissão de escrita: {dist_dir}")
+        sys.exit(1)
+
+    owner = f"{os.geteuid()}:{os.getegid()}"
+    log_warning("web/dist pertence a outro usuário; restaurando a propriedade antes do build.")
+    run_cmd(["chown", "-R", owner, dist_dir], use_sudo=True)
+    if not os.access(dist_dir, os.W_OK):
+        log_error(f"Não foi possível obter permissão de escrita em: {dist_dir}")
+        sys.exit(1)
+
+
 def verify_web_firewall():
     """Check 8095/tcp without confusing an empty ACCEPT chain with a closed port."""
     if not shutil.which("iptables"):
@@ -396,6 +413,7 @@ def main():
         log_warning("node_modules ausente em web/. Executando npm install...")
         run_cmd(["npm", "install"], cwd=web_dir)
 
+    ensure_web_dist_writable(web_dir)
     run_cmd(["npm", "run", "build"], cwd=web_dir)
     dist_index = os.path.join(web_dir, "dist", "index.html")
     if not os.path.exists(dist_index):
