@@ -92,6 +92,8 @@ def firewall_rules(role, step_ca=False, ca_port=9443):
     udp = [53,88,123,137,138,389,464]
     if role != 'MEMBER':
         tcp += [3268,3269]
+    # BIND hybrid listener is deliberately separate from Samba DNS (53).
+    # When enabled, clients and upstream resolvers must reach its configured port.
     if step_ca:
         tcp.append(ca_port)
         udp.append(ca_port)
@@ -119,6 +121,12 @@ for rule in rules:
 def configure_firewall(request, root, backup, run, steps):
     atomic_write(backup / 'iptables-before.rules',run(['iptables-save']))
     rules = firewall_rules(request['domain_role'],request.get('initialize_ca',False),int(request.get('ca_port',9443)))
+    if request.get('setup_bind_hybrid'):
+        bind_port = int(request.get('bind_port', 5353))
+        if not 1 <= bind_port <= 65535:
+            raise OperationError('Porta do BIND hibrido invalida.')
+        rules.extend([['-p','tcp','--dport',str(bind_port),'-j','ACCEPT'],
+                     ['-p','udp','--dport',str(bind_port),'-j','ACCEPT']])
     added = 0
     chain=run(['iptables','-S','INPUT'])
     first=next((line for line in chain.splitlines() if line.startswith('-A INPUT ')), '')
