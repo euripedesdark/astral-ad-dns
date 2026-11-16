@@ -711,8 +711,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 local_drs_ip = preferred_ip or next((ip for ip in local_addresses if ip != request.get('target_dc_ip')), '')
                 if not local_drs_ip:
                     raise OperationError('Nao foi possivel identificar o IP local do DC para validar DRS; ingresso preservado e backup disponivel.')
-                drs_command = ['samba-tool', '-s', str(config), '--ipaddress=' + local_drs_ip,
-                               'drs', 'showrepl', '--json'] + credentials(request)
+                drs_command = ['samba-tool', 'drs', 'showrepl', '--json',
+                               '--configfile=' + str(config), '--ipaddress=' + local_drs_ip] + credentials(request)
                 try:
                     health = json.loads(run(drs_command))
                 except (OperationError, ValueError) as error:
