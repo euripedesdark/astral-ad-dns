@@ -697,10 +697,42 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             atomic_write(resolver,content,0o644)
             run(['chattr','+i',str(resolver)])
             if request['kind'] == 'join':
-                health = json.loads(run(['samba-tool', 'drs', 'showrepl', '--json'] + credentials(request)))
-                inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
-                if not inbound or any(entry.get('consecutive failures', 1) != 0 or entry.get('last success') in [None,0,'0','NTTIME(0)'] for entry in inbound):
-                    raise OperationError('Ingresso efetuado, mas replicacao nao foi confirmada. Configuracao e backup disponiveis para reaplicacao pela interface.')
+                # Bind the DRS client to the address actually serving this DC.
+                # Without --ipaddress Samba may select "localhost", which can
+                # hit a different listener/binding path on multi-interface hosts.
+                local_addresses = local_ipv4s(run)
+                preferred_ip = ''
+                interface = request.get('network_interface', '').strip()
+                if interface:
+                    interface_output = optional(run, ['ip', '-4', '-o', 'addr', 'show', 'dev', interface, 'scope', 'global'])
+                    match = re.search(r'\\binet\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)/', interface_output)
+                    if match:
+                        preferred_ip = match.group(1)
+                local_drs_ip = preferred_ip or next((ip for ip in local_addresses if ip != request.get('target_dc_ip')), '')
+                if not local_drs_ip:
+                    raise OperationError('Nao foi possivel identificar o IP local do DC para validar DRS; ingresso preservado e backup disponivel.')
+                drs_command = ['samba-tool', '-s', str(config), '--ipaddress=' + local_drs_ip,
+                               'drs', 'showrepl', '--json'] + credentials(request)
+                try:
+                    health = json.loads(run(drs_command))
+                except (OperationError, ValueError) as error:
+                    detail = str(error)
+                    if 'C0000017' in detail.upper() or 'NOT_ENOUGH_QUOTA' in detail.upper() or 'NOT ENOUGH QUOTA' in detail.upper():
+                        raise OperationError('DRS local recusou a consulta com STATUS_NO_MEMORY (0xC0000017), mesmo usando o IP do DC e o smb.conf ativo. O ingresso foi preservado; nao sera marcado como concluido. Verifique a memoria/limites do processo Samba e a compatibilidade da versao Samba. Detalhe: ' + detail) from error
+                    raise OperationError('Nao foi possivel consultar o estado DRS do DC local pelo IP ' + local_drs_ip + '. Ingresso preservado. Detalhe: ' + detail) from error
+                if isinstance(health, dict):
+                    inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
+                    healthy = bool(inbound) and all(
+                        entry.get('consecutive failures', 1) == 0 and
+                        entry.get('last success') not in [None, 0, '0', 'NTTIME(0)']
+                        for entry in inbound)
+                else:
+                    # Samba releases differ in --json output shape. Never treat
+                    # an unrecognized payload as a successful replication check.
+                    inbound = []
+                    healthy = False
+                if not healthy:
+                    raise OperationError('Ingresso efetuado, mas o retorno DRS nao confirmou vizinhos de entrada saudaveis no formato esperado. Ingresso preservado; consulte samba-tool drs showrepl no IP ' + local_drs_ip + ' e reaplique a configuracao depois da correcao.')
         manifest.update(phase='configuration_pending' if bind_error else 'complete', joined=True,ca_port=request.get('ca_port') if request.get('setup_step_ca') else None,ca_url=request.get('ca_url'))
         save_manifest(backup, manifest)
         steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')
