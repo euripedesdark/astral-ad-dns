@@ -8,38 +8,21 @@
 
 🇫🇷 **Français :** Cliquez sur le lien ci-dessous pour lire le README complet en français : [README.fr-FR.md](README.fr-FR.md)
 
+### Fix for DC, RODC, and MEMBER domain join
 
-### Correcao do ingresso DC, RODC e MEMBER
+The join process now uses `--option='netbios name = DC2'`—compatible with `samba-tool domain join`—instead of `--netbios-name`. DCs and RODCs use `SAMBA_INTERNAL`, while MEMBER servers do not receive a DNS backend. The domain's NetBIOS name is automatically discovered by Samba, eliminating the need to derive it from the DNS name via the `-W` flag. For DCs/RODCs, a preflight check queries the domain/forest functional levels and the local default settings (via `testparm`). It then configures the DC using the higher of the two values—the domain-required level or the local default—verifies that the installation supports this configuration, and persists the setting in `smb.conf`. In a 2016-level domain, a replica will be set to the 2016 level; there is no automatic domain/forest functional level demotion or elevation. Note that a successful configuration does not guarantee full support for all AD features—this depends on the specific Samba version, and the join process itself performs its own internal validation checks. BIND remains configured as a recursive resolver on `127.0.0.1:5353`, without using DLZ.
 
-O ingresso usa `--option='netbios name = DC2'`, compatível com `samba-tool domain
-join`, em vez de `--netbios-name`. DC e RODC usam SAMBA_INTERNAL; MEMBER nao
-recebe backend DNS. O nome NetBIOS do dominio e descoberto pelo Samba, sem impor `-W` derivado
-do nome DNS. Para DC/RODC, o preflight consulta os niveis do dominio/floresta e
-o padrao local com `testparm`. Configura o DC com o maior entre o nivel exigido
-pelo dominio e o padrao local, verifica se a instalacao aceita a configuracao e
-persiste o valor em smb.conf. Em dominio 2016, a replica recebe 2016; nao ha
-rebaixamento nem elevacao automatica do dominio/floresta. Uma configuracao
-aceita nao garante suporte completo a todos os recursos de AD: isso depende
-da versao do Samba; o proprio join ainda faz suas verificacoes internas.
-O BIND permanece recursivo em 127.0.0.1:5353, sem DLZ.
+Before modifying the resolver or clearing existing data, the system validates the syntax and the availability of the `--option` flag. The cleanup routine will reject an existing local AD database (`sam.ldb`) and requires that the replication partner be identified by a name different from that of the local server. The IP address used for DNS records is determined based on the network route to the partner. Updating the console does not automatically start Samba/BIND, as these are handled via unit dependencies; provisioning remains an explicit action within the wizard.
 
-Antes de alterar o resolver ou limpar residuos, o sistema verifica a sintaxe e
-a disponibilidade de `--option`. A limpeza recusa uma base AD local existente
-(`sam.ldb`) e exige identificar o parceiro com nome diferente do servidor local.
-O IP para os registros DNS e escolhido pela rota ate o parceiro. Atualizar a
-console nao inicia Samba/BIND por dependencia da unit; o provisionamento continua
-sendo uma acao explicita no assistente.
-
-Para atualizar na pasta do repositorio e repetir o ingresso pelo assistente:
+To update from the repository directory and re-run the join process via the wizard:
 
 ```bash
 git pull --ff-only origin main
 python3 deploy_ad_dns.py --skip-git
 ```
 
-Os testes locais validam os comandos e argumentos; a replicacao real deve ser
-verificada no dominio apos o ingresso (`samba-tool drs showrepl`).
-
+Local tests validate the commands and arguments; Actual replication should be
+verified within the domain after joining (`samba-tool drs showrepl`).
 
 ### AD DNS and Local BIND During Domain Join
 
