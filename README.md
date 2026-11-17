@@ -1,62 +1,84 @@
 # Astral AD & Hybrid DNS
 
-🇧🇷 **Português (Brasil):** Clique no link abaixo para ler o README completo em português: [README.pt-BR.md](README.pt-BR.md)
+<p align="center">
+  <img src="web/public/astral-logo.svg" alt="Astral AD & Hybrid DNS" width="120" onerror="this.style.display='none'"/>
+</p>
 
-🇺🇸 **English:** Click the link below to read the complete README in English: [README.en-US.md](README.en-US.md)
+<p align="center">
+  <b>Enterprise Samba 4 Active Directory (2016 Functional Level) & Hybrid BIND 9 DNS Management Platform</b><br/>
+  <i>Developed in Rust (Axum/Tokio) & React 18 / Tailwind CSS & Python 3 Engine</i>
+</p>
 
-🇪🇸 **Español:** Haz clic en el siguiente enlace para leer el README completo en español: [README.es-ES.md](README.es-ES.md)
+<p align="center">
+  <a href="#-language-selection--seleção-de-idioma"><b>🌐 Choose your Language / Escolha seu Idioma</b></a>
+</p>
 
-🇫🇷 **Français :** Cliquez sur le lien ci-dessous pour lire le README complet en français : [README.fr-FR.md](README.fr-FR.md)
+<p align="center">
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-AGPLv3-blue.svg" alt="License"/></a>
+  <img src="https://img.shields.io/badge/Rust-1.80%2B-orange.svg" alt="Rust"/>
+  <img src="https://img.shields.io/badge/Samba-4%20AD%20DC%20(2016)-green.svg" alt="Samba 4 AD DC"/>
+  <img src="https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg" alt="BIND 9"/>
+  <img src="https://img.shields.io/badge/Web%20GUI-React%2018%20%2B%20Tailwind-blueviolet.svg" alt="Web GUI"/>
+</p>
 
-### Fix for DC, RODC, and MEMBER domain join
+---
 
-The join process now uses `--option='netbios name = DC2'`—compatible with `samba-tool domain join`—instead of `--netbios-name`. DCs and RODCs use `SAMBA_INTERNAL`, while MEMBER servers do not receive a DNS backend. The domain's NetBIOS name is automatically discovered by Samba, eliminating the need to derive it from the DNS name via the `-W` flag. For DCs/RODCs, a preflight check queries the domain/forest functional levels and the local default settings (via `testparm`). It then configures the DC using the higher of the two values—the domain-required level or the local default—verifies that the installation supports this configuration, and persists the setting in `smb.conf`. In a 2016-level domain, a replica will be set to the 2016 level; there is no automatic domain/forest functional level demotion or elevation. Note that a successful configuration does not guarantee full support for all AD features—this depends on the specific Samba version, and the join process itself performs its own internal validation checks. BIND remains configured as a recursive resolver on `127.0.0.1:5353`, without using DLZ.
+## 🌐 Language Selection / Seleção de Idioma
 
-Before modifying the resolver or clearing existing data, the system validates the syntax and the availability of the `--option` flag. The cleanup routine will reject an existing local AD database (`sam.ldb`) and requires that the replication partner be identified by a name different from that of the local server. The IP address used for DNS records is determined based on the network route to the partner. Updating the console does not automatically start Samba/BIND, as these are handled via unit dependencies; provisioning remains an explicit action within the wizard.
+Select your preferred language below to read the **complete documentation**, including **step-by-step installation**, **production deployment guides**, **supported distributions**, **Active Directory topologies** (DC1, DC2 Replica RW, RODC, Member), **Step-CA PKI**, **Hybrid BIND 9 DNS**, and **troubleshooting**:
 
-To update from the repository directory and re-run the join process via the wizard:
+| Language | Document | Description |
+| :--- | :--- | :--- |
+| 🇧🇷 **Português (Brasil)** | [**`README.pt-BR.md`**](README.pt-BR.md) | Guia completo de implantação, topologias AD, preparação de pacotes, deploy automatizado e manual, PKI Step-CA e BIND 9. |
+| 🇺🇸 **English (US)** | [**`README.en-US.md`**](README.en-US.md) | Full deployment guide, AD topologies (DC1, DC2, RODC, Member), automated/manual deploy, Step-CA PKI, and BIND 9. |
+| 🇪🇸 **Español (España)** | [**`README.es-ES.md`**](README.es-ES.md) | Guía completa de despliegue, topologías AD, preparación de paquetes, despliegue automatizado y manual, PKI Step-CA y BIND 9. |
+| 🇫🇷 **Français (France)** | [**`README.fr-FR.md`**](README.fr-FR.md) | Guide complet de déploiement, topologies AD, préparation des paquets, déploiement automatisé et manuel, PKI Step-CA et BIND 9. |
+
+---
+
+## 🚀 Overview & Key Capabilities
+
+**Astral AD & Hybrid DNS** is a high-performance enterprise management and provisioning platform designed for Linux environments (RHEL / AlmaLinux / Rocky Linux 9 & 10, Fedora 44/45, Arch Linux, Debian, and Ubuntu).
+
+### Core Features:
+- **Active Directory Provisioning & Joining Wizard (`/api/provision`)**:
+  - **Primary Domain Controller (DC1)**: New Active Directory Forest at functional level 2016.
+  - **Secondary Domain Controller (DC2 Replica RW)**: Bidirectional Multi-Master replication and DRS synchronization.
+  - **Read-Only Domain Controller (RODC)**: Delegated branch office controller with read-only database replication.
+  - **Domain Member Server (MEMBER)**: Seamless authentication node without hosting local directory databases.
+  - **Clean Re-deployment & Orphan AD Protection**: Automatic backup, rollback, and safe demotion/cleanup of legacy foreign domains.
+- **Enterprise PKI & Step-CA Integration**:
+  - Full-chain certificate validation (**Root CA** $\rightarrow$ **Intermediate CA** $\rightarrow$ **DC Certificate**).
+  - Automated LDAPS configuration for Samba AD with scheduled background renewal.
+- **Hybrid BIND 9 Recursive Engine**:
+  - Independent recursion on `127.0.0.1:5353` forwarding to external DNS, keeping port 53 exclusively for Samba AD internal DNS (`_msdcs`).
+  - Native SELinux policy management (`dns_port_t`).
+- **Operational Health Dashboard & Interactive Checklist**:
+  - Millisecond latency validation for `testparm`, `samba-tool dbcheck`, `chronyc tracking`, Kerberos tickets, and SRV locators.
+- **Strict Non-Destructive Firewall Management (`/api/firewall`)**:
+  - Automated inspection and safe insertion of all 19 standard AD ports without flushing active rules.
+- **Thread-Safe In-Memory Audit Trail & Simulation (`dry_run`)**:
+  - Correlation tracking for all administrative actions with credential masking.
+
+---
+
+## 📦 Quick Deployment Summary
+
+For full distribution prerequisites and configuration details, refer to your language file above.
 
 ```bash
-git pull --ff-only origin main
+# 1. Prepare distribution packages (EL10, EL9, Fedora, Arch)
+python3 deploy_ad_dns.py --prepare-ad-only
+
+# 2. Automated complete build, installation to /opt/astral-ad-dns and systemd startup
 python3 deploy_ad_dns.py --skip-git
+
+# 3. Access the Web Management Wizard
+# Open http://<SERVER-IP>:8095 in your browser
 ```
 
-Local tests validate the commands and arguments; Actual replication should be
-verified within the domain after joining (`samba-tool drs showrepl`).
+---
 
-### AD DNS and Local BIND During Domain Join
+## 📄 License
 
-The wizard requires the IP address of the partner Domain Controller (DC). The pre-flight check queries the partner directly using:
-`dig @AD_IP -p 53 _ldap._tcp.dc._msdcs.DOMAIN SRV`. `localhost` is not accepted as a partner. During the join process, the resolver queries only this specified partner. The diagnostic screen uses the provided IP/domain without employing any embedded credentials.
-
-`127.0.0.1:5353` refers exclusively to an optional local recursive BIND instance. This option is unchecked by default and plays no role in AD discovery. Forwarding to this listener is only enabled after UDP/TCP connectivity has been validated. Should a failure occur after the join, it is flagged as a warning within the process steps, while maintaining the existing forwarder to the partner; this does not necessitate clearing the database or repeating the join operation. In the case of a new domain, a failure of the optional BIND instance ensures that a valid external forwarder remains in place, rather than pointing to an unavailable local listener.
-
-The BIND test waits briefly for initialization to complete; if the failure persists, it collects the unit's status and logs before restoring the previous configuration. Note that these local tests do not verify connectivity to the domain itself or to the BIND service running on the production server.
-
-
-### BIND Active, but No Listener on Port 5353 (Fedora)
-
-The configuration tool checks for conflicts on port 5353 and identifies the specific file currently in use by the `named` process (`NAMEDCONF`). If another process (such as mDNS) is occupying the port, the tool leaves that process intact and reports the conflict; it does not disable other services.
-
-When SELinux is enabled, the `policycoreutils-python-utils` package is required. The tool authorizes TCP/UDP port 5353 by assigning it the `dns_port_t` label, without requiring SELinux to be disabled. The port is then dedicated to the local BIND instance. If activation fails, the previous local labels and configuration are restored.
-Diagnostics include listener errors, socket status, and AVC events (when the
-audit tool is available). Note that this does not replace verification on the
-host itself: an active service alone does not confirm proper DNS or AD replication.
-
-After updating this helper, re-apply the configuration via the **BIND 9 Recursive** tab.
-Do not repeat the domain join process or clear the AD database if this optional step fails.
-
-
-## Web-based provisioning with backup and re-joining
-
-The wizard now offers **Re-join with automatic backup** and **Re-apply
-configuration**, featuring a backup history/download option and asynchronous
-progress tracking. It handles the installation of dependencies via the
-distribution's package manager, and configures iptables, NTP, BIND, the
-Global Catalog, and TLS/Step-CA as selected on the screen. If the preferred
-port for the new CA is already in use, an alternative port is automatically
-assigned, with persistent TCP/UDP rules applied. Nginx routes and the
-auth-service are preserved. A target holding FSMO roles will not be cleared.
-
-[Full workflow, comparison with fedoradc-SSL(3).py, and recovery limitations](docs/provisionamento-web.md).
-This workflow replaces the previous instructions for manually clearing a domain join.
+Licensed under the **GNU Affero General Public License v3.0** (`AGPL-3.0`). See [`LICENSE.md`](LICENSE.md) for full terms.

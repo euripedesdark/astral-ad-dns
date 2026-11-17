@@ -8,112 +8,236 @@
 </p>
 
 ![Licencia](https://img.shields.io/badge/License-AGPLv3-blue.svg)
-![Rust](https://img.shields.io/badge/Rust-1.99%2B-orange.svg)
+![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)
 ![Samba](https://img.shields.io/badge/Samba-4%20AD%20DC%20(2016)-green.svg)
 ![BIND](https://img.shields.io/badge/BIND-9%20Hybrid%20(5353)-cyan.svg)
 ![Web GUI](https://img.shields.io/badge/Web%20GUI-React%2018%20%2B%20Tailwind-blueviolet.svg)
 
-**Módulo Corporativo en Rust con Interfaz Web para Administración y Aprovisionamiento de Samba 4 Active Directory 2016 y BIND 9 Híbrido** — Basado en la guía técnica de arquitectura corporativa para Linux de Euripedes Batista.
+**Módulo Corporativo en Rust con Interfaz Web para Administración, Aprovisionamiento y Gestión de Samba 4 Active Directory (Nivel Funcional 2016) y BIND 9 Híbrido** — Desarrollado a partir de la guía técnica exhaustiva de arquitectura corporativa para Linux de Euripedes Batista.
 
-Bajo licencia **GNU AGPL v3**. Ver [`LICENSE.md`](LICENSE.md).
-
----
-
-## 🚀 Novedades de la Versión 1.5.0
-
-### 1. Panel Operacional y Diagnóstico de Salud
-- **Indicador de Salud Global**: Distintivo inequívoco y estandarizado (`operational`, `degraded`, `unavailable`, `unknown`) en el encabezado y en la API (`/api/status`).
-- **Lista de Verificación Operacional Interactiva (`/api/checks`)**: Suite automatizada ejecutada desde la interfaz con medición de latencia en milisegundos para:
-  - `testparm -s` (Validación sintáctica de `smb.conf`).
-  - `samba-tool dbcheck --cross-ncs` (Integridad estructural de más de 3.900 objetos del directorio LDB).
-  - `chronyc tracking` (Sincronización de reloj, estrato y desviación para Kerberos).
-  - `klist` (Validación de tickets locales Kerberos).
-  - Localizadores DNS SRV (`_ldap._tcp`, `_kerberos._tcp`, `_kerberos._udp`, `_kpasswd._udp`).
-
-### 2. Diagnóstico Profundo de Infraestructura y Dependencias (`/api/diagnostics`)
-Pestaña dedicada con escaneo continuo, latencias, causas probables y recomendaciones prácticas para 10 subsistemas clave:
-- **Motor REST y Consola Web**: Tiempo de respuesta inmediato del runtime Axum/Tokio.
-- **Servicio Samba Active Directory**: Estado del servicio e integridad en systemd.
-- **Puertos de Autenticación**: Sockets de escucha LDAP (TCP 389) y Kerberos (TCP 88).
-- **Servidor BIND 9 (Hybrid DNS)**: Resolución recursiva aislada en `127.0.0.1:5353`.
-- **Resolución de Registros SRV**: Verificación de resolución DNS local mediante `127.0.0.1`.
-- **Sincronización de Tiempo Chrony NTP**: Socket firmado Kerberos (`/var/lib/samba/ntp_signd`).
-- **Dependencias del SO**: Existencia de binarios (`samba-tool`, `named`, `chronyc`, `iptables`, `host`, `klist`).
-- **Archivos y SAM LDB**: Presencia y permisos de `smb.conf`, `sam.ldb` y `krb5.conf`.
-- **Políticas de Seguridad SELinux**: Modo de operación (`Enforcing` / `Permissive` / `Disabled`).
-- **Consistencia de la Base de Datos**: Integridad de particiones y estado de replicación.
-
-### 3. Gestión Segura del Cortafuegos (`/api/firewall`)
-- **Garantía Estricta de No Destrucción**: Bloqueo tokenizado en el backend contra comandos que contengan `-F`, `--flush`, `-X`, `-Z`, `-D`, `-P`, `-R` o `nft flush`.
-- **Auditoría de Puertos**: Comprobación continua de los 19 puertos estándar con `iptables -C INPUT`.
-- **Apertura No Destructiva**: Inserción segura con `iptables -I INPUT 1` y soporte para simulación preventiva (`dry_run`).
-
-### 4. Registro de Auditoría e Historial Operacional (`/api/audit`)
-- Búfer circular en memoria (hasta 500 eventos) con identificador de correlación (`evt_...`), operador, acción, objetivo, modo, estado y detalles.
-- Filtros interactivos por modo (Todos / Solo Simulaciones / Solo Ejecuciones Reales) y búsqueda de texto.
-
-### 5. Modo de Simulación Preventiva (`dry_run`) y Validación Previa
-- Soporte para simulación en aprovisionamiento (`/api/provision`), usuarios (`/api/users`), grupos (`/api/groups`), equipos (`/api/computers`), DNS (`/api/dns`) y BIND 9 (`/api/bind`).
-- **Bloqueos Anti-Eliminación**: Protección contra eliminación accidental del Controlador de Dominio (`DC-ERP`) y grupos estructurales ("Domain Admins", etc.).
-- **Enmascaramiento de Contraseñas**: Ocultación automática de credenciales sensibles en todos los registros.
-
-### 6. Interfaz Web Moderna con Selector de Idioma
-- Menú desplegable (`<select>`) en el encabezado superior para cambio instantáneo entre 4 idiomas con persistencia en `localStorage`:
-  - 🇧🇷 Português (Brasil)
-  - 🇺🇸 English (US)
-  - 🇪🇸 Español (España)
-  - 🇫🇷 Français (France)
-- 100% de la interfaz traducida en los 4 idiomas.
-
-### 7. Política Unificada de Acceso y Autenticación Multiproveedor
-Implementación de la política corporativa unificada de autenticación y autorización:
-- **Samba Active Directory / OAuth2**: Autenticación para usuarios y administradores de dominio con mapeo de grupos LDAP/Kerberos o mediante tokens SSO de `astral-auth-service`.
-- **Linux Local (Root / Sudo)**: Inicio de sesión para administradores del sistema operativo pertenecientes al grupo `wheel`/`sudo` o superusuario `root`.
-- **Superusuario PostgreSQL**: Validación directa de credenciales para cualquier usuario de base de dados con `rolsuper = true` (ej: `postgres`).
-- **Soporte para Bearer Token y Cookies de Sesión**: Validación simultánea de encabezados `Authorization: Bearer <jwt>` y cookies `sso_token` / `astral_token`.
-- **Rutas de Autenticación**:
-  - `POST /api/auth/login`: Validación de credenciales y emisión de token JWT.
-  - `GET /api/auth/me`: Consulta de identidad y privilegios del operador activo.
-  - `POST /api/auth/logout`: Cierre de sesión e invalidación de cookies.
-  - `GET /api/auth/providers`: Catálogo de métodos de autenticación soportados.
-- **Ámbitos Preservados**: Aplicado transversalmente manteniendo independientes únicamente `astral-saas-erp` (Java) y la interfaz web IAM de `auth-service`.
+Distribuido bajo licencia **GNU AGPL v3**. Consulte [`LICENSE.md`](LICENSE.md).
 
 ---
 
-## 🛠️ Instalación y Despliegue
+## 📋 Índice
+1. [Preparación del Servidor por Distribución Linux](#1-preparación-del-servidor-por-distribución-linux)
+2. [Instalación y Despliegue Automatizado (`deploy_ad_dns.py`)](#2-instalación-y-despliegue-automatizado-deploy_ad_dnspy)
+3. [Despliegue Manual Alternativo (Cargo y Systemd)](#3-despliegue-manual-alternativo-cargo-y-systemd)
+4. [Asistente Web de Aprovisionamiento y Topologías](#4-asistente-web-de-aprovisionamiento-y-topologías)
+5. [Infraestructura de Clave Pública (PKI Step-CA y LDAPS)](#5-infraestructura-de-clave-pública-pki-step-ca-y-ldaps)
+6. [Resolución DNS Híbrida con BIND 9 y SELinux](#6-resolución-dns-híbrida-con-bind-9-y-selinux)
+7. [Despliegue Limpio, Reincorporación y Limpieza de Bases Huérfanas](#7-despliegue-limpio-reincorporación-y-limpieza-de-bases-huérfanas)
+8. [Verificación Operativa y Diagnóstico](#8-verificación-operativa-y-diagnóstico)
+9. [Seguridad del Cortafuegos y Registro de Auditoría](#9-seguridad-del-cortafuegos-y-registro-de-auditoría)
 
-### Compilación del Backend (Rust)
+---
+
+## 1. Preparación del Servidor por Distribución Linux
+
+Antes de iniciar el asistente web para crear o unir un controlador al dominio, configure los paquetes y repositorios corporativos requeridos:
+
+### Preparación Rápida Automatizada
+El script `deploy_ad_dns.py` incluye una opción dedicada que configura repositorios corporativos verificados por GPG e instala todos los binarios esenciales sin modificar la base de datos de Samba ni requerir compilación:
+
 ```bash
-cargo build --release --bin astral-ad-dns
+# Configura repositorios e instala dependencias en Linux sin compilar el panel web
+python3 deploy_ad_dns.py --prepare-ad-only
 ```
 
-### Compilación del Frontend (Web GUI)
+### Particularidades por Distribución
+
+* **RHEL 10 / AlmaLinux 10 / Rocky Linux 10 (EL10):**
+  - Importa la clave oficial `RPM-GPG-KEY-TISSAMBA-10`.
+  - Habilita el repositorio Tranquil IT: `https://samba.tranquil.it/redhat10/samba-4.24/`.
+  - Habilita CRB (`dnf config-manager --set-enabled crb`) y EPEL 10.
+  - Instala: `samba`, `samba-dc`, `samba-winbind`, `samba-winbind-clients`, `krb5-workstation`, `ldb-tools`, `bind`, `bind-utils`, `chrony`, `python3-setproctitle`, `policycoreutils-python-utils`.
+* **RHEL 9 / AlmaLinux 9 / Rocky Linux 9 (EL9):**
+  - Importa la clave `RPM-GPG-KEY-TISSAMBA-9` y el repositorio `https://samba.tranquil.it/redhat9/samba-4.24/`.
+  - Habilita CRB y EPEL 9.
+* **Fedora 44 / 45:**
+  - Emplea los paquetes nativos de la distribución (`dnf install -y samba samba-dc bind bind-utils chrony krb5-workstation`).
+* **Arch Linux:**
+  - Instalación mediante pacman: `pacman -S --needed samba bind chrony krb5`.
+* **Debian 12 (Bookworm) / Ubuntu 24.04 LTS:**
+  - Instalación mediante apt: `apt-get install -y samba winbind krb5-user bind9 bind9utils chrony ldb-tools`.
+
+---
+
+## 2. Instalación y Despliegue Automatizado (`deploy_ad_dns.py`)
+
+El script `deploy_ad_dns.py` automatiza el ciclo operativo integral: compilación en modo release optimizado del backend en Rust, empaquetado del frontend Vite/React, instalación en `/opt/astral-ad-dns/`, configuración y activación de la unidad systemd y apertura segura del puerto web en el cortafuegos.
+
 ```bash
+# Despliegue completo local (sin enviar cambios al git remoto)
+python3 deploy_ad_dns.py --skip-git
+
+# Despliegue completo con preparación previa de paquetes del sistema
+python3 deploy_ad_dns.py --prepare-ad --skip-git
+```
+
+### Acciones del Despliegue Automatizado:
+1. **Compilación del Backend**: Ejecuta `cargo build --release --bin astral-ad-dns`.
+2. **Construcción del Frontend**: Ejecuta `npm install` y `npm run build` en la carpeta `web/`.
+3. **Instalación en `/opt/astral-ad-dns`**:
+   - Binario copiado a `/opt/astral-ad-dns/astral-ad-dns`.
+   - Archivos estáticos en `/opt/astral-ad-dns/web/dist/`.
+   - Scripts de aprovisionamiento en `/opt/astral-ad-dns/samba-ad-dc/`.
+   - Enlace simbólico generado en `/usr/local/bin/astral-ad-dns`.
+4. **Servicio Systemd**:
+   - Genera `/etc/systemd/system/astral-ad-dns.service`.
+   - Ejecuta `systemctl daemon-reload`, habilita e inicia el servicio.
+5. **Cortafuegos Seguro**:
+   - Comprueba e inserta la regla para el puerto TCP 8095 en `iptables` sin vaciar reglas activas.
+6. **Verificación de Salud**:
+   - Comprueba la respuesta HTTP local (`http://127.0.0.1:8095/api/auth/providers`).
+
+### Actualización Rápida en Nodos Secundarios (DC2 / RODC)
+Para sincronizar scripts operacionales actualizados en controladores secundarios sin recompilar el binario Rust:
+```bash
+cd ~/astral-ad-dns
+git pull origin main
+sudo cp -r samba-ad-dc/* /opt/astral-ad-dns/samba-ad-dc/
+sudo systemctl restart astral-ad-dns.service
+```
+
+---
+
+## 3. Despliegue Manual Alternativo (Cargo y Systemd)
+
+Si prefiere compilar e instalar manualmente los componentes:
+
+```bash
+# 1. Compilar Backend en Rust
+cargo build --release --bin astral-ad-dns
+
+# 2. Compilar Frontend React / Vite
 cd web
 npm install
 npm run build
 cd ..
-```
 
-### Servicio systemd
-```bash
+# 3. Crear Directorios de Producción
+sudo mkdir -p /opt/astral-ad-dns/web
+sudo cp target/release/astral-ad-dns /opt/astral-ad-dns/
+sudo cp -r web/dist /opt/astral-ad-dns/web/
+sudo cp -r samba-ad-dc /opt/astral-ad-dns/
+sudo ln -sf /opt/astral-ad-dns/astral-ad-dns /usr/local/bin/astral-ad-dns
+
+# 4. Configurar e Iniciar la Unidad Systemd
 sudo cp systemd/astral-ad-dns.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now astral-ad-dns.service
-```
 
-Acceda en el navegador: `http://<SU_IP>:8095/` (o mediante el proxy inverso `/ad/`).
+# 5. Abrir en el Navegador
+# Ingrese a http://<IP_DEL_SERVIDOR>:8095
+```
 
 ---
 
-## 📄 Licencia y Contribución
+## 4. Asistente Web de Aprovisionamiento y Topologías
 
-- Licencia: **GNU Affero General Public License v3.0** ([`LICENSE.md`](LICENSE.md))
-- Guía de Contribución: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- Política de Seguridad: [`SECURITY.md`](SECURITY.md)
-- Código de Conducta: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
+Acceda a `http://<IP_DEL_SERVIDOR>:8095` y haga clic en **"Asistente de Aprovisionamiento"**. El sistema soporta cuatro topologías corporativas:
 
+### 1. Nuevo Dominio Primario (DC1)
+* Creación de un bosque nuevo de Active Directory con nivel funcional **2016**.
+* Generación del reino Kerberos, dominio NetBIOS, Catálogo Global y backend DNS (`SAMBA_INTERNAL`).
+* Inicialización opcional de la entidad certificadora Step-CA integrada para certificados LDAPS.
 
-### 7. Verificación de Privilegios Linux (Wheel) para Usuarios AD & BIND
-- **Comprobación de Conformidad Wheel**: Atributo `has_wheel: bool` añadido a `UserItem` (`/api/users`) y `AuthenticatedOperator` (`/api/auth/*`), verificando si los administradores de Samba AD y operadores de BIND tienen permisos en el grupo `wheel` del host Linux (`getent group wheel`).
-- **Integración con `auth-service`**: Validación cruzada con `LinuxPrivilegeService` asegurando que los administradores corporativos (`Administrator`, `Domain Admins`) se sincronicen con el sistema operativo y los superusuarios de PostgreSQL permanezcan estrictamente aislados.
+### 2. Controlador Secundario Réplica Lectura/Escritura (DC2 RW)
+* Incorporación del servidor como Domain Controller adicional en el bosque existente.
+* Replicación bidireccional Multi-Master del directorio mediante DRS (Directory Replication Services).
+* Sincronización automatizada de SYSVOL desde el controlador principal con preservación de ACLs NT.
+* Sincronización de reloj estricta y firmada para Kerberos (`ntp_signd`).
+
+### 3. Controlador de Dominio de Solo Lectura (RODC)
+* Indicado para sucursales u oficinas remotas con menor nivel de seguridad física perimetral.
+* Base de datos LDB local montada en modo solo lectura; las contraseñas de usuario no se almacenan en caché por defecto.
+* Validación DRS en el socio evitando llamadas RPC privilegiadas que colisionen con KDC MIT.
+
+### 4. Servidor Miembro del Dominio (MEMBER)
+* Servidor Linux integrado en el directorio para autenticación centralizada (Winbind / PAM / NSS).
+* No aloja bases de datos de directorio (`sam.ldb`) ni consume recursos de replicación de controladores.
+
+---
+
+## 5. Infraestructura de Clave Pública (PKI Step-CA y LDAPS)
+
+Astral AD proporciona soporte corporativo de certificados digitales con validación rigurosa de confianza:
+
+* **Jerarquía de Certificados en 2 Niveles**:
+  $$\text{Root CA} \longrightarrow \text{Intermediate CA} \longrightarrow \text{Certificado del Controlador DC}$$
+* **Validación de Cadena Completa en la Incorporación**:
+  - En nodos réplica (DC2 / RODC), el asistente descarga automáticamente el certificado intermedio oficial por HTTPS (`https://<IP_CA>:9444/intermediates.pem`).
+  - OpenSSL valida la cadena completa (`-CAfile trusted-step-root.crt -untrusted intermediates.pem dc.crt`) evitando errores de emisor local no reconocido.
+  - El parámetro `tls cafile` de Samba se configura con la cadena completa unificada.
+* **Renovación Automatizada**:
+  - Configura el temporizador systemd `astral-ad-tls-renew.timer` para inspeccionar y renovar certificados cada 15 minutos sin interrupción de servicio.
+
+---
+
+## 6. Resolución DNS Híbrida con BIND 9 y SELinux
+
+La plataforma elimina los conflictos entre los registros internos de AD y la navegación recursiva hacia internet:
+
+* **Puerto 53 (UDP/TCP)**: Asignado exclusivamente a `SAMBA_INTERNAL`, con autoridad sobre la zona de dominio y registros `_msdcs`.
+* **Puerto 5353 (UDP/TCP)**: Instancia aislada de **BIND 9** configurada exclusivamente como resolvedor recursivo en `127.0.0.1:5353`.
+* **Integración con SELinux**:
+  - El asistente inspecciona puertos existentes con `semanage port -l`.
+  - Asigna con seguridad la etiqueta `dns_port_t` al puerto 5353 incluso en presencia de políticas concurrentes como `howl_port_t`, manteniendo SELinux en modo `Enforcing`.
+
+---
+
+## 7. Despliegue Limpio, Reincorporación y Limpieza de Bases Huérfanas
+
+Al reutilizar servidores previamente configurados o que contengan bases de datos de pruebas:
+
+* **Limpieza de Bases Huérfanas**:
+  - Cuando se habilita el despliegue limpio (`clean_existing`, `rejoin` o `overwrite_existing`), el sistema autoriza el borrado seguro de bases pertenecientes a dominios previos (por ejemplo, entornos de prueba como `ASTRAL.CELESTE`).
+  - Detiene y elimina de forma automática cualquier servicio heredado de Step-CA que perteneciera al dominio anterior.
+* **Copia de Seguridad Automática**:
+  - Antes de cualquier eliminación, el asistente genera una instantánea criptográfica en `/var/backups/astral-ad-dns/provision/<ID>/` con el estado previo de Samba, cortafuegos y manifiestos de recuperación.
+* **Despromoción Segura**:
+  - Si el servidor figura registrado en el socio, ejecuta `samba-tool domain demote --remove-other-dead-server` para no dejar metadats residuales en el bosque.
+
+---
+
+## 8. Verificación Operativa y Diagnóstico
+
+Compruebe la salud del dominio directamente desde la consola web (pestañas **Checklist** y **Diagnóstico**) o desde la terminal:
+
+```bash
+# 1. Comprobar estado de replicación DRS con el socio
+sudo samba-tool drs showrepl
+
+# 2. Validar integridad estructural de la base de datos LDB
+sudo samba-tool dbcheck --cross-ncs
+
+# 3. Validar sintaxis del archivo smb.conf
+testparm -s
+
+# 4. Consultar registros DNS de localización de servicio (SRV)
+dig @127.0.0.1 _ldap._tcp.dc._msdcs.<DOMINIO> SRV +short
+
+# 5. Comprobar sincronización de hora para Kerberos
+chronyc tracking
+
+# 6. Validar apretón de manos LDAPS y cadena de certificados
+openssl s_client -connect 127.0.0.1:636 -showcerts < /dev/null
+```
+
+---
+
+## 9. Seguridad del Cortafuegos y Registro de Auditoría
+
+* **Bloqueos Anti-Destrucción (`/api/firewall`)**:
+  - El motor Rust rechaza comandos destructivos que contengan `-F`, `--flush`, `-X`, `-Z`, `-D`, `-P`, `-R` o `nft flush`.
+  - Inserción idempotente mediante `iptables -I INPUT 1` exclusivamente para puertos pendientes.
+* **Registro de Auditoría en Memoria (`/api/audit`)**:
+  - Búfer circular de hasta 500 eventos con marcas de tiempo, operadores, acciones, estados e identificadores de correlación.
+  - Ocultación estricta de credenciales en todos los registros.
+
+---
+
+## 📄 Licencia
+
+Este proyecto es software libre bajo la licencia **GNU Affero General Public License v3.0** (`AGPL-3.0`). Consulte [`LICENSE.md`](LICENSE.md) para más detalles.
