@@ -406,15 +406,16 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                          ', realm=' + (old_realm or 'indisponivel') + ', origem=' + identity_source)
         if request.get('initialize_ca') and request['kind']!='new':
             raise OperationError('Inicializar CA so e permitido em novo dominio. No reingresso, selecione a CA existente.')
-        if local_db and (not old_name or not old_realm) and not (request['kind']=='new' and request.get('overwrite_existing')):
+        can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
+        if local_db and (not old_name or not old_realm) and not can_clean:
             raise OperationError('Base AD local nao pode ser identificada com seguranca; use recuperacao de backup na interface. Limpeza bloqueada para proteger o primario.')
         if request['kind'] == 'configure':
             if old_name and request['netbios_name']!=old_name:
                 raise OperationError('Para alterar o nome NetBIOS escolha Reingresso; reaplicacao preserva a identidade atual.')
             account = optional(run,['samba-tool','computer','show',old_name]) if local_db else ''
             request['domain_role'] = ('RODC' if re.search(r'(?im)^primaryGroupID:\s*521',account) else 'DC') if local_db else 'MEMBER'
-        if old_realm and old_realm != request['realm'] and request['kind']!='new':
-            raise OperationError('A base local pertence a outro dominio; migracao entre dominios exige um fluxo dedicado.')
+        if old_realm and old_realm != request['realm'] and request['kind']!='new' and not can_clean:
+            raise OperationError('A base local pertence a outro dominio (' + old_realm + '); para ingressar no dominio ' + request['realm'] + ', selecione a opcao de reingresso com limpeza.')
         if request['kind']=='new':
             if request['static_ip'] not in local_ipv4s(run): raise OperationError('IP_ESTATICO nao esta atribuido a esta maquina; verifique o IP informado.')
             run(['ip','link','show','dev',request['network_interface']])
@@ -502,8 +503,9 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             partner = request['target_dc_ip']
             # Detect an account left by a failed join as well as a currently provisioned DC.
             account = optional(run, ['samba-tool', 'computer', 'show', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
+            can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
             is_dc = bool(re.search(r'(?im)^primaryGroupID:\s*(516|521)\s*$', account))
-            if is_dc or local_db:
+            if (is_dc or local_db) and old_realm == request['realm']:
                 manifest['phase'] = 'demotion_attempted'
                 save_manifest(backup, manifest)
                 remote_mutated = True  # A failed demotion can still have replicated partial changes.
@@ -511,10 +513,6 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 try:
                     if not local_db:
                         raise OperationError('Existe uma conta DC no parceiro, mas nao existe sam.ldb local para despromocao normal.')
-                    # The offline snapshot is complete. Native demotion asks the
-                    # partner to pull final changes from this DC via DRS RPC.
-                    # Samba must run for that synchronization, even though it
-                    # must be stopped again before any cleanup or dead-DC removal.
                     dc_service = unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])
                     try:
                         dc_stopped = False
@@ -535,6 +533,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     steps.append('Despromocao normal indisponivel; limpeza do DC anterior explicitamente autorizada, com Samba local parado.')
                     run(['samba-tool', 'domain', 'demote', '--remove-other-dead-server=' + (old_name or request['netbios_name']), '-H', 'ldap://' + partner] + credentials(request))
                 steps.append('DC secundario anterior despromovido; funcoes FSMO do parceiro preservadas.')
+            elif (is_dc or local_db) and can_clean:
+                steps.append('Base local pertencia ao dominio anterior ' + (old_realm or 'desconhecido') + '; limpeza local executada com sucesso.')
+                if account:
+                    remote_mutated = True
+                    run(['samba-tool', 'computer', 'delete', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
             elif account:
                 remote_mutated = True
                 run(['samba-tool', 'computer', 'delete', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
