@@ -660,13 +660,6 @@ def configure_pki(request,root,run,samba_unit,steps):
     password=request.get('cert_password','')
     if not password:raise OperationError('Informe a senha da PKI na tela, sem reutilizar automaticamente a senha do AD.')
     home=root/'etc/step-ca';ca_config=home/'config/ca.json'
-    # Secondary DCs are CA clients: never install another CA server.
-    install_step(root,run,require_server=bool(initialize or ca_config.exists()))
-    cli = step_binary()
-    tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
-    if initialize and ca_config.exists():
-        initialize = False
-        steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
     ca_port=int(request.get('ca_port',8443))
     configured_port=ca_port
     if ca_config.exists():
@@ -679,7 +672,24 @@ def configure_pki(request,root,run,samba_unit,steps):
     if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise OperationError('URL da CA deve ser HTTPS, sem credenciais/query.')
     request['ca_url'],request['ca_port']=url,configured_port
-    provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or ca_config.exists() else 'admin')
+    is_ca_server = bool(ca_config.exists() and parsed.hostname in [request['host_ip'], request['hostname_fqdn']])
+    can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
+    if not is_ca_server and ca_config.exists() and can_clean:
+        try:
+            run(['systemctl','stop','step-ca'])
+            run(['systemctl','disable','step-ca'])
+        except Exception:
+            pass
+        shutil.rmtree(str(home), ignore_errors=True)
+        is_ca_server = False
+    # Secondary DCs are CA clients: never install another CA server.
+    install_step(root,run,require_server=bool(initialize or is_ca_server))
+    cli = step_binary()
+    tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if initialize and ca_config.exists():
+        initialize = False
+        steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
+    provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or is_ca_server else 'admin')
     with tempfile.TemporaryDirectory(prefix='astral-pki-',dir=tls) as temp:
         secret=Path(temp)/'password';atomic_write(secret,password)
         if initialize:
@@ -738,7 +748,7 @@ def configure_pki(request,root,run,samba_unit,steps):
         # Keep the root as a distinct trust anchor. Samba cafile receives
         # the intermediate(s) followed by that root; never trust an unverified
         # intermediate as an independent OS trust anchor.
-        if ca_config.exists():
+        if is_ca_server:
             ca_definition=json.loads(ca_config.read_text())
             intermediate=Path(ca_definition.get('crt') or str(home/'certs/intermediate_ca.crt'))
             if not intermediate.is_file():
