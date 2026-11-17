@@ -633,23 +633,23 @@ def step_binary():
     return shutil.which('step-cli') or shutil.which('step')
 
 
-def install_step(root,run):
-    if step_binary() and shutil.which('step-ca'):return
+def install_step(root,run,require_server=True):
+    if step_binary() and (not require_server or shutil.which('step-ca')):return
     manager=next((m for m in ['dnf','yum','apt-get','pacman','zypper'] if shutil.which(m)),None)
     if manager in ['dnf','yum']:
         repo=root/'etc/yum.repos.d/smallstep.repo'
         if not repo.exists():
             atomic_write(repo,'[smallstep]\nname=Smallstep\nbaseurl=https://packages.smallstep.com/stable/fedora/\nenabled=1\nrepo_gpgcheck=0\ngpgcheck=1\ngpgkey=https://packages.smallstep.com/keys/smallstep-0x889B19391F774443.gpg\n',0o644)
-        run([manager,'install','-y','step-cli','step-ca'])
+        run([manager,'install','-y']+(['step-cli','step-ca'] if require_server else ['step-cli']))
     elif manager=='apt-get':
         key=root/'etc/apt/keyrings/smallstep.asc';key.parent.mkdir(parents=True,exist_ok=True)
         run(['curl','-fsSL','https://packages.smallstep.com/keys/apt/repo-signing-key.gpg','-o',str(key)])
         atomic_write(root/'etc/apt/sources.list.d/smallstep.sources','Types: deb\nURIs: https://packages.smallstep.com/stable/debian\nSuites: debs\nComponents: main\nSigned-By: /etc/apt/keyrings/smallstep.asc\n',0o644)
-        run([manager,'update']);run(['env','DEBIAN_FRONTEND=noninteractive',manager,'install','-y','step-cli','step-ca'])
-    elif manager=='pacman':run([manager,'-S','--needed','--noconfirm','step-cli','step-ca'])
-    elif manager=='zypper':run([manager,'--non-interactive','install','step-cli','step-ca'])
+        run([manager,'update']);run(['env','DEBIAN_FRONTEND=noninteractive',manager,'install','-y']+(['step-cli','step-ca'] if require_server else ['step-cli']))
+    elif manager=='pacman':run([manager,'-S','--needed','--noconfirm']+(['step-cli','step-ca'] if require_server else ['step-cli']))
+    elif manager=='zypper':run([manager,'--non-interactive','install']+(['step-cli','step-ca'] if require_server else ['step-cli']))
     else:raise OperationError('Gerenciador nao suportado para instalar Step-CA automaticamente.')
-    if not step_binary() or not shutil.which('step-ca'):raise OperationError('Os pacotes nao disponibilizaram step/step-ca.')
+    if not step_binary() or (require_server and not shutil.which('step-ca')):raise OperationError('Pacote Step CLI ou servidor Step-CA ausente apos instalacao.')
 
 
 def configure_pki(request,root,run,samba_unit,steps):
@@ -659,9 +659,10 @@ def configure_pki(request,root,run,samba_unit,steps):
         raise OperationError('Uma CA nova so pode ser inicializada em novo dominio; reingresso preserva a CA existente.')
     password=request.get('cert_password','')
     if not password:raise OperationError('Informe a senha da PKI na tela, sem reutilizar automaticamente a senha do AD.')
-    install_step(root,run)
-    cli = step_binary()
     home=root/'etc/step-ca';ca_config=home/'config/ca.json'
+    # Secondary DCs are CA clients: never install another CA server.
+    install_step(root,run,require_server=bool(initialize or ca_config.exists()))
+    cli = step_binary()
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
     if initialize and ca_config.exists():
         initialize = False
@@ -671,12 +672,14 @@ def configure_pki(request,root,run,samba_unit,steps):
     if ca_config.exists():
         address=json.loads(ca_config.read_text()).get('address','')
         if ':' in address: configured_port=int(address.rsplit(':',1)[1])
+    if not request.get('ca_url') and not ca_config.exists() and not initialize:
+        raise OperationError('Informe a URL HTTPS da CA existente do dominio. Nunca utilizar o IP local do DC2 como CA.')
     url=request.get('ca_url') or 'https://'+request['host_ip']+':'+str(configured_port)
     parsed=urlsplit(url)
     if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise OperationError('URL da CA deve ser HTTPS, sem credenciais/query.')
     request['ca_url'],request['ca_port']=url,configured_port
-    provisioner=request.get('ca_provisioner') or 'admin@'+request['realm'].lower()
+    provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or ca_config.exists() else 'admin')
     with tempfile.TemporaryDirectory(prefix='astral-pki-',dir=tls) as temp:
         secret=Path(temp)/'password';atomic_write(secret,password)
         if initialize:
@@ -732,22 +735,53 @@ def configure_pki(request,root,run,samba_unit,steps):
                  '--not-after='+str(int(request.get('ca_cert_hours',8760)))+'h']
         for san in sans:command+=['--san='+san]
         run(command)
-        run(['openssl','verify','-CAfile',str(ca_root),'-untrusted',str(cert),str(cert)])
-        atomic_write(tls/'dc.crt',cert.read_bytes(),0o644);atomic_write(tls/'dc.key',key.read_bytes(),0o600)
-        atomic_write(tls/'ca.crt',ca_root.read_bytes(),0o644)
+        # Keep the root as a distinct trust anchor. Samba cafile receives
+        # the intermediate(s) followed by that root; never trust an unverified
+        # intermediate as an independent OS trust anchor.
+        if ca_config.exists():
+            ca_definition=json.loads(ca_config.read_text())
+            intermediate=Path(ca_definition.get('crt') or str(home/'certs/intermediate_ca.crt'))
+            if not intermediate.is_file():
+                raise OperationError('CA intermediaria local ausente; certificado nao sera instalado.')
+            intermediate_data=intermediate.read_bytes()
+        else:
+            # The authenticated HTTPS Step CA endpoint serves the signing
+            # intermediates. Use the pinned root for TLS; do not use -k.
+            from urllib.request import urlopen
+            import ssl
+            intermediate_url=url.rstrip('/')+'/intermediates.pem'
+            try:
+                with urlopen(intermediate_url, timeout=15,
+                             context=ssl.create_default_context(cafile=str(ca_root))) as response:
+                    intermediate_data=response.read(262144)
+            except Exception as error:
+                raise OperationError('Nao foi possivel obter a CA intermediaria por HTTPS confiavel: '+str(error)) from error
+        if b'-----BEGIN CERTIFICATE-----' not in intermediate_data:
+            raise OperationError('Endpoint da CA nao retornou certificado intermediario PEM valido.')
+        intermediate_file=Path(temp)/'intermediates.pem'
+        atomic_write(intermediate_file,intermediate_data,0o644)
+        run(['openssl','verify','-purpose','sslserver','-verify_hostname',
+             request['hostname_fqdn'],'-CAfile',str(ca_root),
+             '-untrusted',str(intermediate_file),str(cert)])
+        atomic_write(tls/'dc.crt',cert.read_bytes(),0o644)
+        atomic_write(tls/'dc.key',key.read_bytes(),0o600)
+        # The renewal helper and Step CLI must use the root-only file.
+        atomic_write(tls/'trusted-step-root.crt',ca_root.read_bytes(),0o644)
+        chain=intermediate_data.rstrip()+b'\n'+ca_root.read_bytes().strip()+b'\n'
+        atomic_write(tls/'ca.crt',chain,0o644)
     if shutil.which('update-ca-trust'):
-        anchor=root/'etc/pki/ca-trust/source/anchors/astral-step-root.crt';atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        anchor=root/'etc/pki/ca-trust/source/anchors/astral-step-root.crt';atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['update-ca-trust'])
     elif shutil.which('update-ca-certificates'):
-        anchor=root/'usr/local/share/ca-certificates/astral-step-root.crt';atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        anchor=root/'usr/local/share/ca-certificates/astral-step-root.crt';atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['update-ca-certificates'])
     elif shutil.which('trust'):
         anchor=root/'etc/ca-certificates/trust-source/anchors/astral-step-root.crt'
-        atomic_write(anchor,(tls/'ca.crt').read_bytes(),0o644)
+        atomic_write(anchor,(tls/'trusted-step-root.crt').read_bytes(),0o644)
         run(['trust','extract-compat'])
     else:raise OperationError('Ferramenta de trust store da distribuicao nao encontrada.')
     # Renewal uses the existing certificate/key and does not regenerate the CA.
-    config={'step_binary':cli,'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'ca.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
+    config={'step_binary':cli,'url':url,'cert':str(tls/'dc.crt'),'key':str(tls/'dc.key'),'root':str(tls/'trusted-step-root.crt'),'unit':samba_unit,'renew_before_seconds':min(604800,max(1800,int(request.get('ca_cert_hours',8760))*1200))}
     atomic_write(root/'etc/astral-ad-dns/tls-renew.json',json.dumps(config))
     script="""#!/usr/bin/python3
 import json,subprocess
