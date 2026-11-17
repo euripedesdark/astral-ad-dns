@@ -215,6 +215,8 @@ def choose_bind_port(root, run):
     policies=run(['semanage','port','-l'])
     for protocol in ('tcp','udp'):
         labels=set(port_labels(policies,protocol,5353))
+        if 'dns_port_t' in labels:
+            continue
         if len(labels)>1:
             raise OperationError(
                 'SELinux possui politicas concorrentes para '+protocol+
@@ -235,12 +237,10 @@ def prepare_bind_selinux(root, run, undo, port=5353):
     steps = []
     for protocol in ['tcp', 'udp']:
         previous = port_labels(labels, protocol, port)
-        if set(previous) == {'dns_port_t'}:
+        if 'dns_port_t' in previous:
             continue
-        if len(set(previous)) > 1:
-            raise OperationError('Politica SELinux ambigua para ' + protocol + '/' + str(port) + '; nenhuma politica global sera substituida.')
         local_previous = port_labels(local, protocol, port)
-        action = '-m' if previous else '-a'
+        action = '-m' if local_previous else '-a'
         run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
         # Removing a new local override restores the distribution policy (including mDNS).
         undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]
