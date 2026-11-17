@@ -39,6 +39,7 @@ def configure_pki(request,root,run,samba_unit,steps):
         raise OperationError('Uma CA nova so pode ser inicializada em novo dominio; reingresso preserva a CA existente.')
     password=request.get('cert_password','')
     if not password:raise OperationError('Informe a senha da PKI na tela, sem reutilizar automaticamente a senha do AD.')
+    home=root/'etc/step-ca';ca_config=home/'config/ca.json'
     ca_port=int(request.get('ca_port',8443))
     configured_port=ca_port
     if ca_config.exists():
