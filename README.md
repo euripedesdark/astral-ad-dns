@@ -66,16 +66,26 @@ Select your preferred language below to read the **complete documentation**, inc
 
 For full distribution prerequisites and configuration details, refer to your language file above.
 
+### ⚠️ Running Without Git Credentials (`--skip-git`)
+By default, always use the `--skip-git` flag when deploying on servers to ensure the script executes purely local operations without requesting Git credentials or attempting a remote push:
+
 ```bash
 # 1. Prepare distribution packages (EL10, EL9, Fedora, Arch)
 python3 deploy_ad_dns.py --prepare-ad-only
 
-# 2. Automated complete build, installation to /opt/astral-ad-dns and systemd startup
+# 2. Automated complete build, installation to /opt/astral-ad-dns and systemd startup (WITHOUT Git push)
 python3 deploy_ad_dns.py --skip-git
+
+# Or combine both package preparation and local deployment in one step:
+python3 deploy_ad_dns.py --prepare-ad --skip-git
 
 # 3. Access the Web Management Wizard
 # Open http://<SERVER-IP>:8095 in your browser
 ```
+
+> **FAQ — Does the Web Wizard install Samba packages automatically?**
+> - **Fedora, Debian, Ubuntu, and Arch Linux**: **YES**. Missing packages are detected and installed directly by the web wizard using the native package manager (`dnf`, `apt`, `pacman`).
+> - **RHEL, AlmaLinux, and Rocky Linux (EL9/EL10)**: Red Hat does **not** include Samba Active Directory packages (`samba-dc`) in default BaseOS/AppStream repositories. Therefore, on Enterprise Linux, run `python3 deploy_ad_dns.py --prepare-ad-only` first to configure the Tranquil IT GPG repository and CRB/EPEL. Once added, the web wizard can install and manage packages seamlessly.
 
 ---
 

@@ -61,19 +61,36 @@ python3 deploy_ad_dns.py --prepare-ad-only
 * **Debian 12 (Bookworm) / Ubuntu 24.04 LTS :**
   - Installation via apt : `apt-get install -y samba winbind krb5-user bind9 bind9utils chrony ldb-tools`.
 
+> ### ❓ FAQ : L'assistant web installe-t-il automatiquement les paquets Samba ?
+> **OUI, l'assistant web intègre une routine d'installation automatique des dépendances (`install_dependencies`), mais tenez compte des exigences de votre distribution :**
+> - **Fedora, Debian, Ubuntu et Arch Linux** : Les paquets Samba Active Directory (`samba`, `samba-dc`, etc.) sont disponibles nativement dans les dépôts par défaut. L'assistant web détecte les paquets manquants et les installe automatiquement via le gestionnaire du système (`dnf`, `apt`, `pacman`).
+> - **RHEL 9/10, AlmaLinux 9/10 et Rocky Linux 9/10** : Red Hat **ne fournit pas le paquet de Contrôleur de Domaine (`samba-dc`)** dans les dépôts officiels par défaut (BaseOS/AppStream). Sur Enterprise Linux, si vous ouvrez l'assistant sans avoir configuré le dépôt au préalable, `dnf` échouera en indiquant que `samba-dc` est introuvable. Pour éviter cela, exécutez au préalable :
+>   ```bash
+>   python3 deploy_ad_dns.py --prepare-ad-only
+>   ```
+>   Cette commande configure le dépôt d'entreprise Tranquil IT (avec clé GPG) et active CRB/EPEL. Dès lors, le terminal ainsi que **l'assistant web** pourront installer et mettre à jour tous les paquets Samba AD automatiquement.
+
 ---
 
 ## 2. Installation et Déploiement Automatisé (`deploy_ad_dns.py`)
 
 Le script `deploy_ad_dns.py` automatise l'ensemble du cycle de vie opérationnel : compilation release ultra-rapide du backend Rust, génération des fichiers statiques du frontend Vite/React, installation dans `/opt/astral-ad-dns/`, activation du service systemd et ouverture sécurisée du port web dans le pare-feu.
 
+### ⚠️ Exécution Sans Demander Git (`--skip-git`)
+Par défaut, pour exécuter le déploiement localement sur le serveur **sans que le script ne demande d'authentification Git ni ne tente de `git push`** vers le dépôt distant, ajoutez systématiquement le paramètre `--skip-git` :
+
 ```bash
-# Déploiement complet en local (sans pousser les modifications vers git)
+# 1. Déploiement complet en local sans interaction Git (Recommandé pour les serveurs)
 python3 deploy_ad_dns.py --skip-git
 
-# Déploiement complet avec préparation préalable des paquets système
+# 2. Déploiement complet avec préparation automatique des paquets Samba AD (sans Git)
 python3 deploy_ad_dns.py --prepare-ad --skip-git
+
+# 3. Préparer uniquement les dépôts et installer les paquets Samba AD (sans compiler le web ni utiliser Git)
+python3 deploy_ad_dns.py --prepare-ad-only
 ```
+
+> **Pourquoi utiliser `--skip-git` ?** Sans cette option, le script tente d'exécuter `git push origin <branche>` lors de l'étape finale. Sur les serveurs où les identifiants Git ne sont pas enregistrés (ou lors des déploiements manuels), le script peut s'interrompre en demandant un identifiant/mot de passe ou échouer. L'option `--skip-git` ignore cette étape et garantit un déploiement 100 % local, rapide et sans interruption.
 
 ### Ce que Réalise le Déploiement Automatisé :
 1. **Compilation du Backend** : Exécute `cargo build --release --bin astral-ad-dns`.

@@ -61,19 +61,36 @@ python3 deploy_ad_dns.py --prepare-ad-only
 * **Debian 12 (Bookworm) / Ubuntu 24.04 LTS:**
   - Native installation via apt: `apt-get install -y samba winbind krb5-user bind9 bind9utils chrony ldb-tools`.
 
+> ### ❓ FAQ: Does the Web Wizard install Samba packages automatically?
+> **YES, the web wizard includes an automated dependency installation routine (`install_dependencies`), but note your distribution requirements:**
+> - **Fedora, Debian, Ubuntu, and Arch Linux**: Samba Active Directory packages (`samba`, `samba-dc`, etc.) are natively available in default distribution repositories. The web wizard detects missing tools and installs them automatically via the native package manager (`dnf`, `apt`, `pacman`).
+> - **RHEL 9/10, AlmaLinux 9/10, and Rocky Linux 9/10**: Red Hat **does not provide Domain Controller packages (`samba-dc`)** in default BaseOS/AppStream repositories. On Enterprise Linux, if you open the wizard on an unconfigured host, `dnf` will fail reporting `samba-dc: no match`. To prevent this, run the automated repo setup first:
+>   ```bash
+>   python3 deploy_ad_dns.py --prepare-ad-only
+>   ```
+>   This command configures the Tranquil IT enterprise repository (with GPG key) and enables CRB/EPEL. Once configured, both the terminal and the **web wizard** will be able to install and update all Samba AD packages automatically!
+
 ---
 
 ## 2. Automated Installation & Deployment (`deploy_ad_dns.py`)
 
 The `deploy_ad_dns.py` script automates the complete operational lifecycle: high-performance release compilation of the Rust backend, production build of the Vite/React frontend, deployment to `/opt/astral-ad-dns/`, installation and activation of the systemd unit, and idempotent web firewall port configuration.
 
+### ⚠️ Running Without Git Credentials (`--skip-git`)
+By default, to run the deployment locally on a server **without the script prompting for Git credentials or attempting a remote `git push`**, always add the `--skip-git` flag:
+
 ```bash
-# Complete local build and deployment (skipping git push)
+# 1. Complete local build and deployment without Git interaction (Recommended for servers)
 python3 deploy_ad_dns.py --skip-git
 
-# Complete deployment with automated host AD package preparation
+# 2. Complete deployment with automated host AD package preparation (without Git)
 python3 deploy_ad_dns.py --prepare-ad --skip-git
+
+# 3. Only prepare repositories and install Samba packages (without compiling web or using Git)
+python3 deploy_ad_dns.py --prepare-ad-only
 ```
+
+> **Why use `--skip-git`?** Without this flag, the script attempts a `git push origin <branch>` during its final step. On servers without saved Git credentials (or during manual deployments), the script may pause for authentication or fail. The `--skip-git` flag bypasses that step and ensures a fast, uninterrupted, 100% local deployment.
 
 ### What Automated Deployment Executes:
 1. **Backend Compilation**: Runs `cargo build --release --bin astral-ad-dns` producing an optimized binary.
