@@ -86,20 +86,17 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
 
 
 def ensure_web_dist_writable(web_dir):
-    """Restore ownership of a root-created Vite output before rebuilding."""
+    """Ensure web/dist is completely writable or clean before Vite building."""
     dist_dir = os.path.join(web_dir, "dist")
-    if not os.path.isdir(dist_dir) or os.access(dist_dir, os.W_OK):
+    if not os.path.exists(dist_dir):
         return
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
-        log_error(f"Diretório do frontend sem permissão de escrita: {dist_dir}")
-        sys.exit(1)
-
-    owner = f"{os.geteuid()}:{os.getegid()}"
-    log_warning("web/dist pertence a outro usuário; restaurando a propriedade antes do build.")
-    run_cmd(["chown", "-R", owner, dist_dir], use_sudo=True)
-    if not os.access(dist_dir, os.W_OK):
-        log_error(f"Não foi possível obter permissão de escrita em: {dist_dir}")
-        sys.exit(1)
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        owner = f"{os.geteuid()}:{os.getegid()}"
+        run_cmd(["chown", "-R", owner, dist_dir], use_sudo=True, check=False)
+    try:
+        shutil.rmtree(dist_dir)
+    except Exception:
+        run_cmd(["rm", "-rf", dist_dir], use_sudo=True, check=False)
 
 
 def verify_web_firewall():
@@ -133,7 +130,7 @@ def verify_web_firewall():
 
 
 def remove_conflicting_firewalld():
-    """Stop, disable, mask and completely remove firewalld after opening 8095/tcp, leaving only iptables."""
+    """Stop, disable and completely remove firewalld without masking, leaving only iptables."""
     if shutil.which("iptables-save"):
         try:
             if os.path.isdir("/etc/sysconfig"):
@@ -146,14 +143,13 @@ def remove_conflicting_firewalld():
     if not shutil.which("systemctl"):
         return
 
-    # 1. Stop, disable and mask firewalld service
+    # 1. Stop and disable firewalld service, unmask any leftover mask symlinks
     try:
-        fw_status = run_cmd(["systemctl", "is-active", "firewalld"], use_sudo=True, check=False, capture=True)
-        if fw_status in ("active", "activating", "inactive", "failed"):
-            run_cmd(["systemctl", "stop", "firewalld"], use_sudo=True, check=False)
-            run_cmd(["systemctl", "disable", "firewalld"], use_sudo=True, check=False)
-            run_cmd(["systemctl", "mask", "firewalld"], use_sudo=True, check=False)
-            log_warning("firewalld parado, desabilitado e mascarado.")
+        run_cmd(["systemctl", "stop", "firewalld"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "disable", "firewalld"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "unmask", "firewalld"], use_sudo=True, check=False)
+        run_cmd(["rm", "-rf", "/etc/systemd/system/firewalld.service", "/etc/systemd/system/firewalld.service.d", "/etc/firewalld"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "daemon-reload"], use_sudo=True, check=False)
     except Exception:
         pass
 
@@ -172,14 +168,16 @@ def remove_conflicting_firewalld():
         has_pkg = run_cmd(["rpm", "-q", "firewalld"], use_sudo=True, check=False)
         if has_pkg:
             log_header("Removendo pacote firewalld para controle exclusivo via iptables")
-            run_cmd(["dnf", "remove", "-y", "firewalld"], use_sudo=True, check=False)
+            run_cmd(["dnf", "remove", "-y", "firewalld", "python3-firewall", "firewalld-filesystem"], use_sudo=True, check=False)
             # Ensure iptables / iptables-nft packages remain installed
             run_cmd(["dnf", "install", "-y", "iptables", "iptables-nft"], use_sudo=True, check=False)
+            run_cmd(["systemctl", "daemon-reload"], use_sudo=True, check=False)
             log_success("firewalld removido do sistema; iptables configurado exclusivamente.")
     elif shutil.which("apt-get"):
         has_pkg = run_cmd(["dpkg", "-s", "firewalld"], use_sudo=True, check=False)
         if has_pkg:
             run_cmd(["apt-get", "remove", "-y", "firewalld"], use_sudo=True, check=False)
+            run_cmd(["systemctl", "daemon-reload"], use_sudo=True, check=False)
             log_success("firewalld removido do sistema.")
 
 
