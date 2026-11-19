@@ -1048,7 +1048,7 @@ def local_ad_identity(root, run, config):
     configured_realm = optional(run, ['testparm', '-s', '--parameter-name=realm',
                                        str(config)]).strip().upper() if config.exists() else ''
     if not database.exists():
-        return configured_name, '', 'none'
+        return configured_name, configured_realm, 'config' if (configured_name or configured_realm) else 'none'
     rootdse = optional(run, ['ldbsearch', '-H', str(database),
                               '-b', '@ROOTDSE', '-s', 'base',
                               'defaultNamingContext', 'dsServiceName'])
@@ -1355,6 +1355,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request.get('initialize_ca') and request['kind']!='new':
             raise OperationError('Inicializar CA so e permitido em novo dominio. No reingresso, selecione a CA existente.')
         can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
+        is_active_dc = (optional(run, ['systemctl', 'is-active', 'samba-ad-dc']).strip() == 'active' or
+                        optional(run, ['systemctl', 'is-active', 'samba']).strip() == 'active')
+        if not is_active_dc and (local_db or old_realm):
+            can_clean = True
+            steps.append('[AVISO] Servico Samba inativo; maquina nao opera como DC ativo. Sobrescrita e limpeza de configuracoes residuais autorizadas.')
         if local_db and (not old_name or not old_realm) and not can_clean:
             raise OperationError('Base AD local nao pode ser identificada com seguranca; use recuperacao de backup na interface. Limpeza bloqueada para proteger o primario.')
         if request['kind'] == 'configure':
@@ -1450,7 +1455,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             partner = request['target_dc_ip']
             # Detect an account left by a failed join as well as a currently provisioned DC.
             account = optional(run, ['samba-tool', 'computer', 'show', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
-            can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
+            can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing')) or not is_active_dc
             is_dc = bool(re.search(r'(?im)^primaryGroupID:\s*(516|521)\s*$', account))
             if (is_dc or local_db) and old_realm == request['realm']:
                 manifest['phase'] = 'demotion_attempted'

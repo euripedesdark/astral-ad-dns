@@ -103,27 +103,7 @@ def ensure_web_dist_writable(web_dir):
 
 
 def verify_web_firewall():
-    """Check and ensure 8095/tcp is open across firewalld, ufw, and iptables."""
-    # 1. Firewalld (RHEL, AlmaLinux, Rocky, CentOS, Fedora)
-    if shutil.which("firewall-cmd"):
-        fw_state = run_cmd(["firewall-cmd", "--state"], use_sudo=True, check=False, capture=True)
-        if fw_state == "running":
-            query = run_cmd(["firewall-cmd", "--query-port=8095/tcp"], use_sudo=True, check=False)
-            if not query:
-                run_cmd(["firewall-cmd", "--add-port=8095/tcp", "--permanent"], use_sudo=True, check=False)
-                run_cmd(["firewall-cmd", "--reload"], use_sudo=True, check=False)
-                log_success("firewalld: porta 8095/tcp liberada permanentemente.")
-            else:
-                log_success("firewalld: porta 8095/tcp ja permitida.")
-
-    # 2. UFW (Ubuntu, Debian)
-    if shutil.which("ufw"):
-        ufw_status = run_cmd(["ufw", "status"], use_sudo=True, check=False, capture=True)
-        if "Status: active" in ufw_status:
-            run_cmd(["ufw", "allow", "8095/tcp"], use_sudo=True, check=False)
-            log_success("ufw: porta 8095/tcp liberada.")
-
-    # 3. Iptables
+    """Check and ensure 8095/tcp is open via iptables."""
     if not shutil.which("iptables"):
         log_warning("iptables ausente: nao foi possivel verificar acesso externo a 8095/tcp via iptables.")
         return
@@ -135,7 +115,6 @@ def verify_web_firewall():
         return
     lines = listing.splitlines()
     if lines == ["-P INPUT ACCEPT"] or lines == ["-P INPUT ACCEPT", ""]:
-        # Only assume open if firewalld/ufw isn't running
         log_success("iptables: INPUT ACCEPT sem bloqueios.")
         return
     if listing.startswith("-P INPUT ACCEPT") and not any(
@@ -153,12 +132,63 @@ def verify_web_firewall():
     log_warning("Verifique a persistencia das regras iptables da distribuicao apos reiniciar.")
 
 
+def remove_conflicting_firewalld():
+    """Stop, disable, mask and completely remove firewalld after opening 8095/tcp, leaving only iptables."""
+    if shutil.which("iptables-save"):
+        try:
+            if os.path.isdir("/etc/sysconfig"):
+                run_cmd(["sh", "-c", "iptables-save > /etc/sysconfig/iptables"], use_sudo=True, check=False)
+            if os.path.isdir("/etc/iptables"):
+                run_cmd(["sh", "-c", "iptables-save > /etc/iptables/rules.v4"], use_sudo=True, check=False)
+        except Exception:
+            pass
+
+    if not shutil.which("systemctl"):
+        return
+
+    # 1. Stop, disable and mask firewalld service
+    try:
+        fw_status = run_cmd(["systemctl", "is-active", "firewalld"], use_sudo=True, check=False, capture=True)
+        if fw_status in ("active", "activating", "inactive", "failed"):
+            run_cmd(["systemctl", "stop", "firewalld"], use_sudo=True, check=False)
+            run_cmd(["systemctl", "disable", "firewalld"], use_sudo=True, check=False)
+            run_cmd(["systemctl", "mask", "firewalld"], use_sudo=True, check=False)
+            log_warning("firewalld parado, desabilitado e mascarado.")
+    except Exception:
+        pass
+
+    # 2. Disable ufw if active
+    try:
+        ufw_status = run_cmd(["systemctl", "is-active", "ufw"], use_sudo=True, check=False, capture=True)
+        if ufw_status in ("active", "activating"):
+            run_cmd(["systemctl", "stop", "ufw"], use_sudo=True, check=False)
+            run_cmd(["systemctl", "disable", "ufw"], use_sudo=True, check=False)
+            log_warning("ufw parado e desabilitado.")
+    except Exception:
+        pass
+
+    # 3. Completely remove firewalld package from the system
+    if shutil.which("dnf"):
+        has_pkg = run_cmd(["rpm", "-q", "firewalld"], use_sudo=True, check=False)
+        if has_pkg:
+            log_header("Removendo pacote firewalld para controle exclusivo via iptables")
+            run_cmd(["dnf", "remove", "-y", "firewalld"], use_sudo=True, check=False)
+            # Ensure iptables / iptables-nft packages remain installed
+            run_cmd(["dnf", "install", "-y", "iptables", "iptables-nft"], use_sudo=True, check=False)
+            log_success("firewalld removido do sistema; iptables configurado exclusivamente.")
+    elif shutil.which("apt-get"):
+        has_pkg = run_cmd(["dpkg", "-s", "firewalld"], use_sudo=True, check=False)
+        if has_pkg:
+            run_cmd(["apt-get", "remove", "-y", "firewalld"], use_sudo=True, check=False)
+            log_success("firewalld removido do sistema.")
+
+
 # Packages requested for preparing an EL9/EL10 Samba AD Domain Controller.
 EL_AD_PACKAGES = (
     "samba", "samba-dc", "samba-winbind", "samba-winbind-clients",
     "krb5-workstation", "ldb-tools", "bind", "chrony", "bind-utils",
     "samba-client", "python3-markdown", "python3-setproctitle",
-    "policycoreutils-python-utils",
+    "policycoreutils-python-utils", "iptables", "iptables-nft",
 )
 
 
@@ -197,6 +227,8 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         sys.exit(1)
 
     log_header(f"Preparando Samba AD DC para {distro} {major} (TIS Samba 4.24)")
+    verify_web_firewall()
+    remove_conflicting_firewalld()
     # Every privileged operation explicitly goes through run_cmd(use_sudo=True).
     run_cmd(["dnf", "install", "-y", "dnf-plugins-core"], use_sudo=True)
     # RHEL uses subscription-manager and a full CodeReady Builder repo ID;
@@ -539,6 +571,7 @@ WantedBy=multi-user.target
         sys.exit(1)
     log_success(f"Systemd unit loaded from {unit_file}")
     verify_web_firewall()
+    remove_conflicting_firewalld()
     run_cmd(["systemctl", "enable", SYSTEMD_SERVICE], use_sudo=True)
     run_cmd(["systemctl", "restart", SYSTEMD_SERVICE], use_sudo=True)
 

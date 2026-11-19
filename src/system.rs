@@ -285,35 +285,19 @@ pub fn samba_ad_ports() -> Vec<PortRule> {
     required_ports_for_services(&services)
 }
 
-/// Verifica se a porta está aberta no firewall (iptables e firewalld se ativo)
+/// Verifica se a porta está aberta no firewall iptables
 pub fn check_port_open(proto: &str, port: &str, sudo_pass: Option<&str>) -> bool {
     let check_cmd = format!("iptables -C INPUT -p {} -m {} --dport {} -j ACCEPT 2>/dev/null", proto, proto, port);
     let check_res = run_safe_cmd(&check_cmd, sudo_pass);
-    let mut iptables_ok = check_res.success;
-    if !iptables_ok {
-        // Fallback com iptables -S para regras que possuam comentários ou flags adicionais
-        let check_s = format!("iptables -S INPUT | grep -E -- \"-p {} .*--dport {} .*-j ACCEPT\"", proto, port);
-        iptables_ok = run_safe_cmd(&check_s, sudo_pass).success;
+    if check_res.success {
+        return true;
     }
-
-    if !iptables_ok {
-        return false;
-    }
-
-    // Se firewalld estiver ativo (RHEL/CentOS/Alma/Rocky/Fedora), a porta precisa estar liberada nele também
-    let fw_state = run_safe_cmd("command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null", sudo_pass).stdout;
-    if fw_state.trim() == "running" {
-        let clean_port = port.replace(':', "-");
-        let fw_query = format!("firewall-cmd --query-port={}/{} 2>/dev/null", clean_port, proto);
-        if !run_safe_cmd(&fw_query, sudo_pass).success {
-            return false;
-        }
-    }
-
-    true
+    // Fallback com iptables -S para regras que possuam comentários ou flags adicionais
+    let check_s = format!("iptables -S INPUT | grep -E -- \"-p {} .*--dport {} .*-j ACCEPT\"", proto, port);
+    run_safe_cmd(&check_s, sudo_pass).success
 }
 
-/// Abre porta no firewall de forma idempotente e segura, usando -I INPUT 1 e sincronizando com firewalld/ufw
+/// Abre porta no firewall de forma idempotente e segura, usando iptables -I INPUT 1 e persistindo as regras
 pub fn open_port_safe(rule: &PortRule, sudo_pass: Option<&str>, dry_run: bool) -> CommandResult {
     let port_valid = !rule.port.is_empty()
         && rule.port.split(':').all(|p| p.parse::<u16>().is_ok())
@@ -345,12 +329,9 @@ pub fn open_port_safe(rule: &PortRule, sudo_pass: Option<&str>, dry_run: bool) -
     let chain = run_safe_cmd("iptables -S INPUT", sudo_pass).stdout;
     let first = chain.lines().find(|line| line.starts_with("-A INPUT ")).unwrap_or("");
     let position = if first.trim() == "-A INPUT -j ts-input" { 2 } else { 1 };
-    let clean_fw_port = rule.port.replace(':', "-");
     let add_cmd = format!(
-        "iptables -I INPUT {} -p {} -m {} --dport {} -j ACCEPT && (iptables-save > /etc/sysconfig/iptables 2>/dev/null || true); if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then firewall-cmd --add-port={}/{} --permanent >/dev/null 2>&1; firewall-cmd --reload >/dev/null 2>&1; fi; if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then ufw allow {}/{} >/dev/null 2>&1; fi",
-        position, rule.proto, rule.proto, rule.port,
-        clean_fw_port, rule.proto,
-        rule.port, rule.proto
+        "iptables -I INPUT {} -p {} -m {} --dport {} -j ACCEPT && (iptables-save > /etc/sysconfig/iptables 2>/dev/null || true); if command -v systemctl >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then systemctl stop firewalld >/dev/null 2>&1; systemctl disable firewalld >/dev/null 2>&1; systemctl mask firewalld >/dev/null 2>&1; fi",
+        position, rule.proto, rule.proto, rule.port
     );
 
     run_cmd_dry(&add_cmd, sudo_pass, dry_run)
