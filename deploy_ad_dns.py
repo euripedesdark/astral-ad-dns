@@ -103,9 +103,29 @@ def ensure_web_dist_writable(web_dir):
 
 
 def verify_web_firewall():
-    """Check 8095/tcp without confusing an empty ACCEPT chain with a closed port."""
+    """Check and ensure 8095/tcp is open across firewalld, ufw, and iptables."""
+    # 1. Firewalld (RHEL, AlmaLinux, Rocky, CentOS, Fedora)
+    if shutil.which("firewall-cmd"):
+        fw_state = run_cmd(["firewall-cmd", "--state"], use_sudo=True, check=False, capture=True)
+        if fw_state == "running":
+            query = run_cmd(["firewall-cmd", "--query-port=8095/tcp"], use_sudo=True, check=False)
+            if not query:
+                run_cmd(["firewall-cmd", "--add-port=8095/tcp", "--permanent"], use_sudo=True, check=False)
+                run_cmd(["firewall-cmd", "--reload"], use_sudo=True, check=False)
+                log_success("firewalld: porta 8095/tcp liberada permanentemente.")
+            else:
+                log_success("firewalld: porta 8095/tcp ja permitida.")
+
+    # 2. UFW (Ubuntu, Debian)
+    if shutil.which("ufw"):
+        ufw_status = run_cmd(["ufw", "status"], use_sudo=True, check=False, capture=True)
+        if "Status: active" in ufw_status:
+            run_cmd(["ufw", "allow", "8095/tcp"], use_sudo=True, check=False)
+            log_success("ufw: porta 8095/tcp liberada.")
+
+    # 3. Iptables
     if not shutil.which("iptables"):
-        log_warning("iptables ausente: nao foi possivel verificar acesso externo a 8095/tcp.")
+        log_warning("iptables ausente: nao foi possivel verificar acesso externo a 8095/tcp via iptables.")
         return
     listing = run_cmd(["iptables", "-S", "INPUT"], use_sudo=True, capture=True)
     accepted = run_cmd(["iptables", "-C", "INPUT", "-p", "tcp", "--dport", "8095", "-j", "ACCEPT"],
@@ -113,16 +133,15 @@ def verify_web_firewall():
     if accepted:
         log_success("iptables: regra explicita ACCEPT para 8095/tcp ja existe.")
         return
-    # INPUT ACCEPT with no other rules already permits traffic. Opening a
-    # listener is the service's job, not the firewall's job.
     lines = listing.splitlines()
     if lines == ["-P INPUT ACCEPT"] or lines == ["-P INPUT ACCEPT", ""]:
-        log_success("iptables: INPUT ACCEPT sem bloqueios; 8095/tcp ja esta liberada.")
+        # Only assume open if firewalld/ufw isn't running
+        log_success("iptables: INPUT ACCEPT sem bloqueios.")
         return
     if listing.startswith("-P INPUT ACCEPT") and not any(
             "-j DROP" in line or "-j REJECT" in line or "-j " in line
             for line in lines[1:]):
-        log_success("iptables: INPUT ACCEPT e sem regras de bloqueio; 8095/tcp liberada.")
+        log_success("iptables: INPUT ACCEPT e sem regras de bloqueio.")
         return
     run_cmd(["iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", "8095", "-j", "ACCEPT"],
             use_sudo=True)
