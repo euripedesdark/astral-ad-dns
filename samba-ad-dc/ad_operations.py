@@ -240,7 +240,7 @@ def prepare_bind_selinux(root, run, undo, port=5353):
         if 'dns_port_t' in previous:
             continue
         local_previous = port_labels(local, protocol, port)
-        action = '-m' if local_previous else '-a'
+        action = '-m' if previous else '-a'
         run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
         # Removing a new local override restores the distribution policy (including mDNS).
         undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]

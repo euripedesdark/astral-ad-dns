@@ -85,6 +85,18 @@ def run_cmd(cmd, cwd=None, check=True, use_sudo=False, capture=False):
         return False
 
 
+def restore_repo_ownership(repo_dir):
+    """Restore non-root user ownership of build directories if deploy was executed via sudo."""
+    sudo_uid = os.environ.get("SUDO_UID")
+    sudo_gid = os.environ.get("SUDO_GID")
+    if sudo_uid and sudo_gid:
+        owner = f"{sudo_uid}:{sudo_gid}"
+        for sub in ("web/dist", "target"):
+            sub_path = os.path.join(repo_dir, sub)
+            if os.path.exists(sub_path):
+                run_cmd(["chown", "-R", owner, sub_path], use_sudo=True, check=False)
+
+
 def ensure_web_dist_writable(web_dir):
     """Ensure web/dist is completely writable or clean before Vite building."""
     dist_dir = os.path.join(web_dir, "dist")
@@ -468,6 +480,7 @@ def main():
     if not os.path.exists(dist_index):
         log_error("Falha no build do frontend! dist/index.html não foi gerado.")
         sys.exit(1)
+    restore_repo_ownership(repo_dir)
     log_success("Frontend React 18 compilado com sucesso em web/dist/")
 
     # -------------------------------------------------------------------------
@@ -489,6 +502,7 @@ def main():
         sys.exit(1)
 
     bin_size_mb = os.path.getsize(target_bin) / (1024 * 1024)
+    restore_repo_ownership(repo_dir)
     log_success(f"Binário release gerado com sucesso ({bin_size_mb:.2f} MB)")
 
     # -------------------------------------------------------------------------
@@ -629,6 +643,7 @@ WantedBy=multi-user.target
         else:
             log_warning("Aviso no push do Git (verifique autenticação ou conflitos remotos).")
 
+    restore_repo_ownership(repo_dir)
     elapsed = time.time() - start_time
     log_header(f"DEPLOY CONCLUÍDO COM SUCESSO EM {elapsed:.1f} SEGUNDOS!")
     print(f"  {Colors.GREEN}{Colors.BOLD}✓ Binário e frontend servindo a partir de: {SYSTEM_OPT_DIR}{Colors.RESET}")

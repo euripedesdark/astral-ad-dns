@@ -743,13 +743,15 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                         detail = str(error)
                         raise OperationError('Nao foi possivel confirmar o estado DRS do RODC no DC parceiro ' + partner_dc + '. Ingresso preservado. Detalhe: ' + detail) from error
                 else:
-                    drs_command = ['samba-tool', 'drs', 'showrepl', '--configfile=' + str(config), '--json'] + credentials(request)
+                    drs_command = ['samba-tool', 'drs', 'showrepl', '--json',
+                                   '--ipaddress=' + local_drs_ip,
+                                   '--configfile=' + str(config)] + credentials(request)
                     try:
                         health = json.loads(run(drs_command))
                     except (OperationError, ValueError) as error:
                         detail = str(error)
                         if 'C0000017' in detail.upper() or 'NOT_ENOUGH_QUOTA' in detail.upper() or 'NOT ENOUGH QUOTA' in detail.upper():
-                            raise OperationError('DRS local recusou a consulta com STATUS_NO_MEMORY (0xC0000017), mesmo usando o IP do DC e o smb.conf ativo. O ingresso foi preservado; nao sera marcado como concluido. Verifique a memoria/limites do processo Samba e a compatibilidade da versao Samba. Detalhe: ' + detail) from error
+                            raise OperationError('DRS local recusou a consulta com STATUS_NO_MEMORY (0xC0000017), mesmo usando o IP do DC e o smb.conf ativo. Ingresso preservado; nao sera marcado como concluido. Verifique a memoria/limites do processo Samba e a compatibilidade da versao Samba. Detalhe: ' + detail) from error
                         raise OperationError('Nao foi possivel consultar o estado DRS do DC local pelo IP ' + local_drs_ip + '. Ingresso preservado. Detalhe: ' + detail) from error
                     if isinstance(health, dict):
                         inbound = [entry for entry in health.get('repsFrom', []) if not entry.get('is deleted', False)]
