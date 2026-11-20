@@ -539,9 +539,9 @@ def main():
     if args.prepare_ad_only:
         prepare_ad_packages()
         return
-    check_prerequisites()
     if args.prepare_ad:
         prepare_ad_packages()
+    check_prerequisites()
 
     # Validate all Python provisioning stacks before any build or deployment.
     # The web wizard must never ship a SyntaxError into /opt.
