@@ -655,6 +655,15 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
         else:
             services = [unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])]
+        directory = str(Path(__file__).with_name('directory_config.py'))
+        if request['domain_role'] != 'MEMBER':
+            directory_args = ['/usr/bin/python3', directory]
+            if request['domain_role'] == 'RODC':
+                if not request.get('target_dc_ip'):
+                    raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
+                directory_args += ['--server=' + request['target_dc_ip'], '--username=' + request['admin_username'], '--password=' + request['admin_password']]
+            configured = json.loads(run(directory_args + ([] if request.get('global_catalog', True) else ['--disable-gc'])))
+            steps.append('Catalogo global configurado; particoes DNS verificadas: ' + json.dumps(configured))
         if request.get('setup_step_ca') and request['domain_role']!='MEMBER' and request['kind']!='new':
             remote_mutated=True  # PKI initialization/issuance must never trigger raw old-domain restoration.
             tls_pairs=configure_pki(request,root,run,services[0],steps)
@@ -673,23 +682,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             remote_mutated = True
         if request['domain_role'] == 'MEMBER':
             run(['net', 'ads', 'testjoin', '-s', str(config)])
-            run(['chattr','+i',str(root/'etc/resolv.conf')])
         else:
-            for attempt in range(15):
-                try:
-                    run(['samba-tool', 'domain', 'level', 'show', '-s', str(config)])
-                    break
-                except OperationError:
-                    if attempt==14: raise
-                    time.sleep(1)
-            directory = str(Path(__file__).with_name('directory_config.py'))
-            directory_args=['/usr/bin/python3',directory]
-            if request['domain_role']=='RODC':
-                if not request.get('target_dc_ip'): raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
-                directory_args+=['--server='+request['target_dc_ip'],'--username='+request['admin_username'],'--password='+request['admin_password']]
-            configured=json.loads(run(directory_args+([] if request.get('global_catalog',True) else ['--disable-gc'])))
-            steps.append('Catalogo global configurado; particoes DNS verificadas: '+json.dumps(configured))
-            run(['systemctl','restart',services[0]])
             if request.get('global_catalog',True):
                 for attempt in range(15):
                     try:
@@ -714,7 +707,6 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             content='search '+request['realm'].lower()+'\nnameserver 127.0.0.1\n'
             if request.get('target_dc_ip'): content+='nameserver '+request['target_dc_ip']+'\n'
             atomic_write(resolver,content,0o644)
-            run(['chattr','+i',str(resolver)])
             if request['kind'] == 'join':
                 # Bind the DRS client to the address actually serving this DC.
                 # Without --ipaddress Samba may select "localhost", which can

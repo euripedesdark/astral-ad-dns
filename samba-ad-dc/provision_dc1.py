@@ -1598,6 +1598,15 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
                 text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
             atomic_write(config,text,0o644)
+        directory = DIRECTORY_SCRIPT
+        if request['domain_role'] != 'MEMBER':
+            directory_args = ['/usr/bin/python3', '-c', directory]
+            if request['domain_role'] == 'RODC':
+                if not request.get('target_dc_ip'):
+                    raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
+                directory_args += ['--server=' + request['target_dc_ip'], '--username=' + request['admin_username'], '--password=' + request['admin_password']]
+            configured = json.loads(run(directory_args + ([] if request.get('global_catalog', True) else ['--disable-gc'])))
+            steps.append('Catalogo global configurado; particoes DNS verificadas: ' + json.dumps(configured))
         for name in services:
             run(['systemctl', 'unmask', name])
             run(['systemctl', 'enable', name])
@@ -1624,23 +1633,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             steps.append('Step-CA instalada e LDAPS configurado somente apos Samba AD ativo.')
         if request['domain_role'] == 'MEMBER':
             run(['net', 'ads', 'testjoin', '-s', str(config)])
-            run(['chattr','+i',str(root/'etc/resolv.conf')])
         else:
-            for attempt in range(15):
-                try:
-                    run(['samba-tool', 'domain', 'level', 'show', '-s', str(config)])
-                    break
-                except OperationError:
-                    if attempt==14: raise
-                    time.sleep(1)
-            directory = DIRECTORY_SCRIPT
-            directory_args=['/usr/bin/python3','-c',directory]
-            if request['domain_role']=='RODC':
-                if not request.get('target_dc_ip'): raise OperationError('Informe o DC gravavel parceiro na tela para configurar o catalogo global do RODC.')
-                directory_args+=['--server='+request['target_dc_ip'],'--username='+request['admin_username'],'--password='+request['admin_password']]
-            configured=json.loads(run(directory_args+([] if request.get('global_catalog',True) else ['--disable-gc'])))
-            steps.append('Catalogo global configurado; particoes DNS verificadas: '+json.dumps(configured))
-            run(['systemctl','restart',services[0]])
             if request.get('global_catalog',True):
                 for attempt in range(15):
                     try:
@@ -1658,7 +1651,6 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             content='search '+request['realm'].lower()+'\nnameserver 127.0.0.1\n'
             if request.get('target_dc_ip'): content+='nameserver '+request['target_dc_ip']+'\n'
             atomic_write(resolver,content,0o644)
-            run(['chattr','+i',str(resolver)])
             if request['kind'] == 'join':
                 if request.get('domain_role') == 'RODC':
                     partner_dc = request.get('target_dc_ip') or '127.0.0.1'

@@ -840,10 +840,7 @@ def main():
                 print(json.dumps({'success': True, 'data': data}, ensure_ascii=False))
                 return
             if args.operation == 'provision':
-                if request.get('kind') == 'new':
-                    from provision_dc1 import execute
-                else:
-                    from provision_workflow import execute
+                from provision_workflow import execute
                 data = execute(request)
                 print(json.dumps({'success': True, 'data': data}, ensure_ascii=False))
                 return

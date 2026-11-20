@@ -3,6 +3,7 @@
 import argparse
 import json
 import socket
+import time
 import ldb
 from samba.auth import system_session
 from samba.param import LoadParm
@@ -66,7 +67,17 @@ if __name__ == '__main__':
         ready=value.get('isGlobalCatalogReady',[b'FALSE'])[0].decode().upper() == 'TRUE'
         if ready:
             for port in [3268,3269]:
-                with socket.create_connection(('127.0.0.1',port),timeout=3): pass
+                connected = False
+                for _ in range(25):
+                    try:
+                        with socket.create_connection(('127.0.0.1',port),timeout=0.5):
+                            connected = True
+                            break
+                    except OSError:
+                        time.sleep(0.2)
+                if not connected:
+                    ready = False
+                    break
         print(json.dumps({'ready':ready}))
         raise SystemExit(0 if ready else 1)
     print(json.dumps(configure(not args.disable_gc, inspect=args.inspect,server=args.server,username=args.username,password=args.password)))
