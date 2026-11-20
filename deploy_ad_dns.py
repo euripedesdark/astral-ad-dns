@@ -28,9 +28,10 @@ import argparse
 import shutil
 from datetime import datetime
 
-# Garante que caminhos administrativos essenciais estejam sempre acessíveis no PATH
-for _p in ("/usr/sbin", "/sbin", "/usr/local/sbin"):
-    if _p not in os.environ.get("PATH", "").split(os.pathsep):
+# Garante que caminhos administrativos essenciais e cargo/rustup estejam sempre no PATH
+_cargo_bin = os.path.expanduser("~/.cargo/bin")
+for _p in (_cargo_bin, "/usr/sbin", "/sbin", "/usr/local/sbin"):
+    if os.path.exists(_p) and _p not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = f"{_p}{os.pathsep}" + os.environ.get("PATH", "")
 
 # Configurações Padrão
