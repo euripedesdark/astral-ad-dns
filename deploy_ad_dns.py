@@ -324,6 +324,11 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         run_cmd(["systemctl", "mask", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
         run_cmd(["systemctl", "unmask", "samba", "samba-ad-dc"], use_sudo=True, check=False)
 
+        # Tranquil IT: mDNS avahi-daemon interfere na resolução AD e ocupa a porta UDP 5353
+        run_cmd(["systemctl", "stop", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "disable", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "mask", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+
         # Tranquil IT: desabilita IPv6 e integração resolvconf no BIND9 (/etc/default/named)
         named_defaults = "# Configured by Astral AD DNS\nRESOLVCONF=no\nOPTIONS=\"-4 -u bind\"\n"
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="astral-named-default-", delete=False) as tf:

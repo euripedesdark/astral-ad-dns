@@ -65,6 +65,12 @@ def install_dependencies(root, run, bind, steps, required_commands=None):
     remaining = [name for name in commands if not shutil.which(name)]
     if remaining:
         raise OperationError('A distribuicao/pacotes instalados nao disponibilizaram: ' + ', '.join(remaining) + '. Nenhum ingresso/limpeza foi iniciado.')
+    if manager == 'apt-get':
+        try:
+            run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+            run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+        except Exception:
+            pass
     ensure_samba_directories(root)
     steps.append('Dependencias instaladas pela interface (' + manager + '): ' + ', '.join(packages))
 
