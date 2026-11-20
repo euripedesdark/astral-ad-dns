@@ -249,6 +249,62 @@ def prepare_bind_selinux(root, run, undo, port=5353):
     return steps
 
 
+def is_apparmor_enabled(root=Path('/')):
+    param = root / 'sys/module/apparmor/parameters/enabled'
+    if param.exists():
+        try:
+            return param.read_text().strip().upper() in ('Y', '1', 'TRUE')
+        except OSError:
+            pass
+    return False
+
+
+def prepare_bind_apparmor(root, run, undo):
+    if not is_apparmor_enabled(root):
+        return []
+    profile = root / 'etc/apparmor.d/usr.sbin.named'
+    if not profile.exists():
+        return []
+    local_dir = root / 'etc/apparmor.d/local'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_profile = local_dir / 'usr.sbin.named'
+
+    rules = [
+        '/etc/bind/** lrw,',
+        '/var/cache/bind/** lrw,',
+        '/var/lib/samba/bind-dns/** rwk,',
+    ]
+    existing = local_profile.read_text() if local_profile.exists() else None
+    existing_text = existing or ''
+    needed = [r for r in rules if r not in existing_text]
+    steps = []
+    if needed:
+        new_text = (existing_text.rstrip() + '\n' + '\n'.join(needed) + '\n').lstrip()
+        atomic_write(local_profile, new_text, 0o644)
+        undo.append(('file', local_profile, existing))
+        steps.append('AppArmor: regras para BIND adicionadas em /etc/apparmor.d/local/usr.sbin.named.')
+    parser = shutil.which('apparmor_parser')
+    if parser:
+        try:
+            run([parser, '-r', str(profile)])
+            steps.append('AppArmor: perfil usr.sbin.named recarregado.')
+        except OperationError as err:
+            steps.append(f'AppArmor: aviso ao recarregar perfil usr.sbin.named: {err}')
+    return steps
+
+
+def configure_bind_defaults(root):
+    """Tranquil IT Debian: Disable IPv6 bind and resolvconf integration in /etc/default/named."""
+    for default_path in [root / 'etc/default/named', root / 'etc/default/bind9']:
+        if default_path.is_symlink():
+            continue
+        text = default_path.read_text() if default_path.exists() else ''
+        text = re.sub(r'(?im)^\s*RESOLVCONF\s*=.*$', '', text)
+        text = re.sub(r'(?im)^\s*OPTIONS\s*=.*$', '', text)
+        text = text.rstrip() + '\n# Astral AD DNS\nRESOLVCONF=no\nOPTIONS="-4 -u bind"\n'
+        atomic_write(default_path, text.lstrip(), 0o644)
+
+
 def wait_bind_ready(run, service, attempts=6, port=5353):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
@@ -319,8 +375,12 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     installed = False
     selinux_undo = []
     selinux_steps = []
+    apparmor_undo = []
+    apparmor_steps = []
     try:
         check_bind_runtime(root, main, service, run, port)
+        if service == 'bind9':
+            configure_bind_defaults(root)
         # named runs unprivileged on Arch: do not inherit an unreadable
         # root-only configuration mode from a previous deployment.
         atomic_write(staged, candidate, 0o640)
@@ -339,13 +399,23 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
         selinux_steps = prepare_bind_selinux(root, run, selinux_undo, port)
+        apparmor_steps = prepare_bind_apparmor(root, run, apparmor_undo)
         run(['systemctl', 'restart', service])
         wait_bind_ready(run, service, port=port)
         run(['systemctl', 'enable', service])
-        return package_steps + (['Porta alternativa '+str(port)+' selecionada para preservar SELinux udp/5353.'] if port != 5353 else []) + selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:{port}.',
+        return package_steps + (['Porta alternativa '+str(port)+' selecionada para preservar SELinux udp/5353.'] if port != 5353 else []) + selinux_steps + apparmor_steps + [f'BIND {service} validado e ativo em 127.0.0.1:{port}.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']
     except Exception as error:
         rollback_errors = []
+        for undo_item in reversed(apparmor_undo):
+            try:
+                if undo_item[0] == 'file':
+                    if undo_item[2] is None:
+                        undo_item[1].unlink(missing_ok=True)
+                    else:
+                        atomic_write(undo_item[1], undo_item[2], 0o644)
+            except Exception as failure:
+                rollback_errors.append('AppArmor: ' + str(failure))
         for command in reversed(selinux_undo):
             try:
                 run(command)
@@ -419,22 +489,22 @@ def restore_domain(request, root=Path('/'), run=checked_run):
         run(['samba-tool', 'dbcheck', '--cross-ncs', '-s', str(restored_conf)])
         # Configure the isolated recursive resolver before touching the live Samba DB.
         configure_bind({'forwarders': request.get('forwarders', ['8.8.8.8', '1.1.1.1'])}, root, run)
-        for service in ['samba', 'samba-dc', 'samba-ad-dc']:
+        for service in ['samba-ad-dc', 'samba-dc', 'samba']:
             try:
                 if run(['systemctl', 'is-active', service]).strip() == 'active':
                     active_services.append(service)
             except OperationError:
                 pass
-        service = active_services[0] if active_services else request.get('samba_service', 'samba')
-        if not active_services:
-            for candidate in ['samba', 'samba-dc', 'samba-ad-dc']:
+        service = active_services[0] if active_services else request.get('samba_service', 'samba-ad-dc' if (root / 'etc/debian_version').exists() else 'samba')
+        if not active_services and 'samba_service' not in request:
+            for candidate in ['samba-ad-dc', 'samba-dc', 'samba']:
                 try:
                     if run(['systemctl', 'show', '--property=LoadState', '--value', candidate]).strip() == 'loaded':
                         service = candidate
                         break
                 except OperationError:
                     pass
-        if service not in ['samba', 'samba-dc', 'samba-ad-dc']:
+        if service not in ['samba-ad-dc', 'samba-dc', 'samba']:
             raise OperationError('Serviço Samba inválido.')
         if config_before is not None:
             atomic_write(config.with_name('smb.conf.pre-restore-' + recovery_id), config_before)
@@ -651,7 +721,7 @@ def service_exists(unit):
                           stderr=subprocess.DEVNULL).returncode == 0
 
 def stop_old_dc():
-    for unit in ("samba", "samba-dc", "samba-ad-dc"):
+    for unit in ("samba-ad-dc", "samba-dc", "samba"):
         if service_exists(unit):
             run(["systemctl", "disable", "--now", unit], timeout=60)
     steps.append("Daemon AD DC parado e desabilitado.")
@@ -743,7 +813,7 @@ try:
     os.replace(temp, metadata)
     if remote_account() != "member":
         raise RuntimeError("Estado da conta deixou de ser membro durante validação final.")
-    if service_exists("samba") and subprocess.run(["systemctl", "is-active", "--quiet", "samba"]).returncode == 0:
+    if any(service_exists(u) and subprocess.run(["systemctl", "is-active", "--quiet", u]).returncode == 0 for u in ("samba-ad-dc", "samba-dc", "samba")):
         raise RuntimeError("O serviço AD DC continuou ativo após a conversão.")
     steps.append("Validação final: net ads testjoin OK e conta de membro confirmada no DC primário.")
     print(json.dumps({"success": True, "steps": steps}))

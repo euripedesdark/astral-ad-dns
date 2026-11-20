@@ -186,7 +186,7 @@ def promote_writable(request, root=Path('/'), run=run_command):
     if 'status: NOERROR' not in dns:
         raise TransitionError('BIND recursivo não está saudável em 127.0.0.1:5353.')
     active = []
-    for unit in ['samba', 'samba-dc', 'samba-ad-dc']:
+    for unit in ['samba-ad-dc', 'samba-dc', 'samba']:
         try:
             if run(['systemctl', 'is-active', unit]).strip() == 'active':
                 active.append(unit)

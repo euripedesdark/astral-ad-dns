@@ -308,9 +308,48 @@ def prepare_ad_packages(os_release="/etc/os-release"):
 
         # Tranquil IT: desativa serviços padrão de arquivos para que o AD DC assuma as portas
         run_cmd(["systemctl", "stop", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
-        run_cmd(["systemctl", "disable", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
-        run_cmd(["systemctl", "mask", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "disable", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "mask", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
         run_cmd(["systemctl", "unmask", "samba-ad-dc"], use_sudo=True, check=False)
+
+        # Tranquil IT: desabilita IPv6 e integração resolvconf no BIND9 (/etc/default/named)
+        named_defaults = "# Configured by Astral AD DNS\nRESOLVCONF=no\nOPTIONS=\"-4 -u bind\"\n"
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="astral-named-default-", delete=False) as tf:
+            tf.write(named_defaults)
+            tmp_named = tf.name
+        run_cmd(f"mv {tmp_named} /etc/default/named && chmod 644 /etc/default/named", use_sudo=True)
+        if os.path.isfile("/etc/default/bind9") and not os.path.islink("/etc/default/bind9"):
+            run_cmd("cp -f /etc/default/named /etc/default/bind9", use_sudo=True)
+
+        # AppArmor no Debian (se ativo): autoriza BIND e Chrony ntp_signd conforme documentação
+        if os.path.exists("/sys/module/apparmor/parameters/enabled"):
+            try:
+                with open("/sys/module/apparmor/parameters/enabled", "r") as f:
+                    aa_enabled = f.read().strip().upper() in ("Y", "1", "TRUE")
+            except OSError:
+                aa_enabled = False
+            if aa_enabled:
+                log_info("AppArmor detectado e ativo: configurando permissões para BIND e Chrony ntp_signd...")
+                run_cmd(["install", "-d", "-m", "0755", "/etc/apparmor.d/local"], use_sudo=True)
+
+                chrony_aa_file = "/etc/apparmor.d/local/usr.sbin.chronyd"
+                chrony_rules = "/var/lib/samba/ntp_signd/ rw,\n/var/lib/samba/ntp_signd/** rwk,\n"
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="astral-aa-chrony-", delete=False) as tf:
+                    tf.write(chrony_rules)
+                    tmp_aa = tf.name
+                run_cmd(f"mv {tmp_aa} {chrony_aa_file} && chmod 644 {chrony_aa_file}", use_sudo=True)
+                if os.path.exists("/etc/apparmor.d/usr.sbin.chronyd") and shutil.which("apparmor_parser"):
+                    run_cmd(["apparmor_parser", "-r", "/etc/apparmor.d/usr.sbin.chronyd"], use_sudo=True, check=False)
+
+                named_aa_file = "/etc/apparmor.d/local/usr.sbin.named"
+                named_rules = "/etc/bind/** lrw,\n/var/cache/bind/** lrw,\n/var/lib/samba/bind-dns/** rwk,\n"
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="astral-aa-named-", delete=False) as tf:
+                    tf.write(named_rules)
+                    tmp_aa_named = tf.name
+                run_cmd(f"mv {tmp_aa_named} {named_aa_file} && chmod 644 {named_aa_file}", use_sudo=True)
+                if os.path.exists("/etc/apparmor.d/usr.sbin.named") and shutil.which("apparmor_parser"):
+                    run_cmd(["apparmor_parser", "-r", "/etc/apparmor.d/usr.sbin.named"], use_sudo=True, check=False)
+                log_success("AppArmor ajustado com sucesso para BIND e Chrony.")
 
         for command in ("samba", "samba-tool", "named", "chronyd"):
             if not shutil.which(command):

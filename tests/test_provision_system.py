@@ -111,4 +111,46 @@ class SystemTests(unittest.TestCase):
                              str(root/'etc/samba/tls/trusted-step-root.crt'))
             self.assertIn(('tls enabled','yes'),pairs)
 
+    def test_chrony_apparmor_and_debian_ntp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            aa_param = root / 'sys/module/apparmor/parameters/enabled'
+            aa_param.parent.mkdir(parents=True, exist_ok=True)
+            aa_param.write_text('Y\n')
+
+            chrony_profile = root / 'etc/apparmor.d/usr.sbin.chronyd'
+            chrony_profile.parent.mkdir(parents=True, exist_ok=True)
+            chrony_profile.write_text('# chronyd profile\n')
+
+            (root / 'etc/debian_version').write_text('13.0\n')
+            (root / 'var/lib/ntp').mkdir(parents=True, exist_ok=True)
+            (root / 'var/lib/ntp/ntp.conf.dhcp').write_text('# dhcp ntp\n')
+
+            calls = []
+            def run(args):
+                calls.append(args)
+                if args[:2] == ['getent', 'group']:
+                    return '_chrony:x:115:' if args[2] == '_chrony' else ''
+                if args[:2] == ['systemctl', 'show']:
+                    return 'loaded'
+                return ''
+
+            steps = []
+            req = {'domain_role': 'DC'}
+            with patch.object(system.shutil, 'which', return_value='/usr/sbin/apparmor_parser'):
+                system.configure_ntp(req, root, run, steps)
+
+            self.assertTrue(any('AppArmor: regras para ntp_signd adicionadas' in s for s in steps))
+            local_chrony = root / 'etc/apparmor.d/local/usr.sbin.chronyd'
+            self.assertTrue(local_chrony.exists())
+            self.assertIn('/var/lib/samba/ntp_signd/** rwk,', local_chrony.read_text())
+            self.assertIn(['/usr/sbin/apparmor_parser', '-r', str(chrony_profile)], calls)
+
+            chrony_conf = root / 'etc/chrony.conf'
+            self.assertTrue(chrony_conf.exists())
+            self.assertIn('allow 0.0.0.0/0', chrony_conf.read_text())
+            self.assertIn('ntpsigndsocket /var/lib/samba/ntp_signd', chrony_conf.read_text())
+            self.assertFalse((root / 'var/lib/ntp/ntp.conf.dhcp').exists())
+
+
 if __name__=='__main__':unittest.main()

@@ -389,4 +389,44 @@ class WorkflowTests(unittest.TestCase):
         result=self.execute(dict(self.request,rejoin=False))
         self.assertFalse(result['success']);self.assertEqual(self.db.read_text(),'old database')
 
+    def test_unit_skips_linked_units_and_selects_samba_ad_dc(self):
+        def runner(args):
+            if args[:2] == ['systemctl', 'show']:
+                unit_name = args[2]
+                prop = args[4] if len(args) > 4 else args[3]
+                if prop == 'UnitFileState':
+                    return 'linked' if unit_name == 'samba' else 'enabled'
+                if prop == 'LoadState':
+                    return 'loaded'
+            if args[:2] == ['systemctl', 'is-active']:
+                return 'inactive'
+            raise AssertionError(args)
+        selected = flow.unit(runner, ['samba-ad-dc', 'samba', 'samba-dc'])
+        self.assertEqual(selected, 'samba-ad-dc')
+
+        # Even if 'samba' is first in choices, it must be skipped if linked:
+        selected2 = flow.unit(runner, ['samba', 'samba-ad-dc', 'samba-dc'])
+        self.assertEqual(selected2, 'samba-ad-dc')
+
+    def test_samba_ad_dc_masks_conflicts_on_debian(self):
+        host = Host(self.root)
+        def run(args):
+            if args[:2] == ['systemctl', 'is-active'] and args[2] == 'samba-ad-dc':
+                return 'active'
+            if args[:2] == ['systemctl', 'show']:
+                unit_name = args[2]
+                prop = args[4] if len(args) > 4 else args[3]
+                if prop == 'UnitFileState':
+                    return 'linked' if unit_name == 'samba' else 'enabled'
+                if prop == 'LoadState':
+                    return 'loaded' if unit_name in ['samba-ad-dc', 'named', 'chronyd'] else 'not-found'
+            return host(args)
+        result = self.execute(host=run)
+        self.assertTrue(result['success'], result)
+        masked_calls = [args[2] for args in host.calls if args[:2] == ['systemctl', 'mask']]
+        for conflict in ['samba', 'winbind', 'nmbd', 'smbd']:
+            self.assertIn(conflict, masked_calls)
+        self.assertIn(['systemctl', 'unmask', 'samba-ad-dc'], host.calls)
+        self.assertIn(['systemctl', 'enable', 'samba-ad-dc'], host.calls)
+
 if __name__=='__main__':unittest.main()

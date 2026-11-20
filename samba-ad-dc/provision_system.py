@@ -5,7 +5,7 @@ import re
 import shutil
 import socket
 import itertools
-from ad_operations import OperationError, atomic_write, local_ipv4s
+from ad_operations import OperationError, atomic_write, local_ipv4s, is_apparmor_enabled
 
 TOOLS = {
  'samba-tool': ['samba-tools','samba-common-bin','samba','samba'],
@@ -174,18 +174,53 @@ def configure_firewall(request, root, backup, run, steps):
     steps.append('iptables: ' + str(added) + ' regras ausentes adicionadas; portas GC 3268/3269 e RPC consideradas. Regras/politicas anteriores preservadas; persistencia automatica configurada.')
 
 
+def prepare_chrony_apparmor(root, run, steps):
+    if not is_apparmor_enabled(root):
+        return
+    profile = root / 'etc/apparmor.d/usr.sbin.chronyd'
+    if not profile.exists():
+        return
+    local_dir = root / 'etc/apparmor.d/local'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_profile = local_dir / 'usr.sbin.chronyd'
+
+    rules = [
+        '/var/lib/samba/ntp_signd/ rw,',
+        '/var/lib/samba/ntp_signd/** rwk,',
+    ]
+    existing = local_profile.read_text() if local_profile.exists() else ''
+    needed = [r for r in rules if r not in existing]
+    if needed:
+        new_text = (existing.rstrip() + '\n' + '\n'.join(needed) + '\n').lstrip()
+        atomic_write(local_profile, new_text, 0o644)
+        steps.append('AppArmor: regras para ntp_signd adicionadas em /etc/apparmor.d/local/usr.sbin.chronyd.')
+    parser = shutil.which('apparmor_parser')
+    if parser:
+        try:
+            run([parser, '-r', str(profile)])
+            steps.append('AppArmor: perfil usr.sbin.chronyd recarregado.')
+        except OperationError as err:
+            steps.append(f'AppArmor: aviso ao recarregar perfil usr.sbin.chronyd: {err}')
+
+
 def configure_ntp(request, root, run, steps):
     member=request['domain_role']=='MEMBER'
     config = root / ('etc/chrony/chrony.conf' if (root / 'etc/chrony').is_dir() else 'etc/chrony.conf')
     text = config.read_text() if config.exists() else 'pool pool.ntp.org iburst\nmakestep 1.0 3\nrtcsync\n'
     text = re.sub(r'(?im)^\s*ntpsigndsocket\s+.*$', '', text)
-    if not member: text += '\nntpsigndsocket /var/lib/samba/ntp_signd\n'
+    if not member:
+        if not re.search(r'(?im)^\s*allow\b', text):
+            text += '\nallow 0.0.0.0/0\n'
+        text += '\nntpsigndsocket /var/lib/samba/ntp_signd\n'
     if request.get('target_dc_ip') and request['target_dc_ip'] not in text:
         text+='server '+request['target_dc_ip']+' iburst prefer\n'
     atomic_write(config,text,0o644)
+    (root / 'var/lib/ntp/ntp.conf.dhcp').unlink(missing_ok=True)
     if not member:
+        prepare_chrony_apparmor(root, run, steps)
         group = None
-        for candidate in ['chrony','_chrony']:
+        group_candidates = ['_chrony', 'chrony'] if (root / 'etc/debian_version').exists() else ['chrony', '_chrony']
+        for candidate in group_candidates:
             try:
                 if run(['getent','group',candidate]).strip():
                     group = candidate

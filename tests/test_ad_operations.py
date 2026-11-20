@@ -345,5 +345,35 @@ class OperationsTests(unittest.TestCase):
 
 
 
+    def test_bind_apparmor_and_debian_defaults(self):
+        aa_param = self.root / 'sys/module/apparmor/parameters/enabled'
+        aa_param.parent.mkdir(parents=True, exist_ok=True)
+        aa_param.write_text('Y\n')
+
+        named_profile = self.root / 'etc/apparmor.d/usr.sbin.named'
+        named_profile.parent.mkdir(parents=True, exist_ok=True)
+        named_profile.write_text('# profile\n')
+
+        calls = []
+        undo = []
+        def run(args):
+            calls.append(args)
+            return ''
+
+        with patch.object(operations.shutil, 'which', return_value='/usr/sbin/apparmor_parser'):
+            steps = operations.prepare_bind_apparmor(self.root, run, undo)
+        self.assertTrue(any('regras para BIND adicionadas' in s for s in steps))
+        local_named = self.root / 'etc/apparmor.d/local/usr.sbin.named'
+        self.assertTrue(local_named.exists())
+        self.assertIn('/var/cache/bind/** lrw,', local_named.read_text())
+        self.assertIn(['/usr/sbin/apparmor_parser', '-r', str(named_profile)], calls)
+
+        operations.configure_bind_defaults(self.root)
+        default_named = self.root / 'etc/default/named'
+        self.assertTrue(default_named.exists())
+        self.assertIn('RESOLVCONF=no', default_named.read_text())
+        self.assertIn('OPTIONS="-4 -u bind"', default_named.read_text())
+
+
 if __name__ == '__main__':
     unittest.main()

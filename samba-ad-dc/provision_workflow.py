@@ -338,6 +338,9 @@ def unit(run, choices):
     loaded,masked=[],[]
     for name in choices:
         state=optional(run,['systemctl','show',name,'-p','LoadState','--value']).strip()
+        unit_file_state=optional(run,['systemctl','show',name,'-p','UnitFileState','--value']).strip()
+        if unit_file_state=='linked':
+            continue
         if state=='loaded': loaded.append(name)
         if state=='masked': masked.append(name)
     for name in loaded:
@@ -498,7 +501,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 manifest['phase']='primary_pki'
                 save_manifest(backup,manifest)
                 remote_mutated=True  # Preserve any newly created CA on later failure.
-                primary_tls=configure_pki(request,root,run,unit(run,['samba','samba-ad-dc','samba-dc']),steps)
+                primary_tls=configure_pki(request,root,run,unit(run,['samba-ad-dc','samba','samba-dc']),steps)
             configure_ntp(request,root,run,steps)
         elif request['kind']=='configure':
             candidates=local_ipv4s(run)
@@ -518,7 +521,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 try:
                     if not local_db:
                         raise OperationError('Existe uma conta DC no parceiro, mas nao existe sam.ldb local para despromocao normal.')
-                    dc_service = unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])
+                    dc_service = unit(run, ['samba-ad-dc', 'samba', 'samba-dc'])
                     try:
                         dc_stopped = False
                         run(['systemctl', 'start', dc_service])
@@ -632,7 +635,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
         atomic_write(config,text,0o644)
         kerberos = root / 'var/lib/samba/private/krb5.conf'
-        if kerberos.exists():
+        if kerberos.exists() and not kerberos.is_symlink():
             krb_content = kerberos.read_text()
             if request.get('target_dc_ip') and request.get('domain_role') == 'RODC':
                 partner_ip = request['target_dc_ip']
@@ -644,7 +647,12 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                         flags=re.IGNORECASE
                     )
             atomic_write(root / 'etc/krb5.conf', krb_content, 0o644)
-        else:
+            kerberos.unlink(missing_ok=True)
+            try:
+                kerberos.symlink_to('/etc/krb5.conf')
+            except OSError:
+                pass
+        elif not kerberos.exists():
             kdc_line = ('\tkdc = ' + request['target_dc_ip'] + '\n') if request.get('target_dc_ip') else ''
             atomic_write(root/'etc/krb5.conf','[libdefaults]\n default_realm = '+request['realm']+'\n dns_lookup_realm = false\n dns_lookup_kdc = true\n rdns = false\n[realms]\n' + request['realm'] + ' = {\n' + kdc_line + '}\n[domain_realm]\n .'+request['realm'].lower()+' = '+request['realm']+'\n '+request['realm'].lower()+' = '+request['realm']+'\n',0o644)
         if root == Path('/') and shutil.which('restorecon'):
@@ -654,7 +662,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request['domain_role'] == 'MEMBER':
             services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
         else:
-            services = [unit(run, ['samba', 'samba-ad-dc', 'samba-dc'])]
+            services = [unit(run, ['samba-ad-dc', 'samba', 'samba-dc'])]
         directory = str(Path(__file__).with_name('directory_config.py'))
         if request['domain_role'] != 'MEMBER':
             directory_args = ['/usr/bin/python3', directory]
@@ -672,6 +680,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
                 text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
             atomic_write(config,text,0o644)
+        if 'samba-ad-dc' in services:
+            for conflict in ['samba', 'winbind', 'nmbd', 'smbd']:
+                optional(run, ['systemctl', 'stop', conflict])
+                optional(run, ['systemctl', 'disable', conflict])
+                optional(run, ['systemctl', 'mask', conflict])
         for name in services:
             run(['systemctl', 'unmask', name])
             run(['systemctl', 'enable', name])
