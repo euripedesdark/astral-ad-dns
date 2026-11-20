@@ -116,6 +116,7 @@ class DistroProfile:
         self.bind_config_rel = bind_config_rel
         self.bind_main_rel = bind_main_rel
         self.bind_work_dir = bind_work_dir
+        self.bind_cache = bind_work_dir
         self.chrony_user = chrony_user
         self.chrony_group = chrony_group
         self.chrony_service = chrony_service
@@ -512,7 +513,7 @@ def configure_bind(request, root=Path('/'), run=checked_run):
                     run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
                 except (OperationError, FileNotFoundError):
                     pass
-                cache_dir = root / profile.bind_cache.lstrip('/')
+                cache_dir = root / profile.bind_work_dir.lstrip('/')
                 if cache_dir.is_dir():
                     try:
                         run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])

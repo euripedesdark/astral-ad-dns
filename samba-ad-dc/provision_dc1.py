@@ -126,6 +126,7 @@ class DistroProfile:
         self.bind_config_rel = bind_config_rel
         self.bind_main_rel = bind_main_rel
         self.bind_work_dir = bind_work_dir
+        self.bind_cache = bind_work_dir
         self.chrony_user = chrony_user
         self.chrony_group = chrony_group
         self.chrony_service = chrony_service
@@ -477,9 +478,28 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     apparmor_steps = []
     try:
         profile = detect_distro_profile(root)
-        check_bind_runtime(root, main, service, run)
         if profile.family == 'debian':
             configure_bind_defaults(root)
+            if root == Path('/'):
+                try:
+                    run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                    run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                except (OperationError, FileNotFoundError):
+                    pass
+                cache_dir = root / profile.bind_work_dir.lstrip('/')
+                if cache_dir.is_dir():
+                    try:
+                        run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
+                    except (OperationError, FileNotFoundError):
+                        pass
+                rndc_key = root / 'etc/bind/rndc.key'
+                if rndc_key.is_file():
+                    try:
+                        run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
+                        run(['chmod', '640', str(rndc_key)])
+                    except (OperationError, FileNotFoundError):
+                        pass
+        check_bind_runtime(root, main, service, run)
         atomic_write(staged, candidate, 0o640)
         run(['chown', f'root:{profile.bind_group}', str(staged)])
         run(['named-checkconf', str(staged)])

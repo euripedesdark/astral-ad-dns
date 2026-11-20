@@ -388,6 +388,62 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual((target / 'var/cache/samba').stat().st_mode & 0o777, 0o755)
             self.assertEqual((target / 'var/lib/samba/private').stat().st_mode & 0o777, 0o700)
 
+    def test_distro_profile_attributes_and_detection(self):
+        # 1. Debian
+        deb_root = self.root / 'deb'
+        (deb_root / 'etc').mkdir(parents=True, exist_ok=True)
+        (deb_root / 'etc/os-release').write_text('ID=debian\nVERSION_ID="13"\n')
+        profile_deb = operations.detect_distro_profile(deb_root)
+        self.assertEqual(profile_deb.family, 'debian')
+        self.assertEqual(profile_deb.samba_unit, 'samba-ad-dc')
+        self.assertNotIn('samba', profile_deb.samba_conflicts)
+        self.assertEqual(profile_deb.bind_user, 'bind')
+        self.assertEqual(profile_deb.bind_group, 'bind')
+        self.assertEqual(profile_deb.bind_work_dir, '/var/cache/bind')
+        self.assertEqual(profile_deb.bind_cache, '/var/cache/bind')
+        self.assertEqual(profile_deb.chrony_user, '_chrony')
+        self.assertEqual(profile_deb.security_system, 'apparmor')
+
+        # 2. RedHat / Fedora
+        rh_root = self.root / 'rh'
+        (rh_root / 'etc').mkdir(parents=True, exist_ok=True)
+        (rh_root / 'etc/os-release').write_text('ID=fedora\nVERSION_ID="45"\n')
+        profile_rh = operations.detect_distro_profile(rh_root)
+        self.assertEqual(profile_rh.family, 'redhat')
+        self.assertEqual(profile_rh.samba_unit, 'samba')
+        self.assertEqual(profile_rh.bind_user, 'named')
+        self.assertEqual(profile_rh.bind_work_dir, '/var/named')
+        self.assertEqual(profile_rh.bind_cache, '/var/named')
+        self.assertEqual(profile_rh.security_system, 'selinux')
+
+        # 3. Arch Linux
+        arch_root = self.root / 'arch'
+        (arch_root / 'etc').mkdir(parents=True, exist_ok=True)
+        (arch_root / 'etc/os-release').write_text('ID=arch\n')
+        profile_arch = operations.detect_distro_profile(arch_root)
+        self.assertEqual(profile_arch.family, 'arch')
+        self.assertEqual(profile_arch.samba_unit, 'samba')
+        self.assertEqual(profile_arch.bind_work_dir, '/var/named')
+        self.assertEqual(profile_arch.bind_cache, '/var/named')
+        self.assertEqual(profile_arch.security_system, 'none')
+
+    def test_configure_bind_debian_profile_has_no_attribute_errors(self):
+        deb_root = self.root / 'deb_bind'
+        (deb_root / 'etc/bind').mkdir(parents=True, exist_ok=True)
+        (deb_root / 'etc/os-release').write_text('ID=debian\n')
+        (deb_root / 'etc/bind/named.conf').write_text('options {};\n')
+        (deb_root / 'etc/bind/named.conf.options').write_text('options {};\n')
+        (deb_root / 'var/cache/bind').mkdir(parents=True, exist_ok=True)
+
+        runner = FakeRunner(deb_root)
+        def run(args):
+            if args[0] == 'ss':
+                return ''
+            return runner(args)
+
+        steps = operations.configure_bind({'forwarders': ['8.8.8.8']}, deb_root, run)
+        self.assertTrue(any('BIND named validado e ativo' in s for s in steps))
+
 
 if __name__ == '__main__':
     unittest.main()
