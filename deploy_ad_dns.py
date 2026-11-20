@@ -28,6 +28,11 @@ import argparse
 import shutil
 from datetime import datetime
 
+# Garante que caminhos administrativos essenciais estejam sempre acessíveis no PATH
+for _p in ("/usr/sbin", "/sbin", "/usr/local/sbin"):
+    if _p not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = f"{_p}{os.pathsep}" + os.environ.get("PATH", "")
+
 # Configurações Padrão
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 SYSTEM_OPT_DIR = "/opt/astral-ad-dns"
@@ -225,6 +230,61 @@ def prepare_ad_packages(os_release="/etc/os-release"):
     distro, major, is_el = detect_host_distribution(os_release)
     if distro in ("fedora", "arch", "archlinux"):
         log_success(f"{distro} {major}: repositórios Samba da distribuição preservados.")
+        return
+    if distro == "debian":
+        if major not in ("12", "13"):
+            log_error(f"Preparação AD Tranquil IT configurada apenas para Debian 12 e 13 (detectado {major}).")
+            sys.exit(1)
+        if os.path.isfile("/var/lib/samba/private/sam.ldb"):
+            log_error("AD local já possui sam.ldb; instalação/atualização automática de Samba bloqueada.")
+            sys.exit(1)
+        if not shutil.which("apt-get"):
+            log_error("Debian requer apt-get para preparar o Samba AD.")
+            sys.exit(1)
+
+        log_header(f"Preparando Samba AD DC para Debian {major} (TIS Samba 4.24)")
+        verify_web_firewall()
+        remove_conflicting_firewalld()
+
+        codename = "trixie" if major == "13" else "bookworm"
+        run_cmd(["apt-get", "update"], use_sudo=True)
+        run_cmd(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "wget", "curl", "ca-certificates", "gnupg"], use_sudo=True)
+
+        keyring_dir = "/usr/share/keyrings"
+        key_path = f"{keyring_dir}/tissamba.gpg"
+        run_cmd(f"mkdir -p {keyring_dir}", use_sudo=True)
+        run_cmd(f"wget -qO- https://samba.tranquil.it/tissamba-pubkey.gpg | tee {key_path} > /dev/null", use_sudo=True)
+
+        list_file = "/etc/apt/sources.list.d/tissamba.list"
+        repo_line = f"deb [signed-by={key_path}] https://samba.tranquil.it/debian/samba-4.24/ {codename} main\n"
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tf:
+            tf.write(repo_line)
+            tmp_list = tf.name
+        run_cmd(f"mv {tmp_list} {list_file} && chmod 644 {list_file}", use_sudo=True)
+
+        run_cmd(["apt-get", "update"], use_sudo=True)
+
+        debian_packages = [
+            "samba", "samba-ad-dc", "winbind", "libnss-winbind",
+            "krb5-user", "smbclient", "ldb-tools", "python3-samba",
+            "chrony", "bind9", "bind9-utils", "dnsutils",
+            "iptables", "net-tools"
+        ]
+        run_cmd(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", *debian_packages], use_sudo=True)
+
+        # Tranquil IT: desativa serviços padrão de arquivos para que o AD DC assuma as portas
+        run_cmd(["systemctl", "stop", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "disable", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "mask", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "unmask", "samba-ad-dc"], use_sudo=True, check=False)
+
+        for command in ("samba", "samba-tool", "named", "chronyd"):
+            if not shutil.which(command):
+                log_error(f"Preparo incompleto: executável ausente: {command}")
+                sys.exit(1)
+        run_cmd(["/usr/bin/python3", "-c", "import samba, ldb; from samba.samdb import SamDB"], use_sudo=True)
+        log_success(f"Samba AD DC e dependências validados para Debian {major}. Serviço samba-ad-dc provisionará o domínio.")
         return
     if not is_el or major not in ("9", "10"):
         log_error(f"Preparação AD não configurada para {distro} {major}; nenhuma alteração executada.")
