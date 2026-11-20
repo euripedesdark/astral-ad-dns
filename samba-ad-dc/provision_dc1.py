@@ -8,7 +8,10 @@ No project-local Python modules are required by this script.
 import argparse
 
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 
 import ipaddress
@@ -59,6 +62,32 @@ def checked_run(args):
     if result.returncode:
         raise OperationError(f"{args[0]} falhou: {(result.stderr or result.stdout)[-3000:]}")
     return result.stdout
+
+
+def ensure_samba_directories(root=Path('/')):
+    """Ensure all runtime, cache, lock, and private directories expected by Samba exist.
+
+    Debian and RHEL packages compile in paths to /var/cache/samba, /var/lib/samba,
+    /var/lib/samba/private, /var/log/samba, /run/samba, and /etc/samba. If any
+    are missing (e.g. after package purge or overwrite cleanup), testparm and
+    samba-tool fail immediately with:
+    'ERROR: cache directory /var/cache/samba does not exist'.
+    """
+    dirs = [
+        (root / 'var/cache/samba', 0o755),
+        (root / 'var/lib/samba', 0o755),
+        (root / 'var/lib/samba/private', 0o700),
+        (root / 'var/log/samba', 0o755),
+        (root / 'run/samba', 0o755),
+        (root / 'var/run/samba', 0o755),
+        (root / 'etc/samba', 0o755),
+    ]
+    for d, mode in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(mode)
+        except OSError:
+            pass
 
 
 def local_ipv4s(run=None):
@@ -1034,14 +1063,16 @@ def configure_sysvol(request, root, run, steps):
 
 def read_level(text):
     levels = {'2000': 0, '2003': 2, '2008': 3, '2008_R2': 4, '2012': 5, '2012_R2': 6, '2016': 7}
-    text = text.strip().replace('(Windows)', '').strip().replace(' ', '_').upper()
-    if text not in levels:
+    lines = [line.strip().replace('(Windows)', '').strip().replace(' ', '_').upper() for line in text.splitlines() if line.strip()]
+    cleaned = lines[-1] if lines else ''
+    if cleaned not in levels:
         raise OperationError('Nivel funcional nao suportado: ' + text)
-    return levels[text], text
+    return levels[cleaned], cleaned
 
 
 def local_ad_identity(root, run, config):
     """Read local AD identity from config and the local database's @ROOTDSE."""
+    ensure_samba_directories(root)
     database = root / 'var/lib/samba/private/sam.ldb'
     configured_name = optional(run, ['testparm', '-s', '--parameter-name=netbios name',
                                       str(config)]).strip().upper() if config.exists() else ''
@@ -1079,6 +1110,7 @@ def local_ad_identity(root, run, config):
 
 
 def preflight(request, root, run, old_name, steps):
+    ensure_samba_directories(root)
     if request['kind'] == 'configure':
         return None
     if request['kind'] == 'new':
@@ -1310,6 +1342,7 @@ def verify_firewall_after_prepare(rules, run, steps):
 
 
 def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
+    ensure_samba_directories(root)
     global PROGRESS_PATH, PROGRESS_STEPS
     request = dict(request)
     progress = request.pop('_job_status_path', None)
@@ -1442,8 +1475,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 save_manifest(backup,manifest)
                 for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
                     remove(root/relative)
-                (root/'var/lib/samba').mkdir(parents=True,exist_ok=True)
-                (root/'etc/samba').mkdir(parents=True,exist_ok=True)
+                ensure_samba_directories(root)
                 previous_tls=[]
                 steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
@@ -1498,8 +1530,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 run(['samba-tool', 'computer', 'delete', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
             for relative in ['var/lib/samba', 'var/cache/samba', 'etc/samba/smb.conf']:
                 remove(root / relative)
-            (root / 'etc/samba').mkdir(parents=True, exist_ok=True)
-            (root / 'var/lib/samba').mkdir(parents=True, exist_ok=True)
+            ensure_samba_directories(root)
             steps.append('Estado Samba anterior limpo somente apos backup e despromocao/remocao da conta local.')
             configure_identity(request,root,run,steps)
             resolver = root / 'etc/resolv.conf'
@@ -1736,5 +1767,6 @@ if __name__ == '__main__':
     lock_path = Path('/run/lock/astral-ad-operations.lock')
     lock_path.parent.mkdir(parents=True,exist_ok=True)
     with lock_path.open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if fcntl:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         print(json.dumps(execute(request),ensure_ascii=False))

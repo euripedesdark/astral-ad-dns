@@ -302,9 +302,20 @@ def prepare_ad_packages(os_release="/etc/os-release"):
             "samba", "samba-ad-dc", "winbind", "libnss-winbind",
             "krb5-user", "smbclient", "ldb-tools", "python3-samba",
             "chrony", "bind9", "bind9-utils", "dnsutils",
-            "iptables", "net-tools"
+            "iptables", "net-tools", "acl", "attr"
         ]
         run_cmd(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", *debian_packages], use_sudo=True)
+
+        # Garante estrutura de diretórios do Samba (cache, state, lock, private, log, run)
+        for dpath, dmode in [
+            ("/var/cache/samba", "0755"),
+            ("/var/lib/samba", "0755"),
+            ("/var/lib/samba/private", "0700"),
+            ("/var/log/samba", "0755"),
+            ("/run/samba", "0755"),
+            ("/etc/samba", "0755"),
+        ]:
+            run_cmd(["install", "-d", "-m", dmode, dpath], use_sudo=True)
 
         # Tranquil IT: desativa serviços padrão de arquivos para que o AD DC assuma as portas
         run_cmd(["systemctl", "stop", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
@@ -453,6 +464,15 @@ def prepare_ad_packages(os_release="/etc/os-release"):
 
     run_cmd(["dnf", f"--enablerepo={codeready_repo}", "install", "-y", *EL_AD_PACKAGES],
             use_sudo=True)
+    for dpath, dmode in [
+        ("/var/cache/samba", "0755"),
+        ("/var/lib/samba", "0755"),
+        ("/var/lib/samba/private", "0700"),
+        ("/var/log/samba", "0755"),
+        ("/run/samba", "0755"),
+        ("/etc/samba", "0755"),
+    ]:
+        run_cmd(["install", "-d", "-m", dmode, dpath], use_sudo=True)
     for command in ("samba", "samba-tool", "named", "chronyd"):
         if not shutil.which(command):
             log_error(f"Preparo incompleto: executável ausente: {command}")

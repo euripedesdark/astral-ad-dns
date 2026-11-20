@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import contextlib
+import os
 import subprocess
 import sys
 
@@ -373,6 +374,19 @@ class OperationsTests(unittest.TestCase):
         self.assertTrue(default_named.exists())
         self.assertIn('RESOLVCONF=no', default_named.read_text())
         self.assertIn('OPTIONS="-4 -u bind"', default_named.read_text())
+
+    def test_ensure_samba_directories_creates_all_expected_paths(self):
+        target = self.root / 'target_root'
+        operations.ensure_samba_directories(target)
+        self.assertTrue((target / 'var/cache/samba').is_dir())
+        self.assertTrue((target / 'var/lib/samba').is_dir())
+        self.assertTrue((target / 'var/lib/samba/private').is_dir())
+        self.assertTrue((target / 'var/log/samba').is_dir())
+        self.assertTrue((target / 'run/samba').is_dir())
+        self.assertTrue((target / 'etc/samba').is_dir())
+        if os.name != 'nt':
+            self.assertEqual((target / 'var/cache/samba').stat().st_mode & 0o777, 0o755)
+            self.assertEqual((target / 'var/lib/samba/private').stat().st_mode & 0o777, 0o700)
 
 
 if __name__ == '__main__':

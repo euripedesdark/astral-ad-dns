@@ -126,6 +126,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(result['success']);self.assertIn('FSMO',result['message'])
         self.assertEqual(self.db.read_text(),'old database')
         self.assertFalse(any(args[:2]==['systemctl','stop'] for args in host.calls))
+    @unittest.skipUnless(hasattr(os, 'mknod'), "requires os.mknod")
     def test_backup_excludes_real_unix_sockets_and_fifos_but_preserves_database(self):
         runtime = self.root/'var/lib/samba/ntp_signd/socket'
         runtime.parent.mkdir(parents=True)
@@ -428,5 +429,16 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(conflict, masked_calls)
         self.assertIn(['systemctl', 'unmask', 'samba-ad-dc'], host.calls)
         self.assertIn(['systemctl', 'enable', 'samba-ad-dc'], host.calls)
+
+    def test_overwrite_existing_recreates_var_cache_samba(self):
+        host = Host(self.root)
+        cache_dir = self.root / 'var/cache/samba'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / 'old_cache.tdb').write_text('old')
+        req = dict(self.request, kind='new', overwrite_existing=True, workgroup='EXAMPLE', hostname_fqdn='dc1.example.test', static_ip='192.0.2.20', network_interface='eth0')
+        result = self.execute(req, host=host)
+        self.assertTrue(result['success'], result)
+        self.assertTrue(cache_dir.is_dir())
+        self.assertFalse((cache_dir / 'old_cache.tdb').exists())
 
 if __name__=='__main__':unittest.main()

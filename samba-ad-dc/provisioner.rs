@@ -124,7 +124,7 @@ impl DistroProvisioner for DebianProvisioner {
     fn distro_name(&self) -> &'static str { "Debian 13 Trixie" }
     fn install_packages(&self) -> bool {
         println!("[PKG] Instalando pacotes Samba 4 AD DC via APT...");
-        run_cmd("DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y samba smbclient krb5-user winbind")
+        run_cmd("DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user smbclient ldb-tools python3-samba")
     }
     fn configure_firewall(&self) -> bool { true }
     fn configure_network(&self, cfg: &AdConfig) -> bool {
@@ -132,6 +132,7 @@ impl DistroProvisioner for DebianProvisioner {
     }
     fn provision_samba(&self, cfg: &AdConfig, _ssl: bool) -> bool {
         let _ = fs::remove_file("/etc/samba/smb.conf");
+        run_cmd("mkdir -p /var/cache/samba /var/lib/samba /var/lib/samba/private /var/log/samba /run/samba /etc/samba && chmod 755 /var/cache/samba /var/lib/samba /var/log/samba /run/samba /etc/samba && chmod 700 /var/lib/samba/private");
         let cmd = format!(
             "samba-tool domain provision --use-rfc2307 --realm={} --domain={} --server-role=dc --dns-backend=SAMBA_INTERNAL --adminpass='{}'",
             cfg.realm, cfg.nome_netbios, cfg.senha_admin
@@ -139,9 +140,13 @@ impl DistroProvisioner for DebianProvisioner {
         run_cmd(&cmd)
     }
     fn configure_kerberos(&self, _cfg: &AdConfig) -> bool {
-        run_cmd("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf || true")
+        run_cmd("cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf || true");
+        run_cmd("ln -sf /etc/krb5.conf /var/lib/samba/private/krb5.conf || true")
     }
     fn start_services(&self) -> bool {
+        run_cmd("systemctl stop samba winbind nmbd smbd || true");
+        run_cmd("systemctl disable samba winbind nmbd smbd || true");
+        run_cmd("systemctl mask samba winbind nmbd smbd || true");
         run_cmd("systemctl unmask samba-ad-dc || true");
         run_cmd("systemctl enable --now samba-ad-dc || true");
         true

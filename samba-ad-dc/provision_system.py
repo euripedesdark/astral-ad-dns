@@ -5,7 +5,7 @@ import re
 import shutil
 import socket
 import itertools
-from ad_operations import OperationError, atomic_write, local_ipv4s, is_apparmor_enabled
+from ad_operations import OperationError, atomic_write, local_ipv4s, is_apparmor_enabled, ensure_samba_directories
 
 TOOLS = {
  'samba-tool': ['samba-tools','samba-common-bin','samba','samba'],
@@ -35,6 +35,7 @@ def install_dependencies(root, run, bind, steps, required_commands=None):
         commands.remove('semanage')
     missing = [name for name in commands if not shutil.which(name)]
     if not missing:
+        ensure_samba_directories(root)
         return
     if not selected:
         raise OperationError('Distribuicao sem gerenciador reconhecido. Suportados: dnf/yum, apt, pacman e zypper; nenhuma base sera limpa.')
@@ -64,6 +65,7 @@ def install_dependencies(root, run, bind, steps, required_commands=None):
     remaining = [name for name in commands if not shutil.which(name)]
     if remaining:
         raise OperationError('A distribuicao/pacotes instalados nao disponibilizaram: ' + ', '.join(remaining) + '. Nenhum ingresso/limpeza foi iniciado.')
+    ensure_samba_directories(root)
     steps.append('Dependencias instaladas pela interface (' + manager + '): ' + ', '.join(packages))
 
 

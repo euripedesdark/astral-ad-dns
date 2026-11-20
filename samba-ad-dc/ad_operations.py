@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Transactional Samba recovery and loopback-only recursive BIND configuration."""
 import argparse
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import ipaddress
 import json
 import os
@@ -26,6 +29,32 @@ def checked_run(args):
     if result.returncode:
         raise OperationError(f"{args[0]} falhou: {(result.stderr or result.stdout)[-3000:]}")
     return result.stdout
+
+
+def ensure_samba_directories(root=Path('/')):
+    """Ensure all runtime, cache, lock, and private directories expected by Samba exist.
+
+    Debian and RHEL packages compile in paths to /var/cache/samba, /var/lib/samba,
+    /var/lib/samba/private, /var/log/samba, /run/samba, and /etc/samba. If any
+    are missing (e.g. after package purge or overwrite cleanup), testparm and
+    samba-tool fail immediately with:
+    'ERROR: cache directory /var/cache/samba does not exist'.
+    """
+    dirs = [
+        (root / 'var/cache/samba', 0o755),
+        (root / 'var/lib/samba', 0o755),
+        (root / 'var/lib/samba/private', 0o700),
+        (root / 'var/log/samba', 0o755),
+        (root / 'run/samba', 0o755),
+        (root / 'var/run/samba', 0o755),
+        (root / 'etc/samba', 0o755),
+    ]
+    for d, mode in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(mode)
+        except OSError:
+            pass
 
 
 def local_ipv4s(run=None):
@@ -392,7 +421,8 @@ def configure_bind(request, root=Path('/'), run=checked_run):
             pass
         if original is not None:
             shutil.copy2(config, backup)
-            os.chown(backup, original_stat.st_uid, original_stat.st_gid)
+            if hasattr(os, 'chown'):
+                os.chown(backup, original_stat.st_uid, original_stat.st_gid)
         os.replace(staged, config)
         installed = True
         run(['named-checkconf', str(main)])
@@ -894,7 +924,8 @@ def main():
                 lock_path = Path('/run/lock/astral-ad-forensics.lock')
                 lock_path.parent.mkdir(parents=True, exist_ok=True)
                 with lock_path.open('a') as lock:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if fcntl:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     data = execute(request)
             else:
                 data = execute(request)
@@ -903,7 +934,8 @@ def main():
         lock_path = Path('/run/lock/astral-ad-operations.lock')
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.operation == 'pki':
                 from pki_management import execute
                 data = execute(request)

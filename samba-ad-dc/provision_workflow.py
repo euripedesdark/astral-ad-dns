@@ -11,12 +11,12 @@ import stat
 import tarfile
 import time
 import uuid
-from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders
+from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders, ensure_samba_directories
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
 from provision_pki import configure_pki
 from provision_tls import prepare_existing_tls, install_existing_tls
 
-SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'chrony', 'chronyd']
+SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'resolvconf', 'chrony', 'chronyd']
 PATHS = ['etc/samba', 'etc/krb5.conf', 'etc/resolv.conf', 'etc/named.conf', 'etc/bind',
          'etc/chrony.conf', 'etc/chrony', 'etc/hostname', 'etc/hosts', 'etc/step-ca', 'etc/astral-ad-dns/tls-renew.json',
          'etc/systemd/system/step-ca.service', 'etc/systemd/system/astral-ad-tls-renew.service',
@@ -158,14 +158,16 @@ def configure_sysvol(request,root,run,steps):
 
 def read_level(text):
     levels = {'2000': 0, '2003': 2, '2008': 3, '2008_R2': 4, '2012': 5, '2012_R2': 6, '2016': 7}
-    text = text.strip().replace('(Windows)', '').strip().replace(' ', '_').upper()
-    if text not in levels:
+    lines = [line.strip().replace('(Windows)', '').strip().replace(' ', '_').upper() for line in text.splitlines() if line.strip()]
+    cleaned = lines[-1] if lines else ''
+    if cleaned not in levels:
         raise OperationError('Nivel funcional nao suportado: ' + text)
-    return levels[text], text
+    return levels[cleaned], cleaned
 
 
 def local_ad_identity(root, run, config):
     """Read local AD identity from config and the local database's @ROOTDSE."""
+    ensure_samba_directories(root)
     database = root / 'var/lib/samba/private/sam.ldb'
     configured_name = optional(run, ['testparm', '-s', '--parameter-name=netbios name',
                                       str(config)]).strip().upper() if config.exists() else ''
@@ -203,6 +205,7 @@ def local_ad_identity(root, run, config):
 
 
 def preflight(request, root, run, old_name, steps):
+    ensure_samba_directories(root)
     if request['kind'] == 'configure':
         return None
     if request['kind'] == 'new':
@@ -382,6 +385,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         validate(request)
         if request.get('dry_run'):
             return {'success': True, 'steps_completed': ['Plano: instalar dependencias ausentes, validar DNS/FSMO, backup automatico, despromocao se necessaria, limpeza e ingresso como ' + request['domain_role'], 'Forwarders: ' + ', '.join(request['upstream_forwarders']), 'Nenhum arquivo, pacote, servico ou objeto AD foi alterado.'], 'plan_only': True}
+        ensure_samba_directories(root)
         identifier = uuid.uuid4().hex
         backup = root / 'var/backups/astral-ad-dns/provision' / identifier
         backup.mkdir(parents=True, mode=0o700)
@@ -492,8 +496,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 save_manifest(backup,manifest)
                 for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
                     remove(root/relative)
-                (root/'var/lib/samba').mkdir(parents=True,exist_ok=True)
-                (root/'etc/samba').mkdir(parents=True,exist_ok=True)
+                ensure_samba_directories(root)
                 previous_tls=[]
                 steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
@@ -551,8 +554,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 run(['samba-tool', 'computer', 'delete', old_name or request['netbios_name'], '-H', 'ldap://' + partner] + credentials(request))
             for relative in ['var/lib/samba', 'var/cache/samba', 'etc/samba/smb.conf']:
                 remove(root / relative)
-            (root / 'etc/samba').mkdir(parents=True, exist_ok=True)
-            (root / 'var/lib/samba').mkdir(parents=True, exist_ok=True)
+            ensure_samba_directories(root)
             steps.append('Estado Samba anterior limpo somente apos backup e despromocao/remocao da conta local.')
             configure_identity(request,root,run,steps)
             resolver = root / 'etc/resolv.conf'
