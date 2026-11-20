@@ -199,6 +199,37 @@ def remove_conflicting_firewalld():
             log_success("firewalld removido do sistema.")
 
 
+def configure_networkmanager_dns_none():
+    """Instruct NetworkManager to not overwrite /etc/resolv.conf.
+    This replaces filesystem locks (chattr +i) with the native standard.
+    """
+    nm_conf_dir = "/etc/NetworkManager/conf.d"
+    if os.path.isdir(nm_conf_dir):
+        conf_path = f"{nm_conf_dir}/99-astral-ad-dns.conf"
+        content = "[main]\ndns=none\n"
+        is_same = False
+        if os.path.isfile(conf_path):
+            existing = run_cmd(["cat", conf_path], capture=True, check=False)
+            if existing and existing.strip() == content.strip():
+                is_same = True
+        if not is_same:
+            import tempfile
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="nm-dns-", delete=False) as tf:
+                tf.write(content)
+                tmp_path = tf.name
+            try:
+                run_cmd(["install", "-m", "0644", tmp_path, conf_path], use_sudo=True)
+                if shutil.which("nmcli"):
+                    run_cmd(["nmcli", "general", "reload", "conf"], use_sudo=True, check=False)
+                log_success("NetworkManager configurado com dns=none (resolv.conf protegido nativamente sem chattr).")
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+    # Garante que /etc/resolv.conf não esteja travado com chattr +i
+    if shutil.which("chattr"):
+        run_cmd(["chattr", "-i", "/etc/resolv.conf"], use_sudo=True, check=False)
+
+
 # Packages requested for preparing an EL9/EL10 Samba AD Domain Controller.
 EL_AD_PACKAGES = (
     "samba", "samba-dc", "samba-winbind", "samba-winbind-clients",
@@ -246,6 +277,7 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         log_header(f"Preparando Samba AD DC para Debian {major} (TIS Samba 4.24)")
         verify_web_firewall()
         remove_conflicting_firewalld()
+        configure_networkmanager_dns_none()
 
         codename = "trixie" if major == "13" else "bookworm"
         run_cmd(["apt-get", "update"], use_sudo=True)
@@ -300,6 +332,7 @@ def prepare_ad_packages(os_release="/etc/os-release"):
     log_header(f"Preparando Samba AD DC para {distro} {major} (TIS Samba 4.24)")
     verify_web_firewall()
     remove_conflicting_firewalld()
+    configure_networkmanager_dns_none()
     # Every privileged operation explicitly goes through run_cmd(use_sudo=True).
     run_cmd(["dnf", "install", "-y", "dnf-plugins-core"], use_sudo=True)
     # RHEL uses subscription-manager and a full CodeReady Builder repo ID;
@@ -645,6 +678,7 @@ WantedBy=multi-user.target
     log_success(f"Systemd unit loaded from {unit_file}")
     verify_web_firewall()
     remove_conflicting_firewalld()
+    configure_networkmanager_dns_none()
     run_cmd(["systemctl", "enable", SYSTEMD_SERVICE], use_sudo=True)
     run_cmd(["systemctl", "restart", SYSTEMD_SERVICE], use_sudo=True)
 

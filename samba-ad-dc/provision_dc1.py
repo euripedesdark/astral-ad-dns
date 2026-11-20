@@ -1651,6 +1651,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             content='search '+request['realm'].lower()+'\nnameserver 127.0.0.1\n'
             if request.get('target_dc_ip'): content+='nameserver '+request['target_dc_ip']+'\n'
             atomic_write(resolver,content,0o644)
+            nm_conf_dir = root / 'etc/NetworkManager/conf.d'
+            if nm_conf_dir.is_dir():
+                atomic_write(nm_conf_dir / '99-astral-ad-dns.conf', "[main]\ndns=none\n", 0o644)
+                if optional(run, ['systemctl', 'is-active', 'NetworkManager']).strip() == 'active':
+                    optional(run, ['nmcli', 'general', 'reload', 'conf'])
             if request['kind'] == 'join':
                 if request.get('domain_role') == 'RODC':
                     partner_dc = request.get('target_dc_ip') or '127.0.0.1'

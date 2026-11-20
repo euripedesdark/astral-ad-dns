@@ -446,6 +446,11 @@ fn configure_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, include_loca
     let _ = run_cmd_dry("systemctl disable systemd-resolved 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("chattr -i /etc/resolv.conf 2>/dev/null || true", sudo_pass, false);
     let _ = run_cmd_dry("rm -f /etc/resolv.conf", sudo_pass, false);
+    let _ = run_cmd_dry(
+        "sh -c 'if [ -d /etc/NetworkManager/conf.d ]; then printf \"[main]\\ndns=none\\n\" > /etc/NetworkManager/conf.d/99-astral-ad-dns.conf && (nmcli general reload conf 2>/dev/null || true); fi'",
+        sudo_pass,
+        false,
+    );
 
     let search_domain = realm.trim().to_lowercase();
     let mut conf = format!("search {}\\n", search_domain);
@@ -457,7 +462,7 @@ fn configure_dns_resolver(realm: &str, partner_dc_ip: Option<&str>, include_loca
     }
     if include_local { conf.push_str("nameserver 127.0.0.1\\n"); }
 
-    let write_cmd = format!("sh -c 'printf \"{}\" > /etc/resolv.conf && chattr +i /etc/resolv.conf'", conf);
+    let write_cmd = format!("sh -c 'printf \"{}\" > /etc/resolv.conf && chmod 644 /etc/resolv.conf'", conf);
     run_cmd_dry(&write_cmd, sudo_pass, false)
 }
 
