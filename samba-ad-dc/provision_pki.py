@@ -95,10 +95,12 @@ def configure_pki(request,root,run,samba_unit,steps):
             run(['chown','-R','step:step',str(home)])
             unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
             atomic_write(root/'etc/systemd/system/step-ca.service',unit,0o644)
-            run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','step-ca'])
+            run(['systemctl','daemon-reload'])
+            run(['systemctl','enable','step-ca'])
+            run(['systemctl','restart','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         elif ca_config.exists() and parsed.hostname in [request['host_ip'],request['hostname_fqdn']]:
-            run(['systemctl','start','step-ca'])
+            run(['systemctl','restart','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         else:
             ca_root=tls/'trusted-step-root.crt'
@@ -106,12 +108,12 @@ def configure_pki(request,root,run,samba_unit,steps):
             if not re.fullmatch('[a-f0-9]{64}',fingerprint):raise OperationError('Informe o fingerprint SHA256 da CA existente para validar o bootstrap.')
             run(['env','STEPPATH='+temp,cli,'ca','bootstrap','--ca-url',url,'--fingerprint',fingerprint])
             shutil.copy2(Path(temp)/'certs/root_ca.crt',ca_root)
-        for attempt in range(15):
+        for attempt in range(25):
             try:
                 run([cli,'ca','health','--ca-url',url,'--root',str(ca_root)])
                 break
             except OperationError:
-                if attempt==14: raise
+                if attempt==24: raise
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]

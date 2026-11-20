@@ -923,10 +923,12 @@ def configure_pki(request,root,run,samba_unit,steps):
             run(['chown','-R','step:step',str(home)])
             unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
             atomic_write(root/'etc/systemd/system/step-ca.service',unit,0o644)
-            run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','step-ca'])
+            run(['systemctl','daemon-reload'])
+            run(['systemctl','enable','step-ca'])
+            run(['systemctl','restart','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         elif ca_config.exists() and parsed.hostname in [request['host_ip'],request['hostname_fqdn']]:
-            run(['systemctl','start','step-ca'])
+            run(['systemctl','restart','step-ca'])
             ca_root=home/'certs/root_ca.crt'
         else:
             ca_root=tls/'trusted-step-root.crt'
@@ -934,12 +936,12 @@ def configure_pki(request,root,run,samba_unit,steps):
             if not re.fullmatch('[a-f0-9]{64}',fingerprint):raise OperationError('Informe o fingerprint SHA256 da CA existente para validar o bootstrap.')
             run(['env','STEPPATH='+temp,cli,'ca','bootstrap','--ca-url',url,'--fingerprint',fingerprint])
             shutil.copy2(Path(temp)/'certs/root_ca.crt',ca_root)
-        for attempt in range(15):
+        for attempt in range(25):
             try:
                 run([cli,'ca','health','--ca-url',url,'--root',str(ca_root)])
                 break
             except OperationError:
-                if attempt==14: raise
+                if attempt==24: raise
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]
@@ -1118,7 +1120,7 @@ import time
 import uuid
 
 
-SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'chrony', 'chronyd']
+SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'chrony', 'chronyd', 'step-ca']
 
 
 PATHS = ['etc/samba', 'etc/krb5.conf', 'etc/resolv.conf', 'etc/named.conf', 'etc/bind',
@@ -1590,6 +1592,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         prepare_existing_tls(request, root, run, steps)
         level = preflight(request, root, run, old_name, steps)
         verify_partner_gpo(request, run)
+        if request.get('setup_step_ca') and request['kind'] != 'configure' and (request.get('overwrite_existing') or request.get('initialize_ca')):
+            try:
+                run(['systemctl', 'stop', 'step-ca'])
+            except Exception:
+                pass
         if request.get('setup_step_ca') and request.get('initialize_ca') and not (root/'etc/step-ca/config/ca.json').exists():
             preferred=request['ca_port']
             request['ca_port']=allocate_ca_port(root,run,preferred)
@@ -1614,6 +1621,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request['kind'] != 'configure':
             stop_names={'samba','samba-ad-dc','samba-dc','smb','smbd','nmb','nmbd','winbind'}
             if request['domain_role']!='MEMBER': stop_names.update(['named','bind9','systemd-resolved'])
+            if request.get('setup_step_ca'): stop_names.add('step-ca')
             for name, state in states.items():
                 if state['active'] and name in stop_names:
                     run(['systemctl', 'stop', name])

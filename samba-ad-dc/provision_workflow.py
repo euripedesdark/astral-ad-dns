@@ -16,7 +16,7 @@ from provision_system import install_dependencies, configure_firewall, configure
 from provision_pki import configure_pki
 from provision_tls import prepare_existing_tls, install_existing_tls
 
-SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'resolvconf', 'chrony', 'chronyd']
+SERVICES = ['samba', 'samba-ad-dc', 'samba-dc', 'smb', 'smbd', 'nmb', 'nmbd', 'winbind', 'named', 'bind9', 'systemd-resolved', 'resolvconf', 'chrony', 'chronyd', 'step-ca']
 PATHS = ['etc/samba', 'etc/krb5.conf', 'etc/resolv.conf', 'etc/named.conf', 'etc/bind',
          'etc/chrony.conf', 'etc/chrony', 'etc/hostname', 'etc/hosts', 'etc/step-ca', 'etc/astral-ad-dns/tls-renew.json',
          'etc/systemd/system/step-ca.service', 'etc/systemd/system/astral-ad-tls-renew.service',
@@ -434,6 +434,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         prepare_existing_tls(request, root, run, steps)
         level = preflight(request, root, run, old_name, steps)
         verify_partner_gpo(request, run)
+        if request.get('setup_step_ca') and request['kind'] != 'configure' and (request.get('overwrite_existing') or request.get('initialize_ca')):
+            try:
+                run(['systemctl', 'stop', 'step-ca'])
+            except Exception:
+                pass
         if request.get('setup_step_ca') and request.get('initialize_ca') and not (root/'etc/step-ca/config/ca.json').exists():
             preferred=request['ca_port']
             request['ca_port']=allocate_ca_port(root,run,preferred)
@@ -458,6 +463,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         if request['kind'] != 'configure':
             stop_names={'samba','samba-ad-dc','samba-dc','smb','smbd','nmb','nmbd','winbind'}
             if request['domain_role']!='MEMBER': stop_names.update(['named','bind9','systemd-resolved'])
+            if request.get('setup_step_ca'): stop_names.add('step-ca')
             for name, state in states.items():
                 if state['active'] and name in stop_names:
                     run(['systemctl', 'stop', name])

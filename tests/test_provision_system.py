@@ -72,7 +72,7 @@ class SystemTests(unittest.TestCase):
             calls=[]
             def run(args):
                 calls.append(args)
-                if args[:2]==['systemctl','start']:
+                if args[:2] in [['systemctl','start'], ['systemctl','restart']]:
                     raise OperationError('Step-CA unavailable')
                 return ''
             with patch.object(pki.shutil,'which',return_value='/usr/bin/step'),self.assertRaisesRegex(OperationError,'Step-CA unavailable'):
