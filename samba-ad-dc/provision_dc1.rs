@@ -11,24 +11,50 @@ use crate::directory_config::detect_distro_profile;
 use crate::provision_system::{allocate_ca_port, apply_firewall, configure_chrony, configure_hosts};
 use crate::provision_pki::configure_step_ca;
 
+fn default_domain_role() -> String {
+    "DC".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvisionRequest {
+    #[serde(default = "default_domain_role")]
     pub domain_role: String,
+    #[serde(default)]
     pub realm: String,
+    #[serde(default, alias = "dc_netbios_name")]
     pub netbios_name: String,
+    #[serde(default)]
     pub hostname_fqdn: String,
+    #[serde(default, alias = "static_ip")]
     pub host_ip: String,
+    #[serde(default)]
     pub admin_password: String,
     #[serde(default)]
-    pub dns_backend: Option<String>,
+    pub admin_username: Option<String>,
     #[serde(default)]
+    pub dns_backend: Option<String>,
+    #[serde(default, alias = "dns_forwarder")]
     pub forwarder_dns: Option<String>,
+    #[serde(default)]
+    pub upstream_forwarders: Vec<String>,
     #[serde(default)]
     pub setup_step_ca: bool,
     #[serde(default)]
-    pub cert_password: Option<String>,
+    pub initialize_ca: bool,
     #[serde(default)]
+    pub cert_password: Option<String>,
+    #[serde(default, alias = "setup_bind_hybrid")]
     pub bind_dlz: bool,
+    #[serde(default)]
+    pub overwrite_existing: bool,
+    #[serde(default)]
+    pub clean_existing: bool,
+    #[serde(default)]
+    pub rejoin: bool,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub _job_status_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +69,19 @@ pub struct ProvisionResponse {
 pub fn execute_dc1_provision(request: &ProvisionRequest, root: &Path) -> Result<ProvisionResponse, String> {
     let mut steps = Vec::new();
     let profile = detect_distro_profile(root);
+
+    let update_progress = |phase: &str, steps_list: &[String]| {
+        if let Some(status_path) = request._job_status_path.as_deref() {
+            let status_json = serde_json::json!({
+                "state": "running",
+                "phase": phase,
+                "steps": steps_list,
+            });
+            let _ = fs::write(status_path, status_json.to_string());
+        }
+    };
+
+    update_progress("preflight", &steps);
 
     // 1. Configure Hostname and Hosts
     configure_hosts(root, &request.hostname_fqdn, &request.host_ip)?;
