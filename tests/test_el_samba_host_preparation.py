@@ -24,6 +24,7 @@ class HostPreparationTests(unittest.TestCase):
             ("almalinux","10",True),("rocky","9",True),
             ("rhel","10",True),("fedora","44",False),
             ("fedora","45",False),("arch","",False),
+            ("ubuntu","24",False),
         ]:
             with self.subTest(distro=distro,ver=ver):
                 text=f'ID={distro}\nVERSION_ID="{ver}.0"\n'
@@ -86,7 +87,7 @@ class HostPreparationTests(unittest.TestCase):
         self.assertFalse(any(cmd[0]=="install" and cmd[-1]=="/etc/yum.repos.d/tissamba.repo" for cmd,_ in commands))
 
     def test_fedora_and_arch_make_no_changes(self):
-        for distro in ("fedora","arch"):
+        for distro in ("fedora","arch","ubuntu"):
             release=self.make_release(f"ID={distro}\nVERSION_ID=45\n")
             with patch.object(deploy,"run_cmd") as run,patch.object(deploy,"log_success"):
                 deploy.prepare_ad_packages(release)

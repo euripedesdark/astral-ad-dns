@@ -70,7 +70,8 @@ For full distribution prerequisites and configuration details, refer to your lan
 By default, always use the `--skip-git` flag when deploying on servers to ensure the script executes purely local operations without requesting Git credentials or attempting a remote push:
 
 ```bash
-# 1. Prepare distribution packages (EL10, EL9, Fedora, Arch)
+# 1. Prepare distribution packages (Debian 12/13, EL10, EL9)
+# Fedora, Arch Linux, and Ubuntu use their official distribution repositories directly
 python3 deploy_ad_dns.py --prepare-ad-only
 
 # 2. Automated complete build, installation to /opt/astral-ad-dns and systemd startup (WITHOUT Git push)
@@ -84,8 +85,8 @@ python3 deploy_ad_dns.py --prepare-ad --skip-git
 ```
 
 > **FAQ — Does the Web Wizard install Samba packages automatically?**
-> - **Fedora, Debian, Ubuntu, and Arch Linux**: **YES**. Missing packages are detected and installed directly by the web wizard using the native package manager (`dnf`, `apt`, `pacman`).
-> - **RHEL, AlmaLinux, and Rocky Linux (EL9/EL10)**: Red Hat does **not** include Samba Active Directory packages (`samba-dc`) in default BaseOS/AppStream repositories. Therefore, on Enterprise Linux, run `python3 deploy_ad_dns.py --prepare-ad-only` first to configure the Tranquil IT GPG repository and CRB/EPEL. Once added, the web wizard can install and manage packages seamlessly.
+> - **Fedora, Arch Linux, and Ubuntu**: **YES**. They use their official distribution packages directly (no third-party repository required). Missing packages are installed using the native package manager (`dnf`, `pacman`, `apt`).
+> - **Debian (12/13) and Enterprise Linux (RHEL, AlmaLinux, Rocky Linux EL9/EL10)**: These distributions require the Tranquil IT Samba Active Directory packages (`samba-ad-dc` / `samba-dc`) compiled specifically for Domain Controller operations. Run `python3 deploy_ad_dns.py --prepare-ad-only` first to configure the official Tranquil IT GPG repository (and CRB/EPEL on EL). Once added, the web wizard can install and manage packages seamlessly.
 
 ---
 

@@ -16,6 +16,10 @@ path = "samba-ad-dc/provisioner.rs"
 name = "dns_manager"
 path = "dns/dns_manager.rs"
 
+[[bin]]
+name = "astral-ad-ops"
+path = "samba-ad-dc/ad_operations.rs"
+
 [dependencies]
 jsonwebtoken = { version = "11.1", features = ["rust_crypto"] }
 tokio = { version = "1", features = ["full"] }

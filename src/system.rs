@@ -529,6 +529,52 @@ mod tests {
 
 /// Locate the operation helper beside the installed binary or in the source tree.
 pub fn run_ad_operation_value(operation: &str, request: &serde_json::Value, sudo: Option<&str>) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    // 1. Look for native Rust binary first (astral-ad-ops)
+    let mut rust_candidates = Vec::new();
+    if let Ok(directory) = std::env::var("ASTRAL_SCRIPTS_DIR") {
+        rust_candidates.push(std::path::PathBuf::from(directory).join("astral-ad-ops"));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            rust_candidates.push(directory.join("astral-ad-ops"));
+        }
+    }
+    rust_candidates.push(std::path::PathBuf::from("/opt/astral-ad-dns/astral-ad-ops"));
+    rust_candidates.push(std::path::PathBuf::from("target/release/astral-ad-ops"));
+    rust_candidates.push(std::path::PathBuf::from("target/debug/astral-ad-ops"));
+
+    if let Some(rust_bin) = rust_candidates.into_iter().find(|p| p.is_file()) {
+        let mut command = if unsafe { libc::geteuid() } != 0 && sudo.is_some() {
+            let mut cmd = Command::new("sudo");
+            cmd.args(["-S", "-p", "", "--", rust_bin.to_str().unwrap()]);
+            cmd
+        } else {
+            Command::new(rust_bin)
+        };
+        command.arg(operation).arg("--request-stdin")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        if let Some(mut input) = child.stdin.take() {
+            if unsafe { libc::geteuid() } != 0 {
+                if let Some(password) = sudo { writeln!(input, "{}", password).map_err(|e| e.to_string())?; }
+            }
+            input.write_all(request.to_string().as_bytes()).map_err(|e| e.to_string())?;
+        }
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let value: serde_json::Value = serde_json::from_str(stdout_str.trim()).map_err(|_| {
+            format!("Falha ao executar operação via Rust (astral-ad-ops): {}", String::from_utf8_lossy(&output.stderr))
+        })?;
+        if !output.status.success() || value["success"] != true {
+            return Err(value["error"].as_str().unwrap_or("Falha na operação AD/DNS via Rust").to_string());
+        }
+        return Ok(value);
+    }
+
+    // 2. Fallback to Python ad_operations.py
     let mut candidates = Vec::new();
     if let Ok(directory) = std::env::var("ASTRAL_SCRIPTS_DIR") {
         candidates.push(std::path::PathBuf::from(directory).join("ad_operations.py"));
@@ -539,9 +585,7 @@ pub fn run_ad_operation_value(operation: &str, request: &serde_json::Value, sudo
         }
     }
     candidates.push(std::path::PathBuf::from("samba-ad-dc/ad_operations.py"));
-    let script = candidates.into_iter().find(|p| p.is_file()).ok_or("Helper ad_operations.py não instalado; atualize também samba-ad-dc/.")?;
-    use std::io::Write;
-    use std::process::Stdio;
+    let script = candidates.into_iter().find(|p| p.is_file()).ok_or("Helper astral-ad-ops ou ad_operations.py não encontrado; atualize o pacote.")?;
     let mut command = if unsafe { libc::geteuid() } != 0 && sudo.is_some() {
         let mut cmd = Command::new("sudo");
         cmd.args(["-S", "-p", "", "--", "python3"]);

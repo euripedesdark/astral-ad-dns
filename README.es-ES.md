@@ -54,17 +54,21 @@ python3 deploy_ad_dns.py --prepare-ad-only
 * **RHEL 9 / AlmaLinux 9 / Rocky Linux 9 (EL9):**
   - Importa la clave `RPM-GPG-KEY-TISSAMBA-9` y el repositorio `https://samba.tranquil.it/redhat9/samba-4.24/`.
   - Habilita CRB y EPEL 9.
+* **Debian 12 (Bookworm) / Debian 13 (Trixie):**
+  - Importa la clave GPG oficial Tranquil IT en `/usr/share/keyrings/tissamba.gpg` (`https://samba.tranquil.it/tissamba-pubkey.gpg`).
+  - Habilita el repositorio oficial Tranquil IT: `deb [signed-by=/usr/share/keyrings/tissamba.gpg] https://samba.tranquil.it/debian/samba-4.24/ $(lsb_release -cs) main`.
+  - Instala los paquetes especializados de Samba AD DC: `samba`, `samba-ad-dc`, `winbind`, `libnss-winbind`, `krb5-user`, `smbclient`, `ldb-tools`, `python3-samba`, `bind9`, `bind9utils`, `chrony`.
 * **Fedora 44 / 45:**
-  - Emplea los paquetes nativos de la distribución (`dnf install -y samba samba-dc bind bind-utils chrony krb5-workstation`).
+  - Emplea los paquetes oficiales nativos de la distribución (`dnf install -y samba samba-dc bind bind-utils chrony krb5-workstation`). No requiere repositorios de terceros.
 * **Arch Linux:**
-  - Instalación mediante pacman: `pacman -S --needed samba bind chrony krb5`.
-* **Debian 12 (Bookworm) / Ubuntu 24.04 LTS:**
-  - Instalación mediante apt: `apt-get install -y samba winbind krb5-user bind9 bind9utils chrony ldb-tools`.
+  - Instalación oficial mediante pacman: `pacman -S --needed samba bind chrony krb5`. No requiere repositorios de terceros.
+* **Ubuntu 24.04 LTS:**
+  - Emplea los paquetes oficiales nativos de la distribución (`apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user bind9 bind9utils chrony ldb-tools`). No debe utilizar paquetes Tranquil IT.
 
 > ### ❓ Pregunta Frecuente: ¿El asistente web instala los paquetes de Samba automáticamente?
 > **SÍ, el asistente web cuenta con una rutina de instalación automática de dependencias (`install_dependencies`), pero considere los requisitos de su distribución:**
-> - **Fedora, Debian, Ubuntu y Arch Linux**: Los paquetes de Samba Active Directory (`samba`, `samba-dc`, etc.) están disponibles de forma nativa en los repositorios predeterminados. El asistente web detecta paquetes faltantes y los instala automáticamente mediante el gestor del sistema (`dnf`, `apt`, `pacman`).
-> - **RHEL 9/10, AlmaLinux 9/10 y Rocky Linux 9/10**: Red Hat **no incluye el paquete de Controlador de Dominio (`samba-dc`)** en los repositorios oficiales estándar (BaseOS/AppStream). En Enterprise Linux, si abre el asistente sin configurar el repositorio previamente, `dnf` fallará indicando que `samba-dc` no existe. Para evitar esto, ejecute previamente:
+> - **Fedora, Arch Linux y Ubuntu**: Utilizan directamente los paquetes oficiales de sus repositorios del sistema (sin repositorios de terceros). El asistente web detecta paquetes faltantes y los instala automáticamente mediante el gestor nativo (`dnf`, `pacman`, `apt`).
+> - **Debian (12/13) y Enterprise Linux (RHEL 9/10, AlmaLinux 9/10, Rocky Linux 9/10)**: Estas distribuciones requieren los paquetes especializados de Controlador de Dominio (`samba-ad-dc` / `samba-dc`) proporcionados por Tranquil IT. Ejecute previamente:
 >   ```bash
 >   python3 deploy_ad_dns.py --prepare-ad-only
 >   ```
