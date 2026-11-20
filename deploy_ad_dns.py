@@ -250,7 +250,8 @@ def detect_host_distribution(os_release="/etc/os-release"):
     distro = values.get("ID", "").lower()
     like = values.get("ID_LIKE", "").lower().split()
     major = values.get("VERSION_ID", "").split(".")[0]
-    if distro in ("fedora", "arch", "archlinux", "ubuntu"):
+    is_suse = distro.startswith("opensuse") or distro in ("sles", "sled", "suse") or "suse" in like
+    if distro in ("fedora", "arch", "archlinux", "ubuntu") or is_suse:
         return distro, major, False
     is_el = distro in ("rhel", "almalinux", "rocky", "centos", "ol", "oracle")
     is_el = is_el or "rhel" in like or "centos" in like
@@ -260,7 +261,8 @@ def detect_host_distribution(os_release="/etc/os-release"):
 def prepare_ad_packages(os_release="/etc/os-release"):
     """Opt-in host setup before AD provisioning; never changes an existing DC."""
     distro, major, is_el = detect_host_distribution(os_release)
-    if distro in ("fedora", "arch", "archlinux", "ubuntu"):
+    is_suse = distro.startswith("opensuse") or distro in ("sles", "sled", "suse")
+    if distro in ("fedora", "arch", "archlinux", "ubuntu") or is_suse:
         log_success(f"{distro} {major}: utiliza os repositórios oficiais da distribuição (não requer pacotes Tranquil IT).")
         return
     if distro == "debian":
@@ -576,8 +578,8 @@ def check_prerequisites():
 def main():
     parser = argparse.ArgumentParser(description="Compilação, Deploy em Sistema e Sync Git do Astral AD & DNS")
     parser.add_argument("--repo-dir", default=REPO_DIR, help="Diretório raiz do repositório astral-ad-dns")
-    parser.add_argument("--prepare-ad", action="store_true", help="Preparar pacotes Samba AD em Debian (12/13) e EL9/EL10 (Tranquil IT); Fedora, Arch e Ubuntu usam pacotes oficiais; requer sudo.")
-    parser.add_argument("--prepare-ad-only", action="store_true", help="Preparar apenas o host Samba AD em Debian (12/13) ou EL9/EL10 (Tranquil IT); Fedora, Arch e Ubuntu usam pacotes oficiais; não executa build/deploy.")
+    parser.add_argument("--prepare-ad", action="store_true", help="Preparar pacotes Samba AD em Debian (12/13) e EL9/EL10 (Tranquil IT); Fedora, Arch, Ubuntu e openSUSE/SUSE usam pacotes oficiais; requer sudo.")
+    parser.add_argument("--prepare-ad-only", action="store_true", help="Preparar apenas o host Samba AD em Debian (12/13) ou EL9/EL10 (Tranquil IT); Fedora, Arch, Ubuntu e openSUSE/SUSE usam pacotes oficiais; não executa build/deploy.")
     parser.add_argument("--skip-tests", action="store_true", help="Pular execução de testes unitários do cargo")
     parser.add_argument("--skip-git", action="store_true", help="Pular commit e push para o repositório Git")
     parser.add_argument("--commit-msg", help="Mensagem customizada para o commit no Git")

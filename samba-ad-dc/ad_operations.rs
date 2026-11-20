@@ -49,6 +49,17 @@ pub fn configure_bind(_request: &Value, root: &Path) -> Result<Vec<String>, Stri
         steps.push("AppArmor: permissões locais do BIND atualizadas.".to_string());
     }
 
+    // 3.1 SUSE systemd sandboxing override for named
+    if profile.family == "suse" {
+        let override_dir = root.join("etc/systemd/system/named.service.d");
+        let _ = fs::create_dir_all(&override_dir);
+        let override_file = override_dir.join("override.conf");
+        let dropin = "[Service]\nReadWritePaths=/var/lib/named /run/named /var/log/named /var/lib/samba/bind-dns\n";
+        let _ = atomic_write(&override_file, dropin.as_bytes(), 0o644);
+        let _ = Command::new("systemctl").arg("daemon-reload").output();
+        steps.push("SUSE systemd: permissões de namespace para named configuradas.".to_string());
+    }
+
     // 4. Restart and enable BIND service
     let s_res = Command::new("systemctl").args(["restart", &profile.bind_service]).output();
     if let Ok(res) = s_res {

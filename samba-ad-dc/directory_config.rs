@@ -100,6 +100,22 @@ pub fn detect_distro_profile(root: &Path) -> DistroProfile {
             "/etc/named.conf",
             &["samba", "bind", "chrony", "krb5"],
         )
+    } else if id.starts_with("opensuse") || id == "sles" || id == "sled" || id_like.contains("suse") {
+        DistroProfile::new(
+            "suse",
+            "samba-ad-dc",
+            &["smb", "nmb", "winbind"],
+            "named",
+            "named",
+            "named",
+            "/var/lib/named",
+            "/etc/named.conf",
+            "/etc/named.conf",
+            &[
+                "samba", "samba-ad-dc", "samba-client", "samba-winbind",
+                "krb5-client", "bind", "bind-utils", "chrony",
+            ],
+        )
     } else {
         // RedHat / Fedora / CentOS / AlmaLinux / Rocky Linux
         DistroProfile::new(

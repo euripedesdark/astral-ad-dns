@@ -150,6 +150,7 @@ def detect_distro_profile(root=Path('/')):
 
     is_debian = distro_id in ('debian', 'ubuntu') or 'debian' in id_like or 'ubuntu' in id_like or (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir()
     is_arch = distro_id in ('arch', 'archlinux', 'manjaro') or 'arch' in id_like or (root / 'etc/arch-release').exists()
+    is_suse = distro_id in ('opensuse', 'opensuse-leap', 'opensuse-tumbleweed', 'sles', 'sled', 'suse') or 'suse' in id_like or (root / 'etc/SuSE-release').exists()
 
     if is_debian:
         return DistroProfile(
@@ -165,6 +166,22 @@ def detect_distro_profile(root=Path('/')):
             chrony_user='_chrony',
             chrony_group='_chrony',
             chrony_service='chrony',
+            security_system='apparmor',
+        )
+    elif is_suse:
+        return DistroProfile(
+            family='suse',
+            samba_unit='samba-ad-dc',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/lib/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
             security_system='apparmor',
         )
     elif is_arch:

@@ -30,7 +30,8 @@ pub fn detect_distribution(os_release_path: &Path) -> (String, String, bool) {
     let version = data.get("VERSION_ID").cloned().unwrap_or_default();
     let major = version.split('.').next().unwrap_or("").to_string();
 
-    if distro == "fedora" || distro == "arch" || distro == "archlinux" || distro == "ubuntu" {
+    let is_suse = distro.starts_with("opensuse") || distro == "sles" || distro == "sled" || like.contains("suse");
+    if distro == "fedora" || distro == "arch" || distro == "archlinux" || distro == "ubuntu" || is_suse {
         return (distro, major, false);
     }
 
@@ -45,7 +46,8 @@ pub fn prepare_host_packages(root: &Path) -> Result<String, String> {
     let os_release = root.join("etc/os-release");
     let (distro, major, is_el) = detect_distribution(&os_release);
 
-    if distro == "fedora" || distro == "arch" || distro == "archlinux" || distro == "ubuntu" {
+    let is_suse = distro.starts_with("opensuse") || distro == "sles" || distro == "sled" || distro.contains("suse");
+    if distro == "fedora" || distro == "arch" || distro == "archlinux" || distro == "ubuntu" || is_suse {
         let msg = format!("{}: utiliza repositórios oficiais da distribuição (não requer pacotes Tranquil IT).", distro);
         println!("[OK] {}", msg);
         return Ok(msg);

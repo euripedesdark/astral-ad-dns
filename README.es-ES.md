@@ -62,12 +62,29 @@ python3 deploy_ad_dns.py --prepare-ad-only
   - Emplea los paquetes oficiales nativos de la distribución (`dnf install -y samba samba-dc bind bind-utils chrony krb5-workstation`). No requiere repositorios de terceros.
 * **Arch Linux:**
   - Instalación oficial mediante pacman: `pacman -S --needed samba bind chrony krb5`. No requiere repositorios de terceros.
+* **openSUSE Leap 15.x / Tumbleweed / SUSE Linux Enterprise (SLES):**
+  - Utiliza los paquetes oficiales nativos de la distribución (`zypper install -y samba samba-ad-dc samba-client samba-winbind krb5-client bind bind-utils chrony`). No requiere repositorios de Tranquil IT.
+  - Servicio AD DC: `samba-ad-dc.service` (unidades conflictivas desactivadas: `smb`, `nmb`, `winbind`).
+  - DNS BIND 9: servicio `named.service` con anulación systemd (`named.service.d/override.conf` con `ReadWritePaths`) y reglas AppArmor para `/var/lib/samba/bind-dns`.
 * **Ubuntu 24.04 LTS:**
-  - Emplea los paquetes oficiales nativos de la distribución (`apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user bind9 bind9utils chrony ldb-tools`). No debe utilizar paquetes Tranquil IT.
+  - Emplea los paquetes oficiales nativos de la distribución (Samba 4.19, emplea los mismos paquetes que Debian: `apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user smbclient ldb-tools python3-samba bind9 bind9utils chrony`). No debe utilizar paquetes Tranquil IT.
+
+### Matriz Comparativa: Daemons, Servicios y Seguridad
+
+| Característica / Rol | Fedora (44/45) | openSUSE / SLES | Debian (12/13) | Ubuntu 24.04 LTS | RHEL / EL (9/10) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Servicio AD DC** | `samba.service` (samba-dc) | `samba-ad-dc.service` | `samba-ad-dc.service` | `samba-ad-dc.service` | `samba.service` (samba-dc) |
+| **Servicios Miembro/File** | `smb`, `nmb`, `winbind` | `smb`, `nmb`, `winbind` | `smbd`, `nmbd`, `winbind` | `smbd`, `nmbd`, `winbind` | `smb`, `nmb`, `winbind` |
+| **Gestor de Paquetes** | `dnf` | `zypper` | `apt` | `apt` | `dnf` |
+| **Repositorio AD DC** | Oficial Fedora | Oficial SUSE / OBS | Tranquil IT Samba 4.24 | Oficial Ubuntu (4.19) | Tranquil IT + CRB/EPEL |
+| **Paquete Kerberos** | `krb5-workstation` | `krb5-client` | `krb5-user` | `krb5-user` | `krb5-workstation` |
+| **Servicio BIND DNS** | `named.service` | `named.service` | `named.service` (`bind9`) | `named.service` (`bind9`) | `named.service` |
+| **Directorio BIND** | `/var/named` | `/var/lib/named` | `/var/cache/bind` | `/var/cache/bind` | `/var/named` |
+| **Seguridad MAC** | SELinux | AppArmor | AppArmor | AppArmor | SELinux |
 
 > ### ❓ Pregunta Frecuente: ¿El asistente web instala los paquetes de Samba automáticamente?
 > **SÍ, el asistente web cuenta con una rutina de instalación automática de dependencias (`install_dependencies`), pero considere los requisitos de su distribución:**
-> - **Fedora, Arch Linux y Ubuntu**: Utilizan directamente los paquetes oficiales de sus repositorios del sistema (sin repositorios de terceros). El asistente web detecta paquetes faltantes y los instala automáticamente mediante el gestor nativo (`dnf`, `pacman`, `apt`).
+> - **Fedora, openSUSE / SUSE, Arch Linux y Ubuntu**: Utilizan directamente los paquetes oficiales de sus repositorios del sistema (sin repositorios de terceros). El asistente web detecta paquetes faltantes y los instala automáticamente mediante el gestor nativo (`dnf`, `zypper`, `pacman`, `apt`).
 > - **Debian (12/13) y Enterprise Linux (RHEL 9/10, AlmaLinux 9/10, Rocky Linux 9/10)**: Estas distribuciones requieren los paquetes especializados de Controlador de Dominio (`samba-ad-dc` / `samba-dc`) proporcionados por Tranquil IT. Ejecute previamente:
 >   ```bash
 >   python3 deploy_ad_dns.py --prepare-ad-only

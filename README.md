@@ -71,7 +71,7 @@ By default, always use the `--skip-git` flag when deploying on servers to ensure
 
 ```bash
 # 1. Prepare distribution packages (Debian 12/13, EL10, EL9)
-# Fedora, Arch Linux, and Ubuntu use their official distribution repositories directly
+# Fedora, openSUSE / SLES, Arch Linux, and Ubuntu use their official distribution repositories directly
 python3 deploy_ad_dns.py --prepare-ad-only
 
 # 2. Automated complete build, installation to /opt/astral-ad-dns and systemd startup (WITHOUT Git push)
@@ -85,7 +85,7 @@ python3 deploy_ad_dns.py --prepare-ad --skip-git
 ```
 
 > **FAQ — Does the Web Wizard install Samba packages automatically?**
-> - **Fedora, Arch Linux, and Ubuntu**: **YES**. They use their official distribution packages directly (no third-party repository required). Missing packages are installed using the native package manager (`dnf`, `pacman`, `apt`).
+> - **Fedora, openSUSE / SUSE, Arch Linux, and Ubuntu**: **YES**. They use their official distribution packages directly (no third-party repository required). Missing packages are installed using the native package manager (`dnf`, `zypper`, `pacman`, `apt`). On Ubuntu 24.04 LTS, packages match Debian package names natively (`samba-ad-dc`, `krb5-user`, etc.) without Tranquil IT.
 > - **Debian (12/13) and Enterprise Linux (RHEL, AlmaLinux, Rocky Linux EL9/EL10)**: These distributions require the Tranquil IT Samba Active Directory packages (`samba-ad-dc` / `samba-dc`) compiled specifically for Domain Controller operations. Run `python3 deploy_ad_dns.py --prepare-ad-only` first to configure the official Tranquil IT GPG repository (and CRB/EPEL on EL). Once added, the web wizard can install and manage packages seamlessly.
 
 ---

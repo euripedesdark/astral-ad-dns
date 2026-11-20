@@ -62,12 +62,29 @@ python3 deploy_ad_dns.py --prepare-ad-only
   - Uses native official distribution packages (`dnf install -y samba samba-dc bind bind-utils chrony krb5-workstation`). No third-party repository required.
 * **Arch Linux:**
   - Official installation via pacman: `pacman -S --needed samba bind chrony krb5`. No third-party repository required.
+* **openSUSE Leap 15.x / Tumbleweed / SUSE Linux Enterprise (SLES):**
+  - Uses native official distribution packages (`zypper install -y samba samba-ad-dc samba-client samba-winbind krb5-client bind bind-utils chrony`). Does not require Tranquil IT repository.
+  - AD DC Service: `samba-ad-dc.service` (conflicting units masked: `smb`, `nmb`, `winbind`).
+  - DNS Service: BIND 9 (`named.service`) with systemd sandbox override (`named.service.d/override.conf` with `ReadWritePaths`) and AppArmor profile for `/var/lib/samba/bind-dns`.
 * **Ubuntu 24.04 LTS:**
-  - Uses native official distribution packages (`apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user bind9 bind9utils chrony ldb-tools`). Must not use Tranquil IT packages.
+  - Uses native official distribution packages (Samba 4.19, packages match Debian: `apt-get install -y samba samba-ad-dc winbind libnss-winbind krb5-user smbclient ldb-tools python3-samba bind9 bind9utils chrony`). Must not use Tranquil IT packages.
+
+### Comparative Matrix: Daemons, Services and Security
+
+| Feature / Role | Fedora (44/45) | openSUSE / SLES | Debian (12/13) | Ubuntu 24.04 LTS | RHEL / EL (9/10) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **AD DC Service** | `samba.service` (samba-dc) | `samba-ad-dc.service` | `samba-ad-dc.service` | `samba-ad-dc.service` | `samba.service` (samba-dc) |
+| **Member/File Services** | `smb`, `nmb`, `winbind` | `smb`, `nmb`, `winbind` | `smbd`, `nmbd`, `winbind` | `smbd`, `nmbd`, `winbind` | `smb`, `nmb`, `winbind` |
+| **Package Manager** | `dnf` | `zypper` | `apt` | `apt` | `dnf` |
+| **AD DC Repository** | Official Fedora | Official SUSE / OBS | Tranquil IT Samba 4.24 | Official Ubuntu (4.19) | Tranquil IT + CRB/EPEL |
+| **Kerberos Package** | `krb5-workstation` | `krb5-client` | `krb5-user` | `krb5-user` | `krb5-workstation` |
+| **BIND Service** | `named.service` | `named.service` | `named.service` (`bind9`) | `named.service` (`bind9`) | `named.service` |
+| **BIND Directory** | `/var/named` | `/var/lib/named` | `/var/cache/bind` | `/var/cache/bind` | `/var/named` |
+| **MAC Security** | SELinux | AppArmor | AppArmor | AppArmor | SELinux |
 
 > ### ❓ FAQ: Does the Web Wizard install Samba packages automatically?
 > **YES, the web wizard includes an automated dependency installation routine (`install_dependencies`), but note your distribution requirements:**
-> - **Fedora, Arch Linux, and Ubuntu**: They use their official distribution repositories directly without third-party packages. The web wizard detects missing tools and installs them automatically via the native package manager (`dnf`, `pacman`, `apt`).
+> - **Fedora, openSUSE / SUSE, Arch Linux, and Ubuntu**: They use their official distribution repositories directly without third-party packages. The web wizard detects missing tools and installs them automatically via the native package manager (`dnf`, `zypper`, `pacman`, `apt`).
 > - **Debian (12/13) and Enterprise Linux (RHEL 9/10, AlmaLinux 9/10, Rocky Linux 9/10)**: These distributions require specialized Domain Controller packages (`samba-ad-dc` / `samba-dc`) provided by the Tranquil IT repository. To prepare your server, run beforehand:
 >   ```bash
 >   python3 deploy_ad_dns.py --prepare-ad-only
