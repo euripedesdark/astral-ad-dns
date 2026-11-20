@@ -301,13 +301,6 @@ def check_bind_runtime(root, main, service, run, port=5353):
     for line in listeners.splitlines():
         if not line.strip() or re.search(r'"named(?:-sdb)?"', line):
             continue
-        if '"avahi-daemon"' in line:
-            try:
-                run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                continue
-            except (OperationError, FileNotFoundError):
-                pass
         fields = line.split()
         if len(fields) < 5:
             raise OperationError('Nao foi possivel identificar o endereco local do listener '+str(port)+': ' + line)
@@ -513,24 +506,25 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         profile = detect_distro_profile(root)
         if profile.family == 'debian':
             configure_bind_defaults(root)
-            try:
-                run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
-            except (OperationError, FileNotFoundError):
-                pass
-            cache_dir = root / profile.bind_cache.lstrip('/')
-            if cache_dir.is_dir():
+            if root == Path('/'):
                 try:
-                    run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
+                    run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                    run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
                 except (OperationError, FileNotFoundError):
                     pass
-            rndc_key = root / 'etc/bind/rndc.key'
-            if rndc_key.is_file():
-                try:
-                    run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
-                    run(['chmod', '640', str(rndc_key)])
-                except (OperationError, FileNotFoundError):
-                    pass
+                cache_dir = root / profile.bind_cache.lstrip('/')
+                if cache_dir.is_dir():
+                    try:
+                        run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
+                    except (OperationError, FileNotFoundError):
+                        pass
+                rndc_key = root / 'etc/bind/rndc.key'
+                if rndc_key.is_file():
+                    try:
+                        run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
+                        run(['chmod', '640', str(rndc_key)])
+                    except (OperationError, FileNotFoundError):
+                        pass
         check_bind_runtime(root, main, service, run, port)
         # named/bind runs unprivileged: do not inherit an unreadable
         # root-only configuration mode from a previous deployment.
