@@ -627,6 +627,12 @@ TOOLS = {
  'hostname': ['hostname','hostname','inetutils','hostname'],
 }
 
+PYTHON_MODULE_PACKAGES = {
+    'cryptography': ['python3-cryptography', 'python3-cryptography', 'python-cryptography', 'python3-cryptography'],
+    'markdown': ['python3-markdown', 'python3-markdown', 'python-markdown', 'python3-Markdown'],
+    'dns': ['python3-dns', 'python3-dnspython', 'python-dnspython', 'python3-dnspython'],
+}
+
 
 def install_dependencies(root, run, bind, steps, required_commands=None):
     managers = [('dnf',0),('yum',0),('apt-get',1),('pacman',2),('zypper',3)]
@@ -634,13 +640,21 @@ def install_dependencies(root, run, bind, steps, required_commands=None):
     commands = list(required_commands) if required_commands else [name for name in TOOLS if name not in ['named','named-checkconf','semanage'] or bind]
     if not (root / 'sys/fs/selinux/enforce').exists() and 'semanage' in commands:
         commands.remove('semanage')
+    missing_py = []
+    if selected:
+        _, idx = selected
+        for mod, pkg_list in PYTHON_MODULE_PACKAGES.items():
+            try:
+                __import__(mod)
+            except ImportError:
+                missing_py.append(pkg_list[idx])
     missing = [name for name in commands if not shutil.which(name)]
-    if not missing:
+    if not missing and not missing_py:
         return
     if not selected:
         raise OperationError('Distribuicao sem gerenciador reconhecido. Suportados: dnf/yum, apt, pacman e zypper; nenhuma base sera limpa.')
     manager,index = selected
-    packages = sorted({TOOLS[name][index] for name in missing})
+    packages = sorted({TOOLS[name][index] for name in missing} | set(missing_py))
     policy = root / 'usr/sbin/policy-rc.d'
     saved = policy.read_bytes() if policy.exists() else None
     saved_mode = policy.stat().st_mode & 0o777 if policy.exists() else 0o755
@@ -1548,8 +1562,11 @@ def verify_new_domain_prerequisites(root, run, bind_requested, steps):
             'unidade AD DC compativeis; nao crie unidade systemd apontando para smbd.')
     # Distros can ship binaries without the matching Samba Python modules.
     # The wizard later runs the local directory/GC logic with /usr/bin/python3.
-    run(['/usr/bin/python3','-c',
-         'import samba, ldb; from samba.samdb import SamDB; from samba.credentials import Credentials'])
+    try:
+        run(['/usr/bin/python3','-c',
+             'import samba, ldb, cryptography; from samba.samdb import SamDB; from samba.credentials import Credentials'])
+    except OperationError:
+        install_dependencies(root, run, bind, steps)
     run(['samba-tool','--help'])
     run(['testparm','-s','/dev/null'])
     run(['iptables-save'])
@@ -1615,13 +1632,9 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         manifest['captured_paths'] = [path for path in PATHS if not path.startswith('var/')]
         save_manifest(backup, manifest)
         steps.append('Backup automatico da configuracao anterior: ' + str(backup))
-        if request['kind']=='new':
-            manifest['phase']='dependencies_verified'
-            save_manifest(backup,manifest)
-        else:
-            manifest['phase']='installing_dependencies'
-            save_manifest(backup,manifest)
-            install_dependencies(root,run,request.get('setup_bind_hybrid',False),steps)
+        manifest['phase'] = 'dependencies_verified' if request['kind'] == 'new' else 'installing_dependencies'
+        save_manifest(backup, manifest)
+        install_dependencies(root, run, request.get('setup_bind_hybrid', False), steps)
         config = root / 'etc/samba/smb.conf'
         local_db = (root / 'var/lib/samba/private/sam.ldb').exists()
         old_name, old_realm, identity_source = local_ad_identity(root, run, config)

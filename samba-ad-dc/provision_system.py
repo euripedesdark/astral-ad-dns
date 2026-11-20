@@ -27,6 +27,12 @@ TOOLS = {
  'hostname': ['hostname','hostname','inetutils','hostname'],
 }
 
+PYTHON_MODULE_PACKAGES = {
+    'cryptography': ['python3-cryptography', 'python3-cryptography', 'python-cryptography', 'python3-cryptography'],
+    'markdown': ['python3-markdown', 'python3-markdown', 'python-markdown', 'python3-Markdown'],
+    'dns': ['python3-dns', 'python3-dnspython', 'python-dnspython', 'python3-dnspython'],
+}
+
 
 def install_dependencies(root, run, bind, steps, required_commands=None):
     managers = [('dnf',0),('yum',0),('apt-get',1),('pacman',2),('zypper',3)]
@@ -34,14 +40,22 @@ def install_dependencies(root, run, bind, steps, required_commands=None):
     commands = list(required_commands) if required_commands else [name for name in TOOLS if name not in ['named','named-checkconf','semanage'] or bind]
     if not (root / 'sys/fs/selinux/enforce').exists() and 'semanage' in commands:
         commands.remove('semanage')
+    missing_py = []
+    if selected:
+        _, idx = selected
+        for mod, pkg_list in PYTHON_MODULE_PACKAGES.items():
+            try:
+                __import__(mod)
+            except ImportError:
+                missing_py.append(pkg_list[idx])
     missing = [name for name in commands if not shutil.which(name)]
-    if not missing:
+    if not missing and not missing_py:
         ensure_samba_directories(root)
         return
     if not selected:
         raise OperationError('Distribuicao sem gerenciador reconhecido. Suportados: dnf/yum, apt, pacman e zypper; nenhuma base sera limpa.')
     manager,index = selected
-    packages = sorted({TOOLS[name][index] for name in missing})
+    packages = sorted({TOOLS[name][index] for name in missing} | set(missing_py))
     policy = root / 'usr/sbin/policy-rc.d'
     saved = policy.read_bytes() if policy.exists() else None
     saved_mode = policy.stat().st_mode & 0o777 if policy.exists() else 0o755
