@@ -80,6 +80,15 @@ pub async fn run_diagnostics(State(config): State<Arc<AppConfig>>) -> Json<ApiRe
         || check_service_active("samba-ad-dc", sudo);
     let samba_latency = t0.elapsed().as_millis() as u64;
 
+    let dc_service = if std::path::Path::new("/lib/systemd/system/samba-ad-dc.service").exists()
+        || std::path::Path::new("/usr/lib/systemd/system/samba-ad-dc.service").exists()
+        || std::path::Path::new("/etc/systemd/system/samba-ad-dc.service").exists()
+    {
+        "samba-ad-dc"
+    } else {
+        "samba"
+    };
+
     if samba_active {
         checks.push(DiagnosticItem {
             id: "samba_service".to_string(),
@@ -87,7 +96,7 @@ pub async fn run_diagnostics(State(config): State<Arc<AppConfig>>) -> Json<ApiRe
             name: "Serviço Samba Active Directory".to_string(),
             status: DiagnosticStatus::Operational,
             timestamp: now.clone(),
-            message: "Controlador de domínio Samba AD ativo e respondendo no systemd".to_string(),
+            message: format!("Controlador de domínio Samba AD ({dc_service}) ativo e respondendo no systemd"),
             possible_cause: None,
             recommended_action: None,
             latency_ms: Some(samba_latency),
@@ -99,9 +108,9 @@ pub async fn run_diagnostics(State(config): State<Arc<AppConfig>>) -> Json<ApiRe
             name: "Serviço Samba Active Directory".to_string(),
             status: DiagnosticStatus::Unavailable,
             timestamp: now.clone(),
-            message: "Serviço Samba AD inativo ou não inicializado".to_string(),
+            message: format!("Serviço Samba AD ({dc_service}) inativo ou não inicializado"),
             possible_cause: Some("Serviço parado, erro de configuração no smb.conf ou sam.ldb corrompido".to_string()),
-            recommended_action: Some("Execute 'systemctl status samba' ou inicialize com 'systemctl start samba'".to_string()),
+            recommended_action: Some(format!("Execute 'systemctl status {dc_service}' ou inicialize com 'systemctl start {dc_service}'")),
             latency_ms: Some(samba_latency),
         });
     }

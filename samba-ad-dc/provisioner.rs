@@ -144,9 +144,10 @@ impl DistroProvisioner for DebianProvisioner {
         run_cmd("ln -sf /etc/krb5.conf /var/lib/samba/private/krb5.conf || true")
     }
     fn start_services(&self) -> bool {
-        run_cmd("systemctl stop samba winbind nmbd smbd || true");
-        run_cmd("systemctl disable samba winbind nmbd smbd || true");
-        run_cmd("systemctl mask samba winbind nmbd smbd || true");
+        run_cmd("systemctl stop winbind nmbd smbd || true");
+        run_cmd("systemctl disable winbind nmbd smbd || true");
+        run_cmd("systemctl mask winbind nmbd smbd || true");
+        run_cmd("systemctl unmask samba || true");
         run_cmd("systemctl unmask samba-ad-dc || true");
         run_cmd("systemctl enable --now samba-ad-dc || true");
         true

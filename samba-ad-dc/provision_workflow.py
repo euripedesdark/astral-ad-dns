@@ -11,7 +11,7 @@ import stat
 import tarfile
 import time
 import uuid
-from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders, ensure_samba_directories
+from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders, ensure_samba_directories, detect_distro_profile
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
 from provision_pki import configure_pki
 from provision_tls import prepare_existing_tls, install_existing_tls
@@ -661,10 +661,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             run(['restorecon', '-R', str(root / 'var/lib/samba'), str(config)])
         if request['kind']=='configure':
             configure_ntp(request,root,run,steps)
+        profile = detect_distro_profile(root)
         if request['domain_role'] == 'MEMBER':
             services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
         else:
-            services = [unit(run, ['samba-ad-dc', 'samba', 'samba-dc'])]
+            services = [unit(run, [profile.samba_unit, 'samba-ad-dc', 'samba', 'samba-dc'])]
         directory = str(Path(__file__).with_name('directory_config.py'))
         if request['domain_role'] != 'MEMBER':
             directory_args = ['/usr/bin/python3', directory]
@@ -682,11 +683,12 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 text=re.sub(r'(?im)^\s*'+re.escape(key)+r'\s*=.*$','',text)
                 text=text.replace('[global]','[global]\n    '+key+' = '+value,1)
             atomic_write(config,text,0o644)
-        if 'samba-ad-dc' in services:
-            for conflict in ['samba', 'winbind', 'nmbd', 'smbd']:
-                optional(run, ['systemctl', 'stop', conflict])
-                optional(run, ['systemctl', 'disable', conflict])
-                optional(run, ['systemctl', 'mask', conflict])
+        for conflict in profile.samba_conflicts:
+            optional(run, ['systemctl', 'stop', conflict])
+            optional(run, ['systemctl', 'disable', conflict])
+            optional(run, ['systemctl', 'mask', conflict])
+        optional(run, ['systemctl', 'unmask', profile.samba_unit])
+        optional(run, ['systemctl', 'unmask', 'samba'])
         for name in services:
             run(['systemctl', 'unmask', name])
             run(['systemctl', 'enable', name])

@@ -103,10 +103,106 @@ def validate_archive(path):
             raise OperationError('Backup sem segredos de domínio não é aceito para este fluxo.')
 
 
+class DistroProfile:
+    def __init__(self, family, samba_unit, samba_conflicts, bind_user, bind_group, bind_service,
+                 bind_config_rel, bind_main_rel, bind_work_dir, chrony_user, chrony_group,
+                 chrony_service, security_system):
+        self.family = family
+        self.samba_unit = samba_unit
+        self.samba_conflicts = samba_conflicts
+        self.bind_user = bind_user
+        self.bind_group = bind_group
+        self.bind_service = bind_service
+        self.bind_config_rel = bind_config_rel
+        self.bind_main_rel = bind_main_rel
+        self.bind_work_dir = bind_work_dir
+        self.chrony_user = chrony_user
+        self.chrony_group = chrony_group
+        self.chrony_service = chrony_service
+        self.security_system = security_system
+
+
+def detect_distro_profile(root=Path('/')):
+    os_release = root / 'etc/os-release'
+    distro_id = ''
+    id_like = ''
+    if os_release.exists():
+        try:
+            for line in os_release.read_text(encoding='utf-8').splitlines():
+                if '=' in line and not line.strip().startswith('#'):
+                    k, v = line.split('=', 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'").lower()
+                    if k == 'ID':
+                        distro_id = v
+                    elif k == 'ID_LIKE':
+                        id_like = v
+        except OSError:
+            pass
+    if not distro_id:
+        if (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir():
+            distro_id = 'debian'
+        elif (root / 'etc/arch-release').exists():
+            distro_id = 'arch'
+        elif (root / 'etc/redhat-release').exists() or (root / 'etc/fedora-release').exists():
+            distro_id = 'fedora'
+
+    is_debian = distro_id in ('debian', 'ubuntu') or 'debian' in id_like or 'ubuntu' in id_like or (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir()
+    is_arch = distro_id in ('arch', 'archlinux', 'manjaro') or 'arch' in id_like or (root / 'etc/arch-release').exists()
+
+    if is_debian:
+        return DistroProfile(
+            family='debian',
+            samba_unit='samba-ad-dc',
+            samba_conflicts=['smbd', 'nmbd', 'winbind'],
+            bind_user='bind',
+            bind_group='bind',
+            bind_service='named',
+            bind_config_rel='etc/bind/named.conf.options',
+            bind_main_rel='etc/bind/named.conf',
+            bind_work_dir='/var/cache/bind',
+            chrony_user='_chrony',
+            chrony_group='_chrony',
+            chrony_service='chrony',
+            security_system='apparmor',
+        )
+    elif is_arch:
+        return DistroProfile(
+            family='arch',
+            samba_unit='samba',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
+            security_system='none',
+        )
+    else:  # RedHat / Fedora / Alma / Rocky / CentOS / default
+        return DistroProfile(
+            family='redhat',
+            samba_unit='samba',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
+            security_system='selinux',
+        )
+
+
 def bind_paths(root):
-    if (root / 'etc/bind').is_dir() or (root / 'etc/debian_version').exists():
-        return root / 'etc/bind/named.conf.options', root / 'etc/bind/named.conf', 'bind9', '/var/cache/bind'
-    return root / 'etc/named.conf', root / 'etc/named.conf', 'named', '/var/named'
+    profile = detect_distro_profile(root)
+    return root / profile.bind_config_rel, root / profile.bind_main_rel, profile.bind_service, profile.bind_work_dir
 
 
 def normalize_forwarders(values):
@@ -407,13 +503,14 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     apparmor_undo = []
     apparmor_steps = []
     try:
+        profile = detect_distro_profile(root)
         check_bind_runtime(root, main, service, run, port)
-        if service == 'bind9':
+        if profile.family == 'debian':
             configure_bind_defaults(root)
-        # named runs unprivileged on Arch: do not inherit an unreadable
+        # named/bind runs unprivileged: do not inherit an unreadable
         # root-only configuration mode from a previous deployment.
         atomic_write(staged, candidate, 0o640)
-        run(['chown', 'root:' + ('bind' if service == 'bind9' else 'named'), str(staged)])
+        run(['chown', f'root:{profile.bind_group}', str(staged)])
         run(['named-checkconf', str(staged)])
         try:
             was_active = run(['systemctl', 'is-active', service]).strip() == 'active'
@@ -428,8 +525,10 @@ def configure_bind(request, root=Path('/'), run=checked_run):
         run(['named-checkconf', str(main)])
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
-        selinux_steps = prepare_bind_selinux(root, run, selinux_undo, port)
-        apparmor_steps = prepare_bind_apparmor(root, run, apparmor_undo)
+        if profile.security_system == 'selinux':
+            selinux_steps = prepare_bind_selinux(root, run, selinux_undo, port)
+        elif profile.security_system == 'apparmor':
+            apparmor_steps = prepare_bind_apparmor(root, run, apparmor_undo)
         run(['systemctl', 'restart', service])
         wait_bind_ready(run, service, port=port)
         run(['systemctl', 'enable', service])

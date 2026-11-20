@@ -113,10 +113,106 @@ def atomic_write(path, text, mode=0o600):
         Path(name).unlink(missing_ok=True)
 
 
+class DistroProfile:
+    def __init__(self, family, samba_unit, samba_conflicts, bind_user, bind_group, bind_service,
+                 bind_config_rel, bind_main_rel, bind_work_dir, chrony_user, chrony_group,
+                 chrony_service, security_system):
+        self.family = family
+        self.samba_unit = samba_unit
+        self.samba_conflicts = samba_conflicts
+        self.bind_user = bind_user
+        self.bind_group = bind_group
+        self.bind_service = bind_service
+        self.bind_config_rel = bind_config_rel
+        self.bind_main_rel = bind_main_rel
+        self.bind_work_dir = bind_work_dir
+        self.chrony_user = chrony_user
+        self.chrony_group = chrony_group
+        self.chrony_service = chrony_service
+        self.security_system = security_system
+
+
+def detect_distro_profile(root=Path('/')):
+    os_release = root / 'etc/os-release'
+    distro_id = ''
+    id_like = ''
+    if os_release.exists():
+        try:
+            for line in os_release.read_text(encoding='utf-8').splitlines():
+                if '=' in line and not line.strip().startswith('#'):
+                    k, v = line.split('=', 1)
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'").lower()
+                    if k == 'ID':
+                        distro_id = v
+                    elif k == 'ID_LIKE':
+                        id_like = v
+        except OSError:
+            pass
+    if not distro_id:
+        if (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir():
+            distro_id = 'debian'
+        elif (root / 'etc/arch-release').exists():
+            distro_id = 'arch'
+        elif (root / 'etc/redhat-release').exists() or (root / 'etc/fedora-release').exists():
+            distro_id = 'fedora'
+
+    is_debian = distro_id in ('debian', 'ubuntu') or 'debian' in id_like or 'ubuntu' in id_like or (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir()
+    is_arch = distro_id in ('arch', 'archlinux', 'manjaro') or 'arch' in id_like or (root / 'etc/arch-release').exists()
+
+    if is_debian:
+        return DistroProfile(
+            family='debian',
+            samba_unit='samba-ad-dc',
+            samba_conflicts=['smbd', 'nmbd', 'winbind'],
+            bind_user='bind',
+            bind_group='bind',
+            bind_service='named',
+            bind_config_rel='etc/bind/named.conf.options',
+            bind_main_rel='etc/bind/named.conf',
+            bind_work_dir='/var/cache/bind',
+            chrony_user='_chrony',
+            chrony_group='_chrony',
+            chrony_service='chrony',
+            security_system='apparmor',
+        )
+    elif is_arch:
+        return DistroProfile(
+            family='arch',
+            samba_unit='samba',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
+            security_system='none',
+        )
+    else:  # RedHat / Fedora / Alma / Rocky / CentOS / default
+        return DistroProfile(
+            family='redhat',
+            samba_unit='samba',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
+            security_system='selinux',
+        )
+
+
 def bind_paths(root):
-    if (root / 'etc/bind').is_dir() or (root / 'etc/debian_version').exists():
-        return root / 'etc/bind/named.conf.options', root / 'etc/bind/named.conf', 'bind9', '/var/cache/bind'
-    return root / 'etc/named.conf', root / 'etc/named.conf', 'named', '/var/named'
+    profile = detect_distro_profile(root)
+    return root / profile.bind_config_rel, root / profile.bind_main_rel, profile.bind_service, profile.bind_work_dir
 
 
 def normalize_forwarders(values):
@@ -266,6 +362,62 @@ def prepare_bind_selinux(root, run, undo):
     return steps
 
 
+def is_apparmor_enabled(root=Path('/')):
+    param = root / 'sys/module/apparmor/parameters/enabled'
+    if param.exists():
+        try:
+            return param.read_text().strip().upper() in ('Y', '1', 'TRUE')
+        except OSError:
+            pass
+    return False
+
+
+def prepare_bind_apparmor(root, run, undo):
+    if not is_apparmor_enabled(root):
+        return []
+    profile = root / 'etc/apparmor.d/usr.sbin.named'
+    if not profile.exists():
+        return []
+    local_dir = root / 'etc/apparmor.d/local'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    local_profile = local_dir / 'usr.sbin.named'
+
+    rules = [
+        '/etc/bind/** lrw,',
+        '/var/cache/bind/** lrw,',
+        '/var/lib/samba/bind-dns/** rwk,',
+    ]
+    existing = local_profile.read_text() if local_profile.exists() else None
+    existing_text = existing or ''
+    needed = [r for r in rules if r not in existing_text]
+    steps = []
+    if needed:
+        new_text = (existing_text.rstrip() + '\n' + '\n'.join(needed) + '\n').lstrip()
+        atomic_write(local_profile, new_text, 0o644)
+        undo.append(('file', local_profile, existing))
+        steps.append('AppArmor: regras para BIND adicionadas em /etc/apparmor.d/local/usr.sbin.named.')
+    parser = shutil.which('apparmor_parser')
+    if parser:
+        try:
+            run([parser, '-r', str(profile)])
+            steps.append('AppArmor: perfil usr.sbin.named recarregado.')
+        except OperationError as err:
+            steps.append(f'AppArmor: aviso ao recarregar perfil usr.sbin.named: {err}')
+    return steps
+
+
+def configure_bind_defaults(root):
+    """Tranquil IT Debian: Disable IPv6 bind and resolvconf integration in /etc/default/named."""
+    for default_path in [root / 'etc/default/named', root / 'etc/default/bind9']:
+        if default_path.is_symlink():
+            continue
+        text = default_path.read_text() if default_path.exists() else ''
+        text = re.sub(r'(?im)^\s*RESOLVCONF\s*=.*$', '', text)
+        text = re.sub(r'(?im)^\s*OPTIONS\s*=.*$', '', text)
+        text = text.rstrip() + '\n# Astral AD DNS\nRESOLVCONF=no\nOPTIONS="-4 -u bind"\n'
+        atomic_write(default_path, text.lstrip(), 0o644)
+
+
 def wait_bind_ready(run, service, attempts=6):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
@@ -321,12 +473,15 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     installed = False
     selinux_undo = []
     selinux_steps = []
+    apparmor_undo = []
+    apparmor_steps = []
     try:
+        profile = detect_distro_profile(root)
         check_bind_runtime(root, main, service, run)
-        # named runs unprivileged on Arch: do not inherit an unreadable
-        # root-only configuration mode from a previous deployment.
+        if profile.family == 'debian':
+            configure_bind_defaults(root)
         atomic_write(staged, candidate, 0o640)
-        run(['chown', 'root:' + ('bind' if service == 'bind9' else 'named'), str(staged)])
+        run(['chown', f'root:{profile.bind_group}', str(staged)])
         run(['named-checkconf', str(staged)])
         try:
             was_active = run(['systemctl', 'is-active', service]).strip() == 'active'
@@ -334,17 +489,21 @@ def configure_bind(request, root=Path('/'), run=checked_run):
             pass
         if original is not None:
             shutil.copy2(config, backup)
-            os.chown(backup, original_stat.st_uid, original_stat.st_gid)
+            if hasattr(os, 'chown'):
+                os.chown(backup, original_stat.st_uid, original_stat.st_gid)
         os.replace(staged, config)
         installed = True
         run(['named-checkconf', str(main)])
         if shutil.which('restorecon') and root == Path('/'):
             run(['restorecon', str(config)])
-        selinux_steps = prepare_bind_selinux(root, run, selinux_undo)
+        if profile.security_system == 'selinux':
+            selinux_steps = prepare_bind_selinux(root, run, selinux_undo)
+        elif profile.security_system == 'apparmor':
+            apparmor_steps = prepare_bind_apparmor(root, run, apparmor_undo)
         run(['systemctl', 'restart', service])
         wait_bind_ready(run, service)
         run(['systemctl', 'enable', service])
-        return package_steps + selinux_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
+        return package_steps + selinux_steps + apparmor_steps + [f'BIND {service} validado e ativo em 127.0.0.1:5353.',
                 'Forwarders: ' + ', '.join(forwarders), f'Configuração anterior: {backup}' if original is not None else 'Nova configuração criada.']
     except Exception as error:
         rollback_errors = []
@@ -1625,10 +1784,11 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             run(['restorecon', '-R', str(root / 'var/lib/samba'), str(config)])
         if request['kind']=='configure':
             configure_ntp(request,root,run,steps)
+        profile = detect_distro_profile(root)
         if request['domain_role'] == 'MEMBER':
             services = [unit(run, ['smb', 'smbd']), unit(run, ['winbind'])]
         else:
-            services = [unit(run, ['samba-ad-dc', 'samba', 'samba-dc'])]
+            services = [unit(run, [profile.samba_unit, 'samba-ad-dc', 'samba', 'samba-dc'])]
         if request.get('setup_step_ca') and request['domain_role']!='MEMBER' and request['kind']!='new':
             remote_mutated=True  # PKI initialization/issuance must never trigger raw old-domain restoration.
             tls_pairs=configure_pki(request,root,run,services[0],steps)
@@ -1646,11 +1806,12 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 directory_args += ['--server=' + request['target_dc_ip'], '--username=' + request['admin_username'], '--password=' + request['admin_password']]
             configured = json.loads(run(directory_args + ([] if request.get('global_catalog', True) else ['--disable-gc'])))
             steps.append('Catalogo global configurado; particoes DNS verificadas: ' + json.dumps(configured))
-        if 'samba-ad-dc' in services:
-            for conflict in ['samba', 'winbind', 'nmbd', 'smbd']:
-                optional(run, ['systemctl', 'stop', conflict])
-                optional(run, ['systemctl', 'disable', conflict])
-                optional(run, ['systemctl', 'mask', conflict])
+        for conflict in profile.samba_conflicts:
+            optional(run, ['systemctl', 'stop', conflict])
+            optional(run, ['systemctl', 'disable', conflict])
+            optional(run, ['systemctl', 'mask', conflict])
+        optional(run, ['systemctl', 'unmask', profile.samba_unit])
+        optional(run, ['systemctl', 'unmask', 'samba'])
         for name in services:
             run(['systemctl', 'unmask', name])
             run(['systemctl', 'enable', name])

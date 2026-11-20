@@ -411,6 +411,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_samba_ad_dc_masks_conflicts_on_debian(self):
         host = Host(self.root)
+        (self.root / 'etc/debian_version').write_text('13.0')
         def run(args):
             if args[:2] == ['systemctl', 'is-active'] and args[2] == 'samba-ad-dc':
                 return 'active'
@@ -425,8 +426,10 @@ class WorkflowTests(unittest.TestCase):
         result = self.execute(host=run)
         self.assertTrue(result['success'], result)
         masked_calls = [args[2] for args in host.calls if args[:2] == ['systemctl', 'mask']]
-        for conflict in ['samba', 'winbind', 'nmbd', 'smbd']:
+        for conflict in ['winbind', 'nmbd', 'smbd']:
             self.assertIn(conflict, masked_calls)
+        self.assertNotIn('samba', masked_calls)
+        self.assertIn(['systemctl', 'unmask', 'samba'], host.calls)
         self.assertIn(['systemctl', 'unmask', 'samba-ad-dc'], host.calls)
         self.assertIn(['systemctl', 'enable', 'samba-ad-dc'], host.calls)
 

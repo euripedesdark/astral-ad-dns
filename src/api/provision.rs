@@ -477,9 +477,18 @@ pub async fn upgrade_schema_and_levels(
         );
     }
 
+    let service_name = if std::path::Path::new("/lib/systemd/system/samba-ad-dc.service").exists()
+        || std::path::Path::new("/usr/lib/systemd/system/samba-ad-dc.service").exists()
+        || std::path::Path::new("/etc/systemd/system/samba-ad-dc.service").exists()
+    {
+        "samba-ad-dc"
+    } else {
+        "samba"
+    };
+
     let _ = run_cmd_dry("sed -i '/ad dc functional level/d' /etc/samba/smb.conf && sed -i '/\\[global\\]/a \\    ad dc functional level = 2016' /etc/samba/smb.conf", sudo, false);
-    let _ = run_cmd_dry("systemctl restart samba 2>/dev/null || true", sudo, false);
-    let _ = run_cmd_dry("systemctl stop samba 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry(&format!("systemctl restart {} 2>/dev/null || true", service_name), sudo, false);
+    let _ = run_cmd_dry(&format!("systemctl stop {} 2>/dev/null || true", service_name), sudo, false);
 
     let s_res = run_cmd_dry(&format!("samba-tool domain schemaupgrade --schema={}", payload.schema_version), sudo, false);
     steps.push(format!("Schema upgrade para {}: {}", payload.schema_version, if s_res.success { "Sucesso" } else { "Aviso/Não modificado" }));
@@ -490,7 +499,7 @@ pub async fn upgrade_schema_and_levels(
     let l_res = run_cmd_dry(&format!("samba-tool domain level raise --domain-level={} --forest-level={}", payload.functional_level, payload.functional_level), sudo, false);
     steps.push(format!("Domain & Forest level raise {}: {}", payload.functional_level, if l_res.success { "Sucesso" } else { "Aviso/Já no nível" }));
 
-    let _ = run_cmd_dry("systemctl start samba 2>/dev/null || true", sudo, false);
+    let _ = run_cmd_dry(&format!("systemctl start {} 2>/dev/null || true", service_name), sudo, false);
     let db_res = run_cmd_dry("samba-tool dbcheck --cross-ncs --fix --yes 2>/dev/null || true", sudo, false);
     steps.push(format!("Samba dbcheck: {}", if db_res.success { "Base consistente" } else { "Executado com alertas" }));
 

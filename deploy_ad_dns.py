@@ -317,11 +317,12 @@ def prepare_ad_packages(os_release="/etc/os-release"):
         ]:
             run_cmd(["install", "-d", "-m", dmode, dpath], use_sudo=True)
 
-        # Tranquil IT: desativa serviços padrão de arquivos para que o AD DC assuma as portas
-        run_cmd(["systemctl", "stop", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
-        run_cmd(["systemctl", "disable", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
-        run_cmd(["systemctl", "mask", "samba", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
-        run_cmd(["systemctl", "unmask", "samba-ad-dc"], use_sudo=True, check=False)
+        # Tranquil IT: desativa serviços padrão de arquivos para que o AD DC assuma as portas.
+        # No Debian, JAMAIS mascarar 'samba' pois 'samba.service' é o Alias oficial de 'samba-ad-dc.service'.
+        run_cmd(["systemctl", "stop", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "disable", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "mask", "winbind", "nmbd", "smbd"], use_sudo=True, check=False)
+        run_cmd(["systemctl", "unmask", "samba", "samba-ad-dc"], use_sudo=True, check=False)
 
         # Tranquil IT: desabilita IPv6 e integração resolvconf no BIND9 (/etc/default/named)
         named_defaults = "# Configured by Astral AD DNS\nRESOLVCONF=no\nOPTIONS=\"-4 -u bind\"\n"
