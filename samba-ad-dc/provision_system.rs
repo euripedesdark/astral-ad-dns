@@ -191,3 +191,14 @@ pub fn configure_chrony(root: &Path) -> Result<(), String> {
     let _ = Command::new("systemctl").args(["restart", "chrony"]).output();
     Ok(())
 }
+
+pub fn enable_selinux_samba_dc(root: &Path) {
+    if root.join("sys/fs/selinux/enforce").exists() {
+        if let Ok(res) = Command::new("getsebool").arg("samba_domain_controller").output() {
+            let out = String::from_utf8_lossy(&res.stdout);
+            if out.contains("off") {
+                let _ = Command::new("setsebool").args(["-P", "samba_domain_controller", "on"]).output();
+            }
+        }
+    }
+}

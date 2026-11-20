@@ -24,6 +24,7 @@ TOOLS = {
  'named': ['bind','bind9','bind','bind'],
  'named-checkconf': ['bind','bind9-utils','bind','bind-utils'],
  'semanage': ['policycoreutils-python-utils','policycoreutils-python-utils','policycoreutils','policycoreutils-python-utils'],
+ 'hostname': ['hostname','hostname','inetutils','hostname'],
 }
 
 

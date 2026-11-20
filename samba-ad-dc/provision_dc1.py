@@ -58,10 +58,26 @@ class OperationError(RuntimeError):
 
 
 def checked_run(args):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=1800)
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=1800)
+    except FileNotFoundError as e:
+        raise OperationError(f"Comando '{args[0]}' nao encontrado no sistema") from e
+    except OSError as e:
+        raise OperationError(f"Falha ao executar '{args[0]}': {e}") from e
     if result.returncode:
         raise OperationError(f"{args[0]} falhou: {(result.stderr or result.stdout)[-3000:]}")
     return result.stdout
+
+
+def enable_selinux_samba_dc(root=Path('/'), run=checked_run):
+    """Garante que a boolean samba_domain_controller do SELinux esteja ativa para o AD DC."""
+    if (root / 'sys/fs/selinux/enforce').exists():
+        try:
+            res = subprocess.run(['getsebool', 'samba_domain_controller'], text=True, capture_output=True)
+            if res.returncode == 0 and 'off' in res.stdout:
+                run(['setsebool', '-P', 'samba_domain_controller', 'on'])
+        except Exception:
+            pass
 
 
 def ensure_samba_directories(root=Path('/')):
@@ -160,6 +176,7 @@ def detect_distro_profile(root=Path('/')):
 
     is_debian = distro_id in ('debian', 'ubuntu') or 'debian' in id_like or 'ubuntu' in id_like or (root / 'etc/debian_version').exists() or (root / 'etc/bind').is_dir()
     is_arch = distro_id in ('arch', 'archlinux', 'manjaro') or 'arch' in id_like or (root / 'etc/arch-release').exists()
+    is_suse = distro_id in ('opensuse', 'opensuse-leap', 'opensuse-tumbleweed', 'sles', 'sled', 'suse') or 'suse' in id_like or (root / 'etc/SuSE-release').exists()
 
     if is_debian:
         return DistroProfile(
@@ -176,6 +193,23 @@ def detect_distro_profile(root=Path('/')):
             chrony_group='_chrony',
             chrony_service='chrony',
             security_system='apparmor',
+        )
+    elif is_suse:
+        return DistroProfile(
+            family='suse',
+            samba_unit='samba-ad-dc',
+            samba_conflicts=['smb', 'nmb', 'winbind'],
+            bind_user='named',
+            bind_group='named',
+            bind_service='named',
+            bind_config_rel='etc/named.conf',
+            bind_main_rel='etc/named.conf',
+            bind_work_dir='/var/lib/named',
+            chrony_user='chrony',
+            chrony_group='chrony',
+            chrony_service='chronyd',
+            apparmor_profile='usr.sbin.named',
+            security_system='selinux' if (root / 'sys/fs/selinux/enforce').exists() else 'apparmor',
         )
     elif is_arch:
         return DistroProfile(
@@ -590,6 +624,7 @@ TOOLS = {
  'named': ['bind','bind9','bind','bind'],
  'named-checkconf': ['bind','bind9-utils','bind','bind-utils'],
  'semanage': ['policycoreutils-python-utils','policycoreutils-python-utils','policycoreutils','policycoreutils-python-utils'],
+ 'hostname': ['hostname','hostname','inetutils','hostname'],
 }
 
 
@@ -1144,8 +1179,29 @@ FSMO = ['SchemaMasterRole', 'DomainNamingMasterRole', 'InfrastructureMasterRole'
 def optional(run, args):
     try:
         return run(args)
-    except OperationError:
+    except (OperationError, FileNotFoundError, OSError, Exception):
         return ''
+
+
+def get_current_hostname(run, root=Path('/')):
+    h = optional(run, ['hostnamectl', 'hostname']).strip()
+    if h:
+        return h
+    h = optional(run, ['hostname', '-s']).strip()
+    if h:
+        return h
+    etc_h = root / 'etc/hostname'
+    if etc_h.exists():
+        try:
+            val = etc_h.read_text().strip().split()[0]
+            if val:
+                return val
+        except Exception:
+            pass
+    try:
+        return socket.gethostname().split('.')[0]
+    except Exception:
+        return 'localhost'
 
 
 def validate(request):
@@ -1383,7 +1439,10 @@ def remove(path):
 
 
 def restore_configuration(root, backup):
-    captured = set(json.loads((backup / 'manifest.json').read_text()).get('captured_paths', []))
+    manifest_file = backup / 'manifest.json'
+    if not manifest_file.exists():
+        return
+    captured = set(json.loads(manifest_file.read_text()).get('captured_paths', []))
     for relative in PATHS:
         # A failed database snapshot can contain only part of a live database.
         # Never replace the live tree with an incomplete, uncommitted snapshot.
@@ -1548,7 +1607,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         manifest = {'id': identifier, 'phase': 'preflight', 'kind': request['kind'], 'realm': request['realm'],
                     'target_name': request['netbios_name'], 'target_role': request['domain_role'], 'services': states,
                     'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                    'previous_hostname': optional(run,['hostname','-s']).strip(),
+                    'previous_hostname': get_current_hostname(run, root),
                     'resolver_immutable': 'i' in optional(run,['lsattr','-d',str(root/'etc/resolv.conf')]).split(' ')[0],
                     'captured_paths': []}
         save_manifest(backup, manifest)
@@ -1728,6 +1787,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             args = ['samba-tool', 'domain', 'join', request['realm'], request['domain_role'], '--server=' + partner,
                     '--realm=' + request['realm'], '--option=netbios name = ' + request['netbios_name']]
             if request['domain_role'] != 'MEMBER':
+                enable_selinux_samba_dc(root, run)
                 args += ['--dns-backend=SAMBA_INTERNAL', '--option=ad dc functional level = ' + level]
             manifest['phase'] = 'join_attempted'
             save_manifest(backup, manifest)
@@ -1741,6 +1801,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 configure_sysvol(request, root, run, steps)
         elif request['kind'] == 'new':
             remove(config)
+            enable_selinux_samba_dc(root, run)
             manifest['phase'] = 'provision_attempted'
             save_manifest(backup, manifest)
             run(['samba-tool', 'domain', 'provision', '--use-rfc2307', '--realm=' + request['realm'],
@@ -1925,7 +1986,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     optional(run, ['chattr', '-i', str(root / 'etc/resolv.conf')])
                     restore_configuration(root, backup)
                     if manifest.get('resolver_immutable'): run(['chattr','+i',str(root/'etc/resolv.conf')])
-                    if manifest.get('previous_hostname'): run(['hostnamectl','set-hostname',manifest['previous_hostname']])
+                    if manifest.get('previous_hostname'): optional(run, ['hostnamectl', 'set-hostname', manifest['previous_hostname']])
                     if stopped:
                         restore_services(states, run)
                     steps.append('Configuracao anterior restaurada; nenhuma alteracao remota AD foi confirmada.')

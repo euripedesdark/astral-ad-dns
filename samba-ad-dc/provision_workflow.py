@@ -7,11 +7,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import stat
 import tarfile
 import time
 import uuid
-from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders, ensure_samba_directories, detect_distro_profile
+from ad_operations import OperationError, atomic_write, checked_run, local_ipv4s, configure_bind, normalize_forwarders, ensure_samba_directories, detect_distro_profile, enable_selinux_samba_dc
 from provision_system import install_dependencies, configure_firewall, configure_ntp, configure_identity, configure_dns_records, allocate_ca_port
 from provision_pki import configure_pki
 from provision_tls import prepare_existing_tls, install_existing_tls
@@ -33,8 +34,29 @@ FSMO = ['SchemaMasterRole', 'DomainNamingMasterRole', 'InfrastructureMasterRole'
 def optional(run, args):
     try:
         return run(args)
-    except OperationError:
+    except (OperationError, FileNotFoundError, OSError, Exception):
         return ''
+
+
+def get_current_hostname(run, root=Path('/')):
+    h = optional(run, ['hostnamectl', 'hostname']).strip()
+    if h:
+        return h
+    h = optional(run, ['hostname', '-s']).strip()
+    if h:
+        return h
+    etc_h = root / 'etc/hostname'
+    if etc_h.exists():
+        try:
+            val = etc_h.read_text().strip().split()[0]
+            if val:
+                return val
+        except Exception:
+            pass
+    try:
+        return socket.gethostname().split('.')[0]
+    except Exception:
+        return 'localhost'
 
 
 
@@ -297,7 +319,10 @@ def remove(path):
 
 
 def restore_configuration(root, backup):
-    captured = set(json.loads((backup / 'manifest.json').read_text()).get('captured_paths', []))
+    manifest_file = backup / 'manifest.json'
+    if not manifest_file.exists():
+        return
+    captured = set(json.loads(manifest_file.read_text()).get('captured_paths', []))
     for relative in PATHS:
         # A failed database snapshot can contain only part of a live database.
         # Never replace the live tree with an incomplete, uncommitted snapshot.
@@ -394,7 +419,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         manifest = {'id': identifier, 'phase': 'preflight', 'kind': request['kind'], 'realm': request['realm'],
                     'target_name': request['netbios_name'], 'target_role': request['domain_role'], 'services': states,
                     'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                    'previous_hostname': optional(run,['hostname','-s']).strip(),
+                    'previous_hostname': get_current_hostname(run, root),
                     'resolver_immutable': 'i' in optional(run,['lsattr','-d',str(root/'etc/resolv.conf')]).split(' ')[0],
                     'captured_paths': []}
         save_manifest(backup, manifest)
@@ -571,6 +596,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             args = ['samba-tool', 'domain', 'join', request['realm'], request['domain_role'], '--server=' + partner,
                     '--realm=' + request['realm'], '--option=netbios name = ' + request['netbios_name']]
             if request['domain_role'] != 'MEMBER':
+                enable_selinux_samba_dc(root, run)
                 args += ['--dns-backend=SAMBA_INTERNAL', '--option=ad dc functional level = ' + level]
             manifest['phase'] = 'join_attempted'
             save_manifest(backup, manifest)
@@ -584,6 +610,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                 configure_sysvol(request, root, run, steps)
         elif request['kind'] == 'new':
             remove(config)
+            enable_selinux_samba_dc(root, run)
             manifest['phase'] = 'provision_attempted'
             save_manifest(backup, manifest)
             run(['samba-tool', 'domain', 'provision', '--use-rfc2307', '--realm=' + request['realm'],
@@ -805,7 +832,7 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
                     optional(run, ['chattr', '-i', str(root / 'etc/resolv.conf')])
                     restore_configuration(root, backup)
                     if manifest.get('resolver_immutable'): run(['chattr','+i',str(root/'etc/resolv.conf')])
-                    if manifest.get('previous_hostname'): run(['hostnamectl','set-hostname',manifest['previous_hostname']])
+                    if manifest.get('previous_hostname'): optional(run, ['hostnamectl', 'set-hostname', manifest['previous_hostname']])
                     if stopped:
                         restore_services(states, run)
                     steps.append('Configuracao anterior restaurada; nenhuma alteracao remota AD foi confirmada.')

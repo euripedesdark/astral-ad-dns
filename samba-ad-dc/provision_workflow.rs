@@ -34,12 +34,31 @@ pub fn execute_workflow(request_val: &Value, root: &Path) -> Result<Value, Strin
             }
             if let Ok(output) = child.wait_with_output() {
                 let stdout_str = String::from_utf8_lossy(&output.stdout);
+                let stderr_str = String::from_utf8_lossy(&output.stderr);
                 if let Ok(val) = serde_json::from_str::<Value>(stdout_str.trim()) {
                     if val["success"] == true {
-                        return Ok(val["data"].clone());
-                    } else if let Some(err) = val["error"].as_str() {
+                        let data = &val["data"];
+                        if data.is_object() && data["success"] == false {
+                            let msg = data["message"]
+                                .as_str()
+                                .or_else(|| data["error"].as_str())
+                                .unwrap_or("Falha no provisionamento");
+                            return Err(msg.to_string());
+                        }
+                        return Ok(data.clone());
+                    } else if let Some(err) = val["error"].as_str().or_else(|| val["message"].as_str()) {
                         return Err(err.to_string());
                     }
+                }
+                if !output.status.success() {
+                    let err = if !stderr_str.trim().is_empty() {
+                        stderr_str.trim()
+                    } else if !stdout_str.trim().is_empty() {
+                        stdout_str.trim()
+                    } else {
+                        "Processo de provisionamento finalizou com erro"
+                    };
+                    return Err(err.to_string());
                 }
             }
         }

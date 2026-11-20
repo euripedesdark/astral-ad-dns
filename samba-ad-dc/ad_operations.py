@@ -25,10 +25,26 @@ class OperationError(RuntimeError):
 
 
 def checked_run(args):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=1800)
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=1800)
+    except FileNotFoundError as e:
+        raise OperationError(f"Comando '{args[0]}' nao encontrado no sistema") from e
+    except OSError as e:
+        raise OperationError(f"Falha ao executar '{args[0]}': {e}") from e
     if result.returncode:
         raise OperationError(f"{args[0]} falhou: {(result.stderr or result.stdout)[-3000:]}")
     return result.stdout
+
+
+def enable_selinux_samba_dc(root=Path('/'), run=checked_run):
+    """Garante que a boolean samba_domain_controller do SELinux esteja ativa para o AD DC."""
+    if (root / 'sys/fs/selinux/enforce').exists():
+        try:
+            res = subprocess.run(['getsebool', 'samba_domain_controller'], text=True, capture_output=True)
+            if res.returncode == 0 and 'off' in res.stdout:
+                run(['setsebool', '-P', 'samba_domain_controller', 'on'])
+        except Exception:
+            pass
 
 
 def ensure_samba_directories(root=Path('/')):

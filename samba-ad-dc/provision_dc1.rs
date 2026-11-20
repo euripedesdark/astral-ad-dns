@@ -8,7 +8,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::directory_config::detect_distro_profile;
-use crate::provision_system::{allocate_ca_port, apply_firewall, configure_chrony, configure_hosts};
+use crate::provision_system::{allocate_ca_port, apply_firewall, configure_chrony, configure_hosts, enable_selinux_samba_dc};
 use crate::provision_pki::configure_step_ca;
 
 fn default_domain_role() -> String {
@@ -128,6 +128,7 @@ pub fn execute_dc1_provision(request: &ProvisionRequest, root: &Path) -> Result<
 
     // Remove old smb.conf before provision
     let _ = fs::remove_file(root.join("etc/samba/smb.conf"));
+    enable_selinux_samba_dc(root);
 
     let mut prov_cmd = Command::new("samba-tool");
     prov_cmd.args([
