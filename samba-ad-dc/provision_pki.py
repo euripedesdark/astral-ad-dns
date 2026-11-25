@@ -13,6 +13,13 @@ def step_binary():
     return shutil.which('step-cli') or shutil.which('step')
 
 
+def step_ca_binary():
+    for candidate in ['/usr/bin/step-ca', '/usr/local/bin/step-ca', '/bin/step-ca']:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which('step-ca') or '/usr/bin/step-ca'
+
+
 def install_step(root,run,require_server=True):
     if step_binary() and (not require_server or shutil.which('step-ca')):return
     manager=next((m for m in ['dnf','yum','apt-get','pacman','zypper'] if shutil.which(m)),None)
@@ -54,7 +61,7 @@ def configure_pki(request,root,run,samba_unit,steps):
     request['ca_url'],request['ca_port']=url,configured_port
     is_ca_server = bool(ca_config.exists() and parsed.hostname in [request['host_ip'], request['hostname_fqdn']])
     can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
-    if not is_ca_server and ca_config.exists() and can_clean:
+    if can_clean:
         try:
             run(['systemctl','stop','step-ca'])
             run(['systemctl','disable','step-ca'])
@@ -67,8 +74,11 @@ def configure_pki(request,root,run,samba_unit,steps):
     cli = step_binary()
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
     if initialize and ca_config.exists():
-        initialize = False
-        steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
+        if can_clean or request.get('overwrite_existing'):
+            shutil.rmtree(str(home), ignore_errors=True)
+        else:
+            initialize = False
+            steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
     provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or is_ca_server else 'admin')
     with tempfile.TemporaryDirectory(prefix='astral-pki-',dir=tls) as temp:
         secret=Path(temp)/'password';atomic_write(secret,password)
@@ -93,7 +103,7 @@ def configure_pki(request,root,run,samba_unit,steps):
                 provisioners.append({'type':'ACME','name':'dc-auto-enroll'})
             atomic_write(ca_config,json.dumps(data,indent=2),0o600)
             run(['chown','-R','step:step',str(home)])
-            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
+            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+step_ca_binary()+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
             atomic_write(root/'etc/systemd/system/step-ca.service',unit,0o644)
             run(['systemctl','daemon-reload'])
             run(['systemctl','enable','step-ca'])
@@ -112,8 +122,14 @@ def configure_pki(request,root,run,samba_unit,steps):
             try:
                 run([cli,'ca','health','--ca-url',url,'--root',str(ca_root)])
                 break
-            except OperationError:
-                if attempt==24: raise
+            except OperationError as err:
+                if attempt==24:
+                    diag = ''
+                    try:
+                        diag = run(['journalctl', '-u', 'step-ca', '-n', '25', '--no-pager'])
+                    except Exception:
+                        pass
+                    raise OperationError(f"{err}. Logs do step-ca:\n{diag}" if diag else str(err))
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]

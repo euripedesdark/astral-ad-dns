@@ -525,11 +525,23 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             if request.get('overwrite_existing'):
                 manifest['phase']='replacing_local_domain'
                 save_manifest(backup,manifest)
-                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
+                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf','etc/step-ca']:
                     remove(root/relative)
+                try:
+                    run(['systemctl', 'stop', 'step-ca'])
+                    run(['systemctl', 'disable', 'step-ca'])
+                except Exception:
+                    pass
+                unit_file = root / 'etc/systemd/system/step-ca.service'
+                if unit_file.exists():
+                    remove(unit_file)
+                    try:
+                        run(['systemctl', 'daemon-reload'])
+                    except Exception:
+                        pass
                 ensure_samba_directories(root)
                 previous_tls=[]
-                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
+                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba e PKI anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
             if request.get('setup_step_ca'):
                 manifest['phase']='primary_pki'

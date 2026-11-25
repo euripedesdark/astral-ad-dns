@@ -266,10 +266,10 @@ def normalize_forwarders(values):
     return output
 
 
-def hybrid_options(forwarders, directory):
+def hybrid_options(forwarders, directory, port=5353):
     return ('options {\n'
             f'    directory "{directory}";\n'
-            '    listen-on port 5353 { 127.0.0.1; };\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
             '    listen-on-v6 { none; };\n'
             '    allow-query { localhost; };\n'
             '    allow-recursion { localhost; };\n'
@@ -281,6 +281,111 @@ def hybrid_options(forwarders, directory):
             '    max-cache-size 64m;\n'
             '    minimal-responses yes;\n'
             '};\n')
+
+
+def generate_distro_bind_config(family, forwarders, directory, port=5353, root=Path('/')):
+    opts = hybrid_options(forwarders, directory, port)
+    if family == 'debian':
+        # Debian uses modular configuration: named.conf.options holds options
+        main_conf = root / 'etc/bind/named.conf'
+        if not main_conf.exists() or not main_conf.read_text().strip():
+            main_lines = [
+                '// Astral AD & Hybrid DNS - BIND 9 Main Configuration (Debian)',
+                'include "/etc/bind/named.conf.options";',
+                'include "/etc/bind/named.conf.local";',
+            ]
+            if (root / 'etc/bind/named.conf.default-zones').exists():
+                main_lines.append('include "/etc/bind/named.conf.default-zones";')
+            atomic_write(main_conf, '\n'.join(main_lines) + '\n', 0o644)
+        local_conf = root / 'etc/bind/named.conf.local'
+        if not local_conf.exists():
+            atomic_write(local_conf, '// Astral AD & Hybrid DNS - Local configuration\n', 0o644)
+        return opts
+
+    elif family == 'redhat':
+        # RedHat / Fedora: Monolithic /etc/named.conf
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (RedHat / Fedora)',
+            opts.rstrip(),
+            '',
+            'logging {',
+            '    channel default_debug {',
+            '        file "data/named.run";',
+            '        severity dynamic;',
+            '    };',
+            '};',
+            '',
+            'zone "." IN {',
+            '    type hint;',
+            '    file "named.ca";',
+            '};',
+        ]
+        if (root / 'etc/named.rfc1912.zones').exists():
+            content.append('include "/etc/named.rfc1912.zones";')
+        if (root / 'etc/named.root.key').exists():
+            content.append('include "/etc/named.root.key";')
+        return '\n'.join(content) + '\n'
+
+    elif family == 'arch':
+        # Arch Linux: Monolithic /etc/named.conf with pid-file
+        arch_opts = (
+            'options {\n'
+            f'    directory "{directory}";\n'
+            '    pid-file "/run/named/named.pid";\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+            '    listen-on-v6 { none; };\n'
+            '    allow-query { localhost; };\n'
+            '    allow-recursion { localhost; };\n'
+            '    allow-query-cache { localhost; };\n'
+            '    recursion yes;\n'
+            '    forward only;\n'
+            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
+            '    dnssec-validation auto;\n'
+            '    max-cache-size 64m;\n'
+            '    minimal-responses yes;\n'
+            '};\n'
+        )
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (Arch Linux)',
+            arch_opts.rstrip(),
+        ]
+        if (root / 'var/named/root.hint').exists():
+            content.extend(['', 'zone "." IN {', '    type hint;', '    file "root.hint";', '};'])
+        if (root / 'var/named/localhost.zone').exists():
+            content.extend(['', 'zone "localhost" IN {', '    type master;', '    file "localhost.zone";', '};'])
+        if (root / 'var/named/127.0.0.zone').exists():
+            content.extend(['', 'zone "0.0.127.in-addr.arpa" IN {', '    type master;', '    file "127.0.0.zone";', '};'])
+        return '\n'.join(content) + '\n'
+
+    elif family == 'suse':
+        # openSUSE / SUSE: Monolithic /etc/named.conf with /var/lib/named and dump files
+        suse_opts = (
+            'options {\n'
+            f'    directory "{directory}";\n'
+            '    dump-file "/var/log/named_dump.db";\n'
+            '    statistics-file "/var/log/named.stats";\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+            '    listen-on-v6 { none; };\n'
+            '    allow-query { localhost; };\n'
+            '    allow-recursion { localhost; };\n'
+            '    allow-query-cache { localhost; };\n'
+            '    recursion yes;\n'
+            '    forward only;\n'
+            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
+            '    dnssec-validation auto;\n'
+            '    max-cache-size 64m;\n'
+            '    minimal-responses yes;\n'
+            '};\n'
+        )
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (openSUSE / SUSE)',
+            suse_opts.rstrip(),
+        ]
+        if (root / 'var/lib/named/root.hint').exists():
+            content.extend(['', 'zone "." in {', '    type hint;', '    file "root.hint";', '};'])
+        return '\n'.join(content) + '\n'
+
+    return opts
 
 
 def replace_options(content, options):
@@ -453,6 +558,67 @@ def configure_bind_defaults(root):
         atomic_write(default_path, text.lstrip(), 0o644)
 
 
+def configure_distro_bind_environment(root, profile, port=5353, run=checked_run):
+    """Configures distro-specific environment files, service drop-ins, and directories for BIND."""
+    if profile.family == 'debian':
+        configure_bind_defaults(root)
+        cache_dir = root / profile.bind_work_dir.lstrip('/')
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+    elif profile.family == 'redhat':
+        sysconfig = root / 'etc/sysconfig/named'
+        if not sysconfig.is_symlink():
+            sysconfig.parent.mkdir(parents=True, exist_ok=True)
+            text = sysconfig.read_text() if sysconfig.exists() else ''
+            if 'OPTIONS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nOPTIONS="-4"\n'
+                atomic_write(sysconfig, text.lstrip(), 0o644)
+        for sub in ['data', 'dynamic']:
+            d = root / f'var/named/{sub}'
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                run(['chown', f'{profile.bind_user}:{profile.bind_group}', str(d)])
+                run(['chmod', '770', str(d)])
+            except (OperationError, FileNotFoundError, PermissionError):
+                pass
+    elif profile.family == 'arch':
+        conf_d = root / 'etc/conf.d/named'
+        if not conf_d.is_symlink():
+            conf_d.parent.mkdir(parents=True, exist_ok=True)
+            text = conf_d.read_text() if conf_d.exists() else ''
+            if 'NAMED_ARGS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nNAMED_ARGS="-4 -u named"\n'
+                atomic_write(conf_d, text.lstrip(), 0o644)
+        run_named = root / 'run/named'
+        run_named.mkdir(parents=True, exist_ok=True)
+        try:
+            run(['chown', f'{profile.bind_user}:{profile.bind_group}', str(run_named)])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+    elif profile.family == 'suse':
+        sysconfig = root / 'etc/sysconfig/named'
+        if not sysconfig.is_symlink():
+            sysconfig.parent.mkdir(parents=True, exist_ok=True)
+            text = sysconfig.read_text() if sysconfig.exists() else ''
+            if 'NAMED_ARGS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nNAMED_ARGS="-4"\n'
+                atomic_write(sysconfig, text.lstrip(), 0o644)
+        override_dir = root / 'etc/systemd/system/named.service.d'
+        override_dir.mkdir(parents=True, exist_ok=True)
+        dropin = (
+            '[Service]\n'
+            'ReadWritePaths=/var/lib/named /run/named /var/log/named /var/lib/samba/bind-dns\n'
+        )
+        atomic_write(override_dir / 'override.conf', dropin, 0o644)
+        try:
+            run(['systemctl', 'daemon-reload'])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+
+
 def wait_bind_ready(run, service, attempts=6):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
@@ -496,7 +662,13 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     config, main, service, directory = bind_paths(root)
     original_stat = config.stat() if config.exists() else None
     original = config.read_bytes() if config.exists() else None
-    candidate = replace_options(original.decode() if original else '', hybrid_options(forwarders, directory))
+    profile = detect_distro_profile(root)
+    original_text = original.decode() if original else ''
+    clean_orig = re.sub(r'//[^\n]*|#[^\n]*|/\*.*?\*/', '', original_text, flags=re.S)
+    if re.search(r'\boptions\s*\{', clean_orig):
+        candidate = replace_options(original_text, hybrid_options(forwarders, directory))
+    else:
+        candidate = generate_distro_bind_config(profile.family, forwarders, directory, 5353, root)
     if request.get('dry_run'):
         return ['Plano BIND: TCP/UDP 127.0.0.1:5353, ACL localhost, forward only, DNSSEC e cache 64 MiB.',
                 'Forwarders validados: ' + ', '.join(forwarders),
@@ -511,28 +683,20 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     apparmor_undo = []
     apparmor_steps = []
     try:
-        profile = detect_distro_profile(root)
-        if profile.family == 'debian':
-            configure_bind_defaults(root)
-            if root == Path('/'):
+        configure_distro_bind_environment(root, profile, 5353, run)
+        if profile.family == 'debian' and root == Path('/'):
+            try:
+                run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+            except (OperationError, FileNotFoundError):
+                pass
+            rndc_key = root / 'etc/bind/rndc.key'
+            if rndc_key.is_file():
                 try:
-                    run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                    run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                    run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
+                    run(['chmod', '640', str(rndc_key)])
                 except (OperationError, FileNotFoundError):
                     pass
-                cache_dir = root / profile.bind_work_dir.lstrip('/')
-                if cache_dir.is_dir():
-                    try:
-                        run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
-                    except (OperationError, FileNotFoundError):
-                        pass
-                rndc_key = root / 'etc/bind/rndc.key'
-                if rndc_key.is_file():
-                    try:
-                        run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
-                        run(['chmod', '640', str(rndc_key)])
-                    except (OperationError, FileNotFoundError):
-                        pass
         check_bind_runtime(root, main, service, run)
         atomic_write(staged, candidate, 0o640)
         run(['chown', f'root:{profile.bind_group}', str(staged)])
@@ -890,6 +1054,13 @@ def step_binary():
     return shutil.which('step-cli') or shutil.which('step')
 
 
+def step_ca_binary():
+    for candidate in ['/usr/bin/step-ca', '/usr/local/bin/step-ca', '/bin/step-ca']:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which('step-ca') or '/usr/bin/step-ca'
+
+
 def install_step(root,run,require_server=True):
     if step_binary() and (not require_server or shutil.which('step-ca')):return
     manager=next((m for m in ['dnf','yum','apt-get','pacman','zypper'] if shutil.which(m)),None)
@@ -931,7 +1102,7 @@ def configure_pki(request,root,run,samba_unit,steps):
     request['ca_url'],request['ca_port']=url,configured_port
     is_ca_server = bool(ca_config.exists() and parsed.hostname in [request['host_ip'], request['hostname_fqdn']])
     can_clean = bool(request.get('clean_existing') or request.get('rejoin') or request.get('overwrite_existing'))
-    if not is_ca_server and ca_config.exists() and can_clean:
+    if can_clean:
         try:
             run(['systemctl','stop','step-ca'])
             run(['systemctl','disable','step-ca'])
@@ -944,8 +1115,11 @@ def configure_pki(request,root,run,samba_unit,steps):
     cli = step_binary()
     tls=root/'etc/samba/tls';tls.mkdir(parents=True,exist_ok=True,mode=0o700)
     if initialize and ca_config.exists():
-        initialize = False
-        steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
+        if can_clean or request.get('overwrite_existing'):
+            shutil.rmtree(str(home), ignore_errors=True)
+        else:
+            initialize = False
+            steps.append('CA local existente reutilizada; raiz, chaves e politica preservadas.')
     provisioner=request.get('ca_provisioner') or ('admin@'+request['realm'].lower() if initialize or is_ca_server else 'admin')
     with tempfile.TemporaryDirectory(prefix='astral-pki-',dir=tls) as temp:
         secret=Path(temp)/'password';atomic_write(secret,password)
@@ -970,7 +1144,7 @@ def configure_pki(request,root,run,samba_unit,steps):
                 provisioners.append({'type':'ACME','name':'dc-auto-enroll'})
             atomic_write(ca_config,json.dumps(data,indent=2),0o600)
             run(['chown','-R','step:step',str(home)])
-            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+shutil.which('step-ca')+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
+            unit='[Unit]\nDescription=Astral Step Certificate Authority\nAfter=network-online.target\n[Service]\nUser=step\nGroup=step\nEnvironment=STEPPATH=/etc/step-ca\nWorkingDirectory=/etc/step-ca\nExecStart='+step_ca_binary()+' /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=multi-user.target\n'
             atomic_write(root/'etc/systemd/system/step-ca.service',unit,0o644)
             run(['systemctl','daemon-reload'])
             run(['systemctl','enable','step-ca'])
@@ -989,8 +1163,14 @@ def configure_pki(request,root,run,samba_unit,steps):
             try:
                 run([cli,'ca','health','--ca-url',url,'--root',str(ca_root)])
                 break
-            except OperationError:
-                if attempt==24: raise
+            except OperationError as err:
+                if attempt==24:
+                    diag = ''
+                    try:
+                        diag = run(['journalctl', '-u', 'step-ca', '-n', '25', '--no-pager'])
+                    except Exception:
+                        pass
+                    raise OperationError(f"{err}. Logs do step-ca:\n{diag}" if diag else str(err))
                 time.sleep(1)
         cert,key=Path(temp)/'dc.crt',Path(temp)/'dc.key'
         sans=[request['hostname_fqdn'],request['netbios_name'].lower(),request['realm'].lower(),'ldap.'+request['realm'].lower(),request['host_ip']]
@@ -1732,11 +1912,23 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
             if request.get('overwrite_existing'):
                 manifest['phase']='replacing_local_domain'
                 save_manifest(backup,manifest)
-                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf']:
+                for relative in ['var/lib/samba','var/cache/samba','etc/samba/smb.conf','etc/step-ca']:
                     remove(root/relative)
+                try:
+                    run(['systemctl', 'stop', 'step-ca'])
+                    run(['systemctl', 'disable', 'step-ca'])
+                except Exception:
+                    pass
+                unit_file = root / 'etc/systemd/system/step-ca.service'
+                if unit_file.exists():
+                    remove(unit_file)
+                    try:
+                        run(['systemctl', 'daemon-reload'])
+                    except Exception:
+                        pass
                 ensure_samba_directories(root)
                 previous_tls=[]
-                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
+                steps.append('Substituicao do DC1 autorizada: base e configuracao Samba e PKI anteriores removidas apos backup; novo dominio sera criado, sem recuperar a base anterior.')
             configure_identity(request,root,run,steps)
             # Step-CA is intentionally deferred until Samba is provisioned,
             # configured, restarted and verified active.

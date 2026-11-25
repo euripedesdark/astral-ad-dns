@@ -272,6 +272,111 @@ def hybrid_options(forwarders, directory, port=5353):
             '};\n')
 
 
+def generate_distro_bind_config(family, forwarders, directory, port=5353, root=Path('/')):
+    opts = hybrid_options(forwarders, directory, port)
+    if family == 'debian':
+        # Debian uses modular configuration: named.conf.options holds options
+        main_conf = root / 'etc/bind/named.conf'
+        if not main_conf.exists() or not main_conf.read_text().strip():
+            main_lines = [
+                '// Astral AD & Hybrid DNS - BIND 9 Main Configuration (Debian)',
+                'include "/etc/bind/named.conf.options";',
+                'include "/etc/bind/named.conf.local";',
+            ]
+            if (root / 'etc/bind/named.conf.default-zones').exists():
+                main_lines.append('include "/etc/bind/named.conf.default-zones";')
+            atomic_write(main_conf, '\n'.join(main_lines) + '\n', 0o644)
+        local_conf = root / 'etc/bind/named.conf.local'
+        if not local_conf.exists():
+            atomic_write(local_conf, '// Astral AD & Hybrid DNS - Local configuration\n', 0o644)
+        return opts
+
+    elif family == 'redhat':
+        # RedHat / Fedora: Monolithic /etc/named.conf
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (RedHat / Fedora)',
+            opts.rstrip(),
+            '',
+            'logging {',
+            '    channel default_debug {',
+            '        file "data/named.run";',
+            '        severity dynamic;',
+            '    };',
+            '};',
+            '',
+            'zone "." IN {',
+            '    type hint;',
+            '    file "named.ca";',
+            '};',
+        ]
+        if (root / 'etc/named.rfc1912.zones').exists():
+            content.append('include "/etc/named.rfc1912.zones";')
+        if (root / 'etc/named.root.key').exists():
+            content.append('include "/etc/named.root.key";')
+        return '\n'.join(content) + '\n'
+
+    elif family == 'arch':
+        # Arch Linux: Monolithic /etc/named.conf with pid-file
+        arch_opts = (
+            'options {\n'
+            f'    directory "{directory}";\n'
+            '    pid-file "/run/named/named.pid";\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+            '    listen-on-v6 { none; };\n'
+            '    allow-query { localhost; };\n'
+            '    allow-recursion { localhost; };\n'
+            '    allow-query-cache { localhost; };\n'
+            '    recursion yes;\n'
+            '    forward only;\n'
+            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
+            '    dnssec-validation auto;\n'
+            '    max-cache-size 64m;\n'
+            '    minimal-responses yes;\n'
+            '};\n'
+        )
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (Arch Linux)',
+            arch_opts.rstrip(),
+        ]
+        if (root / 'var/named/root.hint').exists():
+            content.extend(['', 'zone "." IN {', '    type hint;', '    file "root.hint";', '};'])
+        if (root / 'var/named/localhost.zone').exists():
+            content.extend(['', 'zone "localhost" IN {', '    type master;', '    file "localhost.zone";', '};'])
+        if (root / 'var/named/127.0.0.zone').exists():
+            content.extend(['', 'zone "0.0.127.in-addr.arpa" IN {', '    type master;', '    file "127.0.0.zone";', '};'])
+        return '\n'.join(content) + '\n'
+
+    elif family == 'suse':
+        # openSUSE / SUSE: Monolithic /etc/named.conf with /var/lib/named and dump files
+        suse_opts = (
+            'options {\n'
+            f'    directory "{directory}";\n'
+            '    dump-file "/var/log/named_dump.db";\n'
+            '    statistics-file "/var/log/named.stats";\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+            '    listen-on-v6 { none; };\n'
+            '    allow-query { localhost; };\n'
+            '    allow-recursion { localhost; };\n'
+            '    allow-query-cache { localhost; };\n'
+            '    recursion yes;\n'
+            '    forward only;\n'
+            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
+            '    dnssec-validation auto;\n'
+            '    max-cache-size 64m;\n'
+            '    minimal-responses yes;\n'
+            '};\n'
+        )
+        content = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (openSUSE / SUSE)',
+            suse_opts.rstrip(),
+        ]
+        if (root / 'var/lib/named/root.hint').exists():
+            content.extend(['', 'zone "." in {', '    type hint;', '    file "root.hint";', '};'])
+        return '\n'.join(content) + '\n'
+
+    return opts
+
+
 def replace_options(content, options):
     # Comments/strings must not affect brace depth or match a fake options clause.
     clean = re.sub(r'//[^\n]*|#[^\n]*|/\*.*?\*/', lambda m: ' ' * len(m[0]), content, flags=re.S)
@@ -464,6 +569,67 @@ def configure_bind_defaults(root):
         atomic_write(default_path, text.lstrip(), 0o644)
 
 
+def configure_distro_bind_environment(root, profile, port=5353, run=checked_run):
+    """Configures distro-specific environment files, service drop-ins, and directories for BIND."""
+    if profile.family == 'debian':
+        configure_bind_defaults(root)
+        cache_dir = root / profile.bind_work_dir.lstrip('/')
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+    elif profile.family == 'redhat':
+        sysconfig = root / 'etc/sysconfig/named'
+        if not sysconfig.is_symlink():
+            sysconfig.parent.mkdir(parents=True, exist_ok=True)
+            text = sysconfig.read_text() if sysconfig.exists() else ''
+            if 'OPTIONS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nOPTIONS="-4"\n'
+                atomic_write(sysconfig, text.lstrip(), 0o644)
+        for sub in ['data', 'dynamic']:
+            d = root / f'var/named/{sub}'
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                run(['chown', f'{profile.bind_user}:{profile.bind_group}', str(d)])
+                run(['chmod', '770', str(d)])
+            except (OperationError, FileNotFoundError, PermissionError):
+                pass
+    elif profile.family == 'arch':
+        conf_d = root / 'etc/conf.d/named'
+        if not conf_d.is_symlink():
+            conf_d.parent.mkdir(parents=True, exist_ok=True)
+            text = conf_d.read_text() if conf_d.exists() else ''
+            if 'NAMED_ARGS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nNAMED_ARGS="-4 -u named"\n'
+                atomic_write(conf_d, text.lstrip(), 0o644)
+        run_named = root / 'run/named'
+        run_named.mkdir(parents=True, exist_ok=True)
+        try:
+            run(['chown', f'{profile.bind_user}:{profile.bind_group}', str(run_named)])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+    elif profile.family == 'suse':
+        sysconfig = root / 'etc/sysconfig/named'
+        if not sysconfig.is_symlink():
+            sysconfig.parent.mkdir(parents=True, exist_ok=True)
+            text = sysconfig.read_text() if sysconfig.exists() else ''
+            if 'NAMED_ARGS=' not in text:
+                text = text.rstrip() + '\n# Astral AD DNS\nNAMED_ARGS="-4"\n'
+                atomic_write(sysconfig, text.lstrip(), 0o644)
+        override_dir = root / 'etc/systemd/system/named.service.d'
+        override_dir.mkdir(parents=True, exist_ok=True)
+        dropin = (
+            '[Service]\n'
+            'ReadWritePaths=/var/lib/named /run/named /var/log/named /var/lib/samba/bind-dns\n'
+        )
+        atomic_write(override_dir / 'override.conf', dropin, 0o644)
+        try:
+            run(['systemctl', 'daemon-reload'])
+        except (OperationError, FileNotFoundError, PermissionError):
+            pass
+
+
 def wait_bind_ready(run, service, attempts=6, port=5353):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
@@ -522,7 +688,13 @@ def configure_bind(request, root=Path('/'), run=checked_run):
                                      'explicita e validacao SELinux/DNS; '
                                      'o provisionamento nao mudara a porta.')
     request['bind_port'] = port
-    candidate = replace_options(original.decode() if original else '', hybrid_options(forwarders, directory, port))
+    profile = detect_distro_profile(root)
+    original_text = original.decode() if original else ''
+    clean_orig = re.sub(r'//[^\n]*|#[^\n]*|/\*.*?\*/', '', original_text, flags=re.S)
+    if re.search(r'\boptions\s*\{', clean_orig):
+        candidate = replace_options(original_text, hybrid_options(forwarders, directory, port))
+    else:
+        candidate = generate_distro_bind_config(profile.family, forwarders, directory, port, root)
     if request.get('dry_run'):
         return ['Plano BIND: TCP/UDP 127.0.0.1:'+str(port)+', ACL localhost, forward only, DNSSEC e cache 64 MiB.',
                 'Forwarders validados: ' + ', '.join(forwarders),
@@ -537,28 +709,20 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     apparmor_undo = []
     apparmor_steps = []
     try:
-        profile = detect_distro_profile(root)
-        if profile.family == 'debian':
-            configure_bind_defaults(root)
-            if root == Path('/'):
+        configure_distro_bind_environment(root, profile, port, run)
+        if profile.family == 'debian' and root == Path('/'):
+            try:
+                run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+            except (OperationError, FileNotFoundError):
+                pass
+            rndc_key = root / 'etc/bind/rndc.key'
+            if rndc_key.is_file():
                 try:
-                    run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                    run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                    run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
+                    run(['chmod', '640', str(rndc_key)])
                 except (OperationError, FileNotFoundError):
                     pass
-                cache_dir = root / profile.bind_work_dir.lstrip('/')
-                if cache_dir.is_dir():
-                    try:
-                        run(['chown', '-R', f'{profile.bind_user}:{profile.bind_group}', str(cache_dir)])
-                    except (OperationError, FileNotFoundError):
-                        pass
-                rndc_key = root / 'etc/bind/rndc.key'
-                if rndc_key.is_file():
-                    try:
-                        run(['chown', f'root:{profile.bind_group}', str(rndc_key)])
-                        run(['chmod', '640', str(rndc_key)])
-                    except (OperationError, FileNotFoundError):
-                        pass
         check_bind_runtime(root, main, service, run, port)
         # named/bind runs unprivileged: do not inherit an unreadable
         # root-only configuration mode from a previous deployment.

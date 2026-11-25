@@ -444,6 +444,39 @@ class OperationsTests(unittest.TestCase):
         steps = operations.configure_bind({'forwarders': ['8.8.8.8']}, deb_root, run)
         self.assertTrue(any('BIND named validado e ativo' in s for s in steps))
 
+    def test_distro_specific_bind_config_generation(self):
+        # 1. Debian
+        deb_root = self.root / 'test_deb'
+        deb_cfg = operations.generate_distro_bind_config('debian', ['8.8.8.8'], '/var/cache/bind', 5353, deb_root)
+        self.assertIn('directory "/var/cache/bind";', deb_cfg)
+        self.assertIn('listen-on port 5353 { 127.0.0.1; };', deb_cfg)
+        self.assertTrue((deb_root / 'etc/bind/named.conf').exists())
+        self.assertIn('include "/etc/bind/named.conf.options";', (deb_root / 'etc/bind/named.conf').read_text())
+
+        # 2. RedHat
+        rh_root = self.root / 'test_rh'
+        (rh_root / 'etc/named.rfc1912.zones').parent.mkdir(parents=True, exist_ok=True)
+        (rh_root / 'etc/named.rfc1912.zones').write_text('// rfc1912\n')
+        rh_cfg = operations.generate_distro_bind_config('redhat', ['1.1.1.1'], '/var/named', 5353, rh_root)
+        self.assertIn('directory "/var/named";', rh_cfg)
+        self.assertIn('logging {', rh_cfg)
+        self.assertIn('zone "." IN {', rh_cfg)
+        self.assertIn('file "named.ca";', rh_cfg)
+        self.assertIn('include "/etc/named.rfc1912.zones";', rh_cfg)
+
+        # 3. Arch
+        arch_root = self.root / 'test_arch'
+        arch_cfg = operations.generate_distro_bind_config('arch', ['9.9.9.9'], '/var/named', 5353, arch_root)
+        self.assertIn('directory "/var/named";', arch_cfg)
+        self.assertIn('pid-file "/run/named/named.pid";', arch_cfg)
+
+        # 4. SUSE
+        suse_root = self.root / 'test_suse'
+        suse_cfg = operations.generate_distro_bind_config('suse', ['8.8.4.4'], '/var/lib/named', 5353, suse_root)
+        self.assertIn('directory "/var/lib/named";', suse_cfg)
+        self.assertIn('dump-file "/var/log/named_dump.db";', suse_cfg)
+        self.assertIn('statistics-file "/var/log/named.stats";', suse_cfg)
+
 
 if __name__ == '__main__':
     unittest.main()

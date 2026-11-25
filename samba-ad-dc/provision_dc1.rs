@@ -126,8 +126,19 @@ pub fn execute_dc1_provision(request: &ProvisionRequest, root: &Path) -> Result<
         request.dns_backend.as_deref().unwrap_or("SAMBA_INTERNAL")
     };
 
-    // Remove old smb.conf before provision
-    let _ = fs::remove_file(root.join("etc/samba/smb.conf"));
+    // Remove old domain artifacts and PKI if overwriting
+    if request.overwrite_existing || request.clean_existing {
+        let _ = fs::remove_dir_all(root.join("var/lib/samba"));
+        let _ = fs::remove_dir_all(root.join("var/cache/samba"));
+        let _ = fs::remove_file(root.join("etc/samba/smb.conf"));
+        let _ = fs::remove_dir_all(root.join("etc/step-ca"));
+        let _ = Command::new("systemctl").args(["stop", "step-ca"]).output();
+        let _ = Command::new("systemctl").args(["disable", "step-ca"]).output();
+        let _ = fs::remove_file(root.join("etc/systemd/system/step-ca.service"));
+        let _ = Command::new("systemctl").arg("daemon-reload").output();
+    } else {
+        let _ = fs::remove_file(root.join("etc/samba/smb.conf"));
+    }
     enable_selinux_samba_dc(root);
 
     let mut prov_cmd = Command::new("samba-tool");
