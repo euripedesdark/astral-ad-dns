@@ -472,6 +472,16 @@ def prepare_ad_packages(os_release="/etc/os-release"):
 
     run_cmd(["dnf", f"--enablerepo={codeready_repo}", "install", "-y", *EL_AD_PACKAGES],
             use_sudo=True)
+    run_cmd(["systemctl", "stop", "winbind", "nmb", "smb"], use_sudo=True, check=False)
+    run_cmd(["systemctl", "disable", "winbind", "nmb", "smb"], use_sudo=True, check=False)
+    run_cmd(["systemctl", "mask", "winbind", "nmb", "smb"], use_sudo=True, check=False)
+    run_cmd(["systemctl", "unmask", "samba"], use_sudo=True, check=False)
+
+    # mDNS avahi-daemon interfere na resolução AD e ocupa a porta UDP 5353
+    run_cmd(["systemctl", "stop", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+    run_cmd(["systemctl", "disable", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+    run_cmd(["systemctl", "mask", "avahi-daemon.service", "avahi-daemon.socket"], use_sudo=True, check=False)
+
     for dpath, dmode in [
         ("/var/cache/samba", "0755"),
         ("/var/lib/samba", "0755"),

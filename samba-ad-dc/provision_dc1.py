@@ -545,6 +545,13 @@ def check_bind_runtime(root, main, service, run):
     for line in listeners.splitlines():
         if not line.strip() or re.search(r'"named(?:-sdb)?"', line):
             continue
+        if 'avahi-daemon' in line:
+            try:
+                run(['systemctl', 'mask', '--now', 'avahi-daemon.service', 'avahi-daemon.socket'])
+                run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
+            except Exception:
+                pass
+            continue
         fields = line.split()
         if len(fields) < 5:
             raise OperationError('Nao foi possivel identificar o endereco local do listener 5353: ' + line)
