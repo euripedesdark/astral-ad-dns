@@ -59,13 +59,27 @@ pub fn generate_distro_bind_config(
             standard_opts
         }
         "redhat" => {
+            let crypto_inc = if root.join("etc/crypto-policies/back-ends/bind.config").exists() {
+                "    include \"/etc/crypto-policies/back-ends/bind.config\";\n"
+            } else {
+                ""
+            };
+            let hint_file = if root.join("etc/named.ca").exists() {
+                "/etc/named.ca"
+            } else {
+                "named.ca"
+            };
+            let redhat_opts = format!(
+                "options {{\n    directory \"{}\";\n    dump-file \"/var/named/data/cache_dump.db\";\n    statistics-file \"/var/named/data/named_stats.txt\";\n    memstatistics-file \"/var/named/data/named_mem_stats.txt\";\n    secroots-file \"/var/named/data/named.secroots\";\n    recursing-file \"/var/named/data/named.recursing\";\n\n    listen-on port {} {{ 127.0.0.1; }};\n    listen-on-v6 {{ none; }};\n\n    allow-query {{ localhost; 127.0.0.1; }};\n    allow-recursion {{ localhost; 127.0.0.1; }};\n    allow-query-cache {{ localhost; 127.0.0.1; }};\n\n    recursion yes;\n    forward only;\n    forwarders {{\n{}}};\n\n    dnssec-validation auto;\n    max-cache-size 64m;\n    minimal-responses yes;\n    managed-keys-directory \"/var/named/dynamic\";\n    pid-file \"/run/named/named.pid\";\n    session-keyfile \"/run/named/session.key\";\n{}};\n",
+                directory, port, fwd_block, crypto_inc
+            );
             let mut content = vec![
-                "// Astral AD & Hybrid DNS - BIND 9 Configuration (RedHat / Fedora)".to_string(),
-                standard_opts.trim().to_string(),
+                "// Astral AD & Hybrid DNS - BIND 9 Configuration (Fedora / RHEL)".to_string(),
+                redhat_opts.trim().to_string(),
                 "".to_string(),
                 "logging {\n    channel default_debug {\n        file \"data/named.run\";\n        severity dynamic;\n    };\n};".to_string(),
                 "".to_string(),
-                "zone \".\" IN {\n    type hint;\n    file \"named.ca\";\n};".to_string(),
+                format!("zone \".\" IN {{\n    type hint;\n    file \"{}\";\n}};", hint_file),
             ];
             if root.join("etc/named.rfc1912.zones").exists() {
                 content.push("include \"/etc/named.rfc1912.zones\";".to_string());

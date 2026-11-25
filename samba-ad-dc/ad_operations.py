@@ -36,6 +36,13 @@ def checked_run(args):
     return result.stdout
 
 
+def optional(run, args):
+    try:
+        return run(args)
+    except Exception:
+        return ''
+
+
 def enable_selinux_samba_dc(root=Path('/'), run=checked_run):
     """Garante que a boolean samba_domain_controller do SELinux esteja ativa para o AD DC."""
     if (root / 'sys/fs/selinux/enforce').exists():
@@ -272,14 +279,40 @@ def hybrid_options(forwarders, directory, port=5353):
             '};\n')
 
 
+def extract_user_zones(content):
+    """Extrai declaracoes de zonas customizadas pelo usuario, ignorando zonas padrao/root."""
+    clean = re.sub(r'//[^\n]*|#[^\n]*|/\*.*?\*/', lambda m: ' ' * len(m[0]), content, flags=re.S)
+    zones = []
+    for match in re.finditer(r'\bzone\s+"([^"]+)"\s*(?:IN)?\s*\{', clean, re.I):
+        zname = match[1].strip()
+        if zname.lower() in ('.', 'localhost', 'localhost.localdomain', '127.in-addr.arpa', '0.0.127.in-addr.arpa', '0.in-addr.arpa', '1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa'):
+            continue
+        level = 1
+        start_idx = match.start()
+        end_idx = None
+        for i in range(match.end(), len(content)):
+            if content[i] == '{': level += 1
+            elif content[i] == '}':
+                level -= 1
+                if level == 0:
+                    end = i + 1
+                    while end < len(content) and content[end] in ' \t\r\n;':
+                        end += 1
+                    end_idx = end
+                    break
+        if end_idx:
+            zones.append(content[start_idx:end_idx].strip())
+    return '\n\n'.join(zones)
+
+
 def generate_distro_bind_config(family, forwarders, directory, port=5353, root=Path('/')):
-    opts = hybrid_options(forwarders, directory, port)
+    fwd_entries = ' '.join(ip + ';' for ip in forwarders)
     if family == 'debian':
-        # Debian uses modular configuration: named.conf.options holds options
+        # Debian / Ubuntu: named.conf.options modular
         main_conf = root / 'etc/bind/named.conf'
         if not main_conf.exists() or not main_conf.read_text().strip():
             main_lines = [
-                '// Astral AD & Hybrid DNS - BIND 9 Main Configuration (Debian)',
+                '// Astral AD & Hybrid DNS - BIND 9 Main Configuration (Debian / Ubuntu)',
                 'include "/etc/bind/named.conf.options";',
                 'include "/etc/bind/named.conf.local";',
             ]
@@ -289,13 +322,69 @@ def generate_distro_bind_config(family, forwarders, directory, port=5353, root=P
         local_conf = root / 'etc/bind/named.conf.local'
         if not local_conf.exists():
             atomic_write(local_conf, '// Astral AD & Hybrid DNS - Local configuration\n', 0o644)
-        return opts
+
+        return (
+            '// Astral AD & Hybrid DNS - BIND 9 Options (Debian / Ubuntu)\n'
+            'options {\n'
+            f'    directory "{directory}";\n'
+            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+            '    listen-on-v6 { none; };\n'
+            '    allow-query { localhost; };\n'
+            '    allow-recursion { localhost; };\n'
+            '    allow-query-cache { localhost; };\n'
+            '    recursion yes;\n'
+            '    forward only;\n'
+            f'    forwarders {{ {fwd_entries} }};\n'
+            '    dnssec-validation auto;\n'
+            '    auth-nxdomain no;    # conform to RFC1035\n'
+            '    max-cache-size 64m;\n'
+            '    minimal-responses yes;\n'
+            '};\n'
+        )
 
     elif family == 'redhat':
-        # RedHat / Fedora: Monolithic /etc/named.conf
-        content = [
-            '// Astral AD & Hybrid DNS - BIND 9 Configuration (RedHat / Fedora)',
-            opts.rstrip(),
+        # RedHat / Fedora: Monolitico /etc/named.conf com caminhos e politicas Red Hat
+        crypto_file = root / 'etc/crypto-policies/back-ends/bind.config'
+        crypto_inc = '    include "/etc/crypto-policies/back-ends/bind.config";\n' if crypto_file.exists() else ''
+        hint_file = '/etc/named.ca' if (root / 'etc/named.ca').exists() else 'named.ca'
+        geoip_line = '    geoip-directory "/usr/share/GeoIP";\n' if (root / 'usr/share/GeoIP').is_dir() else ''
+
+        lines = [
+            '// Astral AD & Hybrid DNS - BIND 9 Configuration (Fedora / RHEL)',
+            'options {',
+            f'    directory "{directory}";',
+            '    dump-file "/var/named/data/cache_dump.db";',
+            '    statistics-file "/var/named/data/named_stats.txt";',
+            '    memstatistics-file "/var/named/data/named_mem_stats.txt";',
+            '    secroots-file "/var/named/data/named.secroots";',
+            '    recursing-file "/var/named/data/named.recursing";',
+            '',
+            f'    listen-on port {port} {{ 127.0.0.1; }};',
+            '    listen-on-v6 { none; };',
+            '',
+            '    allow-query { localhost; };',
+            '    allow-recursion { localhost; };',
+            '    allow-query-cache { localhost; };',
+            '',
+            '    recursion yes;',
+            '    forward only;',
+            f'    forwarders {{ {fwd_entries} }};',
+            '',
+            '    dnssec-validation auto;',
+            '    max-cache-size 64m;',
+            '    minimal-responses yes;',
+            '    managed-keys-directory "/var/named/dynamic";',
+        ]
+        if geoip_line:
+            lines.append('    geoip-directory "/usr/share/GeoIP";')
+        lines.extend([
+            '    pid-file "/run/named/named.pid";',
+            '    session-keyfile "/run/named/session.key";',
+        ])
+        if crypto_inc:
+            lines.append('    include "/etc/crypto-policies/back-ends/bind.config";')
+        lines.extend([
+            '};',
             '',
             'logging {',
             '    channel default_debug {',
@@ -306,75 +395,87 @@ def generate_distro_bind_config(family, forwarders, directory, port=5353, root=P
             '',
             'zone "." IN {',
             '    type hint;',
-            '    file "named.ca";',
+            f'    file "{hint_file}";',
             '};',
-        ]
+        ])
         if (root / 'etc/named.rfc1912.zones').exists():
-            content.append('include "/etc/named.rfc1912.zones";')
+            lines.append('include "/etc/named.rfc1912.zones";')
         if (root / 'etc/named.root.key').exists():
-            content.append('include "/etc/named.root.key";')
-        return '\n'.join(content) + '\n'
+            lines.append('include "/etc/named.root.key";')
+        return '\n'.join(lines) + '\n'
 
     elif family == 'arch':
-        # Arch Linux: Monolithic /etc/named.conf with pid-file
-        arch_opts = (
-            'options {\n'
-            f'    directory "{directory}";\n'
-            '    pid-file "/run/named/named.pid";\n'
-            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
-            '    listen-on-v6 { none; };\n'
-            '    allow-query { localhost; };\n'
-            '    allow-recursion { localhost; };\n'
-            '    allow-query-cache { localhost; };\n'
-            '    recursion yes;\n'
-            '    forward only;\n'
-            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
-            '    dnssec-validation auto;\n'
-            '    max-cache-size 64m;\n'
-            '    minimal-responses yes;\n'
-            '};\n'
-        )
-        content = [
+        # Arch Linux: /etc/named.conf com run/named
+        lines = [
             '// Astral AD & Hybrid DNS - BIND 9 Configuration (Arch Linux)',
-            arch_opts.rstrip(),
+            'options {',
+            f'    directory "{directory}";',
+            '    pid-file "/run/named/named.pid";',
+            f'    listen-on port {port} {{ 127.0.0.1; }};',
+            '    listen-on-v6 { none; };',
+            '    allow-query { localhost; };',
+            '    allow-recursion { localhost; };',
+            '    allow-query-cache { localhost; };',
+            '    recursion yes;',
+            '    forward only;',
+            f'    forwarders {{ {fwd_entries} }};',
+            '    dnssec-validation auto;',
+            '    max-cache-size 64m;',
+            '    minimal-responses yes;',
+            '};',
         ]
         if (root / 'var/named/root.hint').exists():
-            content.extend(['', 'zone "." IN {', '    type hint;', '    file "root.hint";', '};'])
+            lines.extend(['', 'zone "." IN {', '    type hint;', '    file "root.hint";', '};'])
         if (root / 'var/named/localhost.zone').exists():
-            content.extend(['', 'zone "localhost" IN {', '    type master;', '    file "localhost.zone";', '};'])
+            lines.extend(['', 'zone "localhost" IN {', '    type master;', '    file "localhost.zone";', '};'])
         if (root / 'var/named/127.0.0.zone').exists():
-            content.extend(['', 'zone "0.0.127.in-addr.arpa" IN {', '    type master;', '    file "127.0.0.zone";', '};'])
-        return '\n'.join(content) + '\n'
+            lines.extend(['', 'zone "0.0.127.in-addr.arpa" IN {', '    type master;', '    file "127.0.0.zone";', '};'])
+        return '\n'.join(lines) + '\n'
 
     elif family == 'suse':
-        # openSUSE / SUSE: Monolithic /etc/named.conf with /var/lib/named and dump files
-        suse_opts = (
-            'options {\n'
-            f'    directory "{directory}";\n'
-            '    dump-file "/var/log/named_dump.db";\n'
-            '    statistics-file "/var/log/named.stats";\n'
-            f'    listen-on port {port} {{ 127.0.0.1; }};\n'
-            '    listen-on-v6 { none; };\n'
-            '    allow-query { localhost; };\n'
-            '    allow-recursion { localhost; };\n'
-            '    allow-query-cache { localhost; };\n'
-            '    recursion yes;\n'
-            '    forward only;\n'
-            '    forwarders { ' + ' '.join(ip + ';' for ip in forwarders) + ' };\n'
-            '    dnssec-validation auto;\n'
-            '    max-cache-size 64m;\n'
-            '    minimal-responses yes;\n'
-            '};\n'
-        )
-        content = [
+        # openSUSE / SUSE: /var/lib/named e dump em /var/log/
+        lines = [
             '// Astral AD & Hybrid DNS - BIND 9 Configuration (openSUSE / SUSE)',
-            suse_opts.rstrip(),
+            'options {',
+            f'    directory "{directory}";',
+            '    dump-file "/var/log/named_dump.db";',
+            '    statistics-file "/var/log/named.stats";',
+            f'    listen-on port {port} {{ 127.0.0.1; }};',
+            '    listen-on-v6 { none; };',
+            '    allow-query { localhost; };',
+            '    allow-recursion { localhost; };',
+            '    allow-query-cache { localhost; };',
+            '    recursion yes;',
+            '    forward only;',
+            f'    forwarders {{ {fwd_entries} }};',
+            '    dnssec-validation auto;',
+            '    max-cache-size 64m;',
+            '    minimal-responses yes;',
+            '};',
         ]
         if (root / 'var/lib/named/root.hint').exists():
-            content.extend(['', 'zone "." in {', '    type hint;', '    file "root.hint";', '};'])
-        return '\n'.join(content) + '\n'
+            lines.extend(['', 'zone "." in {', '    type hint;', '    file "root.hint";', '};'])
+        if (root / 'var/lib/named/localhost.zone').exists():
+            lines.extend(['', 'zone "localhost" in {', '    type master;', '    file "localhost.zone";', '};'])
+        return '\n'.join(lines) + '\n'
 
-    return opts
+    # Fallback genérico RedHat
+    return (
+        'options {\n'
+        f'    directory "{directory}";\n'
+        f'    listen-on port {port} {{ 127.0.0.1; }};\n'
+        '    listen-on-v6 { none; };\n'
+        '    allow-query { localhost; 127.0.0.1; };\n'
+        '    allow-recursion { localhost; 127.0.0.1; };\n'
+        '    allow-query-cache { localhost; 127.0.0.1; };\n'
+        '    recursion yes;\n'
+        '    forward only;\n'
+        f'    forwarders {{ {fwd_entries} }};\n'
+        '    dnssec-validation auto;\n'
+        '    max-cache-size 64m;\n'
+        '    minimal-responses yes;\n'
+        '};\n'
+    )
 
 
 def replace_options(content, options):
@@ -506,10 +607,14 @@ def prepare_bind_selinux(root, run, undo, port=5353):
         local_previous = port_labels(local, protocol, port)
         action = '-m' if previous else '-a'
         run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
-        # Removing a new local override restores the distribution policy (including mDNS).
         undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]
                     if local_previous else ['semanage', 'port', '-d', '-p', protocol, str(port)])
         steps.append('SELinux: ' + protocol + '/' + str(port) + ' autorizado como dns_port_t para o BIND.')
+    if root == Path('/'):
+        try:
+            run(['setsebool', '-P', 'named_bind_multicast_ports', '1'])
+        except Exception:
+            pass
     return steps
 
 
@@ -675,8 +780,6 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     original_stat = config.stat() if config.exists() else None
     original = config.read_bytes() if config.exists() else None
     port = choose_bind_port(root, run)
-    # Never change a previously deployed BIND listener implicitly. A migration
-    # from 15353 to 5353 is an explicit, separate maintenance procedure.
     if not request.get('dry_run'):
         samba_config = root / 'etc/samba/smb.conf'
         if samba_config.is_file():
@@ -690,13 +793,17 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     request['bind_port'] = port
     profile = detect_distro_profile(root)
     original_text = original.decode() if original else ''
-    clean_orig = re.sub(r'//[^\n]*|#[^\n]*|/\*.*?\*/', '', original_text, flags=re.S)
-    if re.search(r'\boptions\s*\{', clean_orig):
-        candidate = replace_options(original_text, hybrid_options(forwarders, directory, port))
-    else:
-        candidate = generate_distro_bind_config(profile.family, forwarders, directory, port, root)
+    
+    # Gera configuração nativa específica da distribuição detectada
+    candidate = generate_distro_bind_config(profile.family, forwarders, directory, port, root)
+    if original_text and profile.family != 'debian':
+        custom_zones = extract_user_zones(original_text)
+        if custom_zones:
+            candidate = candidate.rstrip() + '\n\n// Zonas personalizadas existentes preservadas\n' + custom_zones + '\n'
+
     if request.get('dry_run'):
         return ['Plano BIND: TCP/UDP 127.0.0.1:'+str(port)+', ACL localhost, forward only, DNSSEC e cache 64 MiB.',
+                'Distro detectada: ' + profile.family,
                 'Forwarders validados: ' + ', '.join(forwarders),
                 'Nenhuma configuração ou serviço foi alterado.']
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -725,8 +832,6 @@ def configure_bind(request, root=Path('/'), run=checked_run):
                 except (OperationError, FileNotFoundError):
                     pass
         check_bind_runtime(root, main, service, run, port)
-        # named/bind runs unprivileged: do not inherit an unreadable
-        # root-only configuration mode from a previous deployment.
         atomic_write(staged, candidate, 0o640)
         run(['chown', f'root:{profile.bind_group}', str(staged)])
         run(['named-checkconf', str(staged)])
