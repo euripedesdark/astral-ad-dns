@@ -212,6 +212,10 @@ pub fn configure_bind(request: &Value, root: &Path) -> Result<Vec<String>, Strin
         .unwrap_or(5353);
 
     // 1. Prepare directory permissions and distro environment
+    if root == Path::new("/") {
+        let _ = Command::new("systemctl").args(["mask", "--now", "avahi-daemon.service", "avahi-daemon.socket"]).output();
+        let _ = Command::new("systemctl").args(["stop", "avahi-daemon.service", "avahi-daemon.socket"]).output();
+    }
     let bind_dir = root.join(profile.bind_work_dir.trim_start_matches('/'));
     fs::create_dir_all(&bind_dir).map_err(|e| e.to_string())?;
     let _ = Command::new("chown").args(["-R", &format!("{}:{}", profile.bind_user, profile.bind_group), bind_dir.to_str().unwrap()]).output();

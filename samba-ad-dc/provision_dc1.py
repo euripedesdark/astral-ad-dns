@@ -684,12 +684,13 @@ def configure_bind(request, root=Path('/'), run=checked_run):
     apparmor_steps = []
     try:
         configure_distro_bind_environment(root, profile, 5353, run)
-        if profile.family == 'debian' and root == Path('/'):
+        if root == Path('/'):
             try:
+                run(['systemctl', 'mask', '--now', 'avahi-daemon.service', 'avahi-daemon.socket'])
                 run(['systemctl', 'stop', 'avahi-daemon.service', 'avahi-daemon.socket'])
-                run(['systemctl', 'mask', 'avahi-daemon.service', 'avahi-daemon.socket'])
             except (OperationError, FileNotFoundError):
                 pass
+        if profile.family == 'debian' and root == Path('/'):
             rndc_key = root / 'etc/bind/rndc.key'
             if rndc_key.is_file():
                 try:

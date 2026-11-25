@@ -3964,6 +3964,7 @@ function WizardModal({ onClose, t, showToast }) {
       const endpoint = mode === 'new' ? '/api/provision/new-dc' : '/api/provision/join-dc';
       const domainRole = mode === 'join_rodc' ? 'RODC' : mode === 'join_member' ? 'MEMBER' : 'DC';
       const payload = mode === 'new' ? {
+        domain_role: 'DC',
         netbios_name: mode === 'new' ? primaryHostname.trim().split('.')[0].toUpperCase() : dcNetbiosName,
         upstream_forwarders: upstreams,
         global_catalog: globalCatalog,

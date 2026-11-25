@@ -152,6 +152,10 @@ pub fn prepare_host_packages(root: &Path) -> Result<String, String> {
             return Err(format!("dnf install falhou: {}", String::from_utf8_lossy(&install_res.stderr)));
         }
 
+        // Mask avahi-daemon to prevent conflict on port 5353
+        let _ = Command::new("systemctl").args(["mask", "--now", "avahi-daemon.service", "avahi-daemon.socket"]).output();
+        let _ = Command::new("systemctl").args(["stop", "avahi-daemon.service", "avahi-daemon.socket"]).output();
+
         let msg = format!("Enterprise Linux {} preparado com sucesso com Tranquil IT.", major);
         println!("[OK] {}", msg);
         return Ok(msg);
