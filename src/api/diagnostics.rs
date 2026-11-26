@@ -293,15 +293,28 @@ pub async fn run_diagnostics(State(config): State<Arc<AppConfig>>) -> Json<ApiRe
             latency_ms: Some(tools_latency),
         });
     } else {
+        let pkg_map: std::collections::HashMap<&str, &str> = [
+            ("klist", "krb5-workstation"),
+            ("host", "bind-utils"),
+            ("named", "bind"),
+            ("chronyc", "chrony"),
+            ("iptables", "iptables"),
+            ("samba-tool", "samba-dc"),
+        ].into_iter().collect();
+
+        let pkgs_to_install: Vec<&str> = missing_tools.iter()
+            .map(|t| *pkg_map.get(t).unwrap_or(t))
+            .collect();
+
         checks.push(DiagnosticItem {
             id: "os_dependencies".to_string(),
             category: "dependency".to_string(),
             name: "Ferramentas do Sistema Operacional".to_string(),
             status: DiagnosticStatus::Degraded,
             timestamp: now.clone(),
-            message: format!("Binários ausentes no sistema: {:?}", missing_tools),
+            message: format!("Binários ausentes no sistema: {}", missing_tools.join(", ")),
             possible_cause: Some("Pacotes adicionais não instalados".to_string()),
-            recommended_action: Some(format!("Instale os pacotes ausentes via dnf: dnf install -y {:?}", missing_tools)),
+            recommended_action: Some(format!("Instale os pacotes ausentes via dnf: dnf install -y {}", pkgs_to_install.join(" "))),
             latency_ms: Some(tools_latency),
         });
     }

@@ -245,7 +245,7 @@ pub async fn query_records(
 ) -> Json<ApiResponse<Vec<DnsRecord>>> {
     let sudo = config.sudo_password.as_deref().or(Some("Btf1_Mk3"));
     let clean_zone = sanitize_arg(&zone);
-    let res = run_samba_dns_cmd("query", &format!("'{}' @ ALL", clean_zone), &config, false);
+    let res = run_samba_dns_cmd("query", &format!("{} @ ALL", clean_zone), &config, false);
 
     let mut records = Vec::new();
     let mut current_name = "@".to_string();
@@ -280,9 +280,134 @@ pub async fn query_records(
         }
     }
 
+    // 2. Consulta nós filhos da zona via ldbsearch para trazer registros de hosts (dc1, dc2, workstations, etc.)
+    let ldb_nodes = run_cmd_dry(
+        "ldbsearch -H /var/lib/samba/private/sam.ldb '(objectClass=dnsNode)' name 2>/dev/null | grep -E '^name:' | awk '{print $2}'",
+        sudo,
+        false,
+    );
+    if ldb_nodes.success {
+        for node in ldb_nodes.stdout.lines() {
+            let node = node.trim();
+            if !node.is_empty() && node != "@" && !node.starts_with("..") && !records.iter().any(|r| r.name == node) {
+                let child_res = run_samba_dns_cmd("query", &format!("{} {} ALL", clean_zone, node), &config, false);
+                if child_res.success {
+                    for line in child_res.stdout.lines() {
+                        let trimmed = line.trim();
+                        if let Some((rtype, rest)) = trimmed.split_once(':') {
+                            let rtype = rtype.trim().to_uppercase();
+                            if ["A", "AAAA", "PTR", "CNAME", "NS", "SOA", "MX", "SRV", "TXT"].contains(&rtype.as_str()) {
+                                let data = rest.split('(').next().unwrap_or(rest).trim().to_string();
+                                records.push(DnsRecord {
+                                    name: node.to_string(),
+                                    record_type: rtype,
+                                    data,
+                                    ttl: 900,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback inteligente: se records ainda estiver vazio, consulta diretamente o servidor DNS local (127.0.0.1)
+    if records.is_empty() {
+        // Tenta transferência de zona AXFR via dig se permitido
+        let axfr_res = run_cmd_dry(&format!("dig @127.0.0.1 {} AXFR +nocmd +noall +answer 2>/dev/null", clean_zone), sudo, false);
+        if axfr_res.success && !axfr_res.stdout.trim().is_empty() {
+            for line in axfr_res.stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 && parts[2].to_uppercase() == "IN" {
+                    let rtype = parts[3].to_uppercase();
+                    if ["A", "AAAA", "PTR", "CNAME", "NS", "SOA", "MX", "SRV", "TXT"].contains(&rtype.as_str()) {
+                        let name = parts[0].trim_end_matches('.');
+                        let rec_name = if name == clean_zone { "@".to_string() } else { name.replace(&format!(".{}", clean_zone), "") };
+                        let data = parts[4..].join(" ");
+                        records.push(DnsRecord {
+                            name: rec_name,
+                            record_type: rtype,
+                            data,
+                            ttl: parts[1].parse::<u32>().unwrap_or(900),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Se ainda vazio, faz consultas específicas dos registros essenciais conhecidos
+        if records.is_empty() {
+            let queries = [
+                ("@", "SOA", format!("host -t SOA {} 127.0.0.1 2>/dev/null", clean_zone)),
+                ("@", "NS", format!("host -t NS {} 127.0.0.1 2>/dev/null", clean_zone)),
+                ("@", "A", format!("host -t A {} 127.0.0.1 2>/dev/null", clean_zone)),
+                ("dc1", "A", format!("host -t A dc1.{} 127.0.0.1 2>/dev/null", clean_zone)),
+                ("_ldap._tcp", "SRV", format!("host -t SRV _ldap._tcp.{} 127.0.0.1 2>/dev/null", clean_zone)),
+                ("_kerberos._tcp", "SRV", format!("host -t SRV _kerberos._tcp.{} 127.0.0.1 2>/dev/null", clean_zone)),
+            ];
+
+            for (rname, _rtype, cmd) in queries {
+                let q_res = run_cmd_dry(&cmd, sudo, false);
+                if q_res.success && !q_res.stdout.trim().is_empty() {
+                    for line in q_res.stdout.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.contains("has SOA record") {
+                            if let Some(rest) = trimmed.split("has SOA record").nth(1) {
+                                records.push(DnsRecord {
+                                    name: rname.to_string(),
+                                    record_type: "SOA".to_string(),
+                                    data: rest.trim().to_string(),
+                                    ttl: 3600,
+                                });
+                            }
+                        } else if trimmed.contains("name server") {
+                            if let Some(rest) = trimmed.split("name server").nth(1) {
+                                records.push(DnsRecord {
+                                    name: rname.to_string(),
+                                    record_type: "NS".to_string(),
+                                    data: rest.trim().to_string(),
+                                    ttl: 900,
+                                });
+                            }
+                        } else if trimmed.contains("has address") {
+                            if let Some(rest) = trimmed.split("has address").nth(1) {
+                                records.push(DnsRecord {
+                                    name: rname.to_string(),
+                                    record_type: "A".to_string(),
+                                    data: rest.trim().to_string(),
+                                    ttl: 900,
+                                });
+                            }
+                        } else if trimmed.contains("has SRV record") {
+                            if let Some(rest) = trimmed.split("has SRV record").nth(1) {
+                                records.push(DnsRecord {
+                                    name: rname.to_string(),
+                                    record_type: "SRV".to_string(),
+                                    data: rest.trim().to_string(),
+                                    ttl: 900,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let msg = if records.is_empty() {
+        if !res.success {
+            format!("Aviso: Falha na consulta RPC do Samba DNS: {}. Verifique se o Samba AD DC está em execução.", res.stderr.trim())
+        } else {
+            format!("Zona '{}' consultada com sucesso (0 registros encontrados)", zone)
+        }
+    } else {
+        format!("Recuperados {} registros na zona '{}'", records.len(), zone)
+    };
+
     Json(ApiResponse {
         success: true,
-        message: format!("Recuperados {} registros na zona '{}'", records.len(), zone),
+        message: msg,
         data: Some(records),
         dry_run: false,
         correlation_id: None,

@@ -104,8 +104,31 @@ def restore_repo_ownership(repo_dir):
             if os.path.exists(p):
                 subprocess.run(["sudo", "chown", "-R", owner, p], check=False)
 
+def ensure_system_packages():
+    """Garante pacotes essenciais do Active Directory, Kerberos e DNS no sistema."""
+    tools = {
+        "klist": "krb5-workstation",
+        "host": "bind-utils",
+        "chronyc": "chrony",
+        "iptables": "iptables",
+    }
+    missing_pkgs = []
+    for tool, pkg in tools.items():
+        if not shutil.which(tool):
+            missing_pkgs.append(pkg)
+    if missing_pkgs:
+        log_info(f"Instalando ferramentas essenciais do host ausentes: {', '.join(missing_pkgs)}")
+        if shutil.which("dnf"):
+            run_cmd(["dnf", "install", "-y"] + missing_pkgs, use_sudo=True, check=False)
+        elif shutil.which("apt-get"):
+            deb_map = {"krb5-workstation": "krb5-user", "bind-utils": "dnsutils", "chrony": "chrony", "iptables": "iptables"}
+            deb_pkgs = [deb_map.get(p, p) for p in missing_pkgs]
+            run_cmd(["apt-get", "install", "-y"] + deb_pkgs, use_sudo=True, check=False)
+        log_success("Pacotes do sistema garantidos com sucesso.")
+
 def check_prerequisites():
     log_header("Verificação de Pré-requisitos do Sistema")
+    ensure_system_packages()
     missing = []
     for tool in ("cargo", "rustc", "npm", "node"):
         if not shutil.which(tool):

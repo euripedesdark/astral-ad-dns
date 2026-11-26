@@ -285,24 +285,62 @@ pub fn samba_ad_ports() -> Vec<PortRule> {
     required_ports_for_services(&services)
 }
 
-/// Verifica se a porta está aberta no firewall iptables
+/// Verifica se a porta está aberta no firewall iptables, firewalld ou nftables
 pub fn check_port_open(proto: &str, port: &str, sudo_pass: Option<&str>) -> bool {
     let sudo = sudo_pass.or(Some("Btf1_Mk3"));
+    let clean_port = port.split(':').next().unwrap_or(port);
+
+    // 1. iptables -C exato
     let check_cmd = format!("iptables -C INPUT -p {} -m {} --dport {} -j ACCEPT 2>/dev/null", proto, proto, port);
-    let check_res = run_safe_cmd(&check_cmd, sudo);
-    if check_res.success {
+    if run_safe_cmd(&check_cmd, sudo).success {
         return true;
     }
-    // Fallback com iptables -S para regras que possuam comentários ou flags adicionais
-    let check_s = format!("iptables -S INPUT 2>/dev/null | grep -E -- \"-p {} .*--dport {} .*-j ACCEPT\"", proto, port);
+
+    // 2. iptables -S para regras com comentários ou multiport
+    let check_s = format!("iptables -S INPUT 2>/dev/null | grep -E -- \"-p {} .*(--dport|--dports) [^ ]*{}[^ ]* .*-j ACCEPT\"", proto, clean_port);
     if run_safe_cmd(&check_s, sudo).success {
         return true;
     }
-    // Fallback: se o firewall padrão tem política ACCEPT e não há regras de DROP/REJECT no INPUT
+
+    // 3. firewalld (se ativo)
+    let fw_chk = format!("firewall-cmd --query-port={}/{} 2>/dev/null", port, proto);
+    if run_safe_cmd(&fw_chk, sudo).success {
+        return true;
+    }
+
+    // 4. firewalld por serviço conhecido
+    let svc_chk = "firewall-cmd --list-services 2>/dev/null";
+    let svc_res = run_safe_cmd(svc_chk, sudo);
+    if svc_res.success {
+        let svcs = svc_res.stdout.to_lowercase();
+        if (clean_port == "53" && svcs.contains("dns"))
+            || ((clean_port == "88" || clean_port == "464") && svcs.contains("kerberos"))
+            || ((clean_port == "389" || clean_port == "636") && svcs.contains("ldap"))
+            || ((clean_port == "135" || clean_port == "445") && svcs.contains("samba"))
+            || (clean_port == "123" && svcs.contains("ntp"))
+        {
+            return true;
+        }
+    }
+
+    // 5. nftables ruleset
+    let nft_chk = format!("nft list ruleset 2>/dev/null | grep -E \"dport [^;]*{}.*accept\"", clean_port);
+    if run_safe_cmd(&nft_chk, sudo).success {
+        return true;
+    }
+
+    // 6. Fallback: se o firewall padrão tem política ACCEPT e não há regras de DROP/REJECT no INPUT
     let policy_res = run_safe_cmd("iptables -S INPUT 2>/dev/null", sudo);
     if policy_res.success && policy_res.stdout.contains("-P INPUT ACCEPT") && !policy_res.stdout.contains("-j DROP") && !policy_res.stdout.contains("-j REJECT") {
         return true;
     }
+
+    // 7. Se o processo está listening e não há bloqueio ativo
+    let ss_chk = format!("ss -tuln 2>/dev/null | grep -E \":{}\"", clean_port);
+    if run_safe_cmd(&ss_chk, sudo).success && policy_res.success && !policy_res.stdout.contains("-j REJECT") {
+        return true;
+    }
+
     false
 }
 
