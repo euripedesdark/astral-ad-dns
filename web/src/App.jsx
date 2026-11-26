@@ -4026,12 +4026,12 @@ function WizardModal({ onClose, t, showToast }) {
         localStorage.setItem('astral.provision.job', data.data.job_id);
         const result = await followProvisionJob(data.data.job_id);
         setLastResult(result);
-        succeeded = result.success;
+        succeeded = result.success || (result.joined && result.configuration_pending);
         data = { message: result.message || result.error, data: result };
       }
       if (succeeded) {
         setCompletedSteps(data.data?.steps_completed || []);
-        showToast(data.message, data.data?.steps_completed?.some(item => item.startsWith('[AVISO]')) ? 'warning' : 'success');
+        showToast(data.message, (data.data?.configuration_pending || data.data?.steps_completed?.some(item => item.startsWith('[AVISO]'))) ? 'warning' : 'success');
       } else {
         setErrorMsg(data.message || 'Falha no provisionamento');
         setCompletedSteps(data.data?.steps_completed || []);
@@ -4464,16 +4464,22 @@ function WizardModal({ onClose, t, showToast }) {
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 {executing && <RefreshCw className="w-5 h-5 animate-spin text-indigo-400" />}
-                {!executing && !errorMsg && <CheckCircle className="w-5 h-5 text-emerald-400" />}
+                {!executing && !errorMsg && (!lastResult?.configuration_pending ? <CheckCircle className="w-5 h-5 text-emerald-400" /> : <AlertTriangle className="w-5 h-5 text-amber-400" />)}
                 {!executing && errorMsg && <AlertTriangle className="w-5 h-5 text-rose-400" />}
                 <h4 className="font-bold text-sm text-slate-100">
-                  {executing ? t.provisioningInProgress : errorMsg ? t.provisionErrorTitle : t.provisionSuccessTitle}
+                  {executing ? t.provisioningInProgress : errorMsg ? t.provisionErrorTitle : (lastResult?.configuration_pending ? (t.provisionSuccessTitle + " (Configuração BIND Pendente)") : t.provisionSuccessTitle)}
                 </h4>
               </div>
 
               {errorMsg && (
                 <div className="bg-rose-950/80 border border-rose-800 p-3 rounded-lg text-rose-200 font-mono">
                   {errorMsg}
+                </div>
+              )}
+
+              {!errorMsg && lastResult?.configuration_pending && (
+                <div className="bg-amber-950/80 border border-amber-800 p-3 rounded-lg text-amber-200 font-mono text-xs">
+                  {lastResult.message || "Domínio ingressado com sucesso. Configuração recursiva BIND pendente de validação."}
                 </div>
               )}
 

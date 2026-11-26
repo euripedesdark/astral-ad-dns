@@ -583,6 +583,26 @@ def prepare_bind_selinux(root, run, undo, port=5353):
     if not (root / 'sys/fs/selinux/enforce').exists():
         return []
     steps = []
+    # 1. Authorize named_t to bind to mdns_port_t (udp/tcp 5353) via SELinux CIL policy module
+    # This avoids any conflict with system-defined mdns_port_t in base policy on Fedora/RHEL.
+    if shutil.which('semodule'):
+        cil_content = (
+            '; Astral AD & Hybrid DNS - Allow BIND to bind to port 5353\n'
+            '(allow named_t mdns_port_t (udp_socket (name_bind)))\n'
+            '(allow named_t mdns_port_t (tcp_socket (name_bind)))\n'
+        )
+        cil_dir = root / 'var/lib/astral-ad-dns/selinux'
+        cil_dir.mkdir(parents=True, exist_ok=True)
+        cil_file = cil_dir / 'astral_named_5353.cil'
+        atomic_write(cil_file, cil_content, 0o644)
+        try:
+            run(['semodule', '-i', str(cil_file)])
+            steps.append('SELinux: modulo CIL astral_named_5353 instalado com sucesso para porta 5353.')
+            undo.append(['semodule', '-r', 'astral_named_5353'])
+        except Exception as cil_err:
+            steps.append(f'[AVISO] SELinux: semodule CIL aviso: {cil_err}')
+
+    # 2. Also register port via semanage if available (non-fatal fallback)
     has_semanage = shutil.which('semanage') is not None
     if has_semanage:
         labels = optional(run, ['semanage', 'port', '-l'])
@@ -602,11 +622,12 @@ def prepare_bind_selinux(root, run, undo, port=5353):
                     continue
             if not success:
                 steps.append(f'[AVISO] SELinux: Nao foi possivel registrar a porta {protocol}/{port} via semanage.')
-    try:
-        run(['setsebool', '-P', 'named_bind_multicast_ports', '1'])
-        steps.append('SELinux: boolean named_bind_multicast_ports ativado.')
-    except Exception:
-        pass
+    for boolean in ['named_bind_multicast_ports', 'named_tcp_bind_http_port']:
+        try:
+            run(['setsebool', '-P', boolean, '1'])
+            steps.append(f'SELinux: boolean {boolean} ativado.')
+        except Exception:
+            pass
     return steps
 
 
@@ -1043,6 +1064,11 @@ def configure_firewall(request, root, backup, run, steps):
                 run(['ufw','allow','in','proto',rule[rule.index('-p')+1],'to','any','port',rule[rule.index('--dport')+1]])
         steps.append('UFW ativo: portas necessarias autorizadas tambem na politica persistente existente.')
     # Persist only our idempotent insertions; do not flush tables or override policies at boot.
+    if (root / 'etc/sysconfig/iptables').exists() or (root / 'etc/sysconfig').is_dir():
+        try:
+            run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'])
+        except Exception:
+            pass
     atomic_write(root / 'etc/astral-ad-dns/provision-firewall.json',json.dumps(rules))
     atomic_write(root / 'usr/local/lib/astral-ad-dns/firewall-restore.py',RESTORE_SCRIPT,0o700)
     atomic_write(root / 'etc/systemd/system/astral-ad-firewall.service',

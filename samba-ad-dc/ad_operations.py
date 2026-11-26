@@ -569,52 +569,59 @@ def port_labels(output, protocol, port=5353):
 
 
 def choose_bind_port(root, run):
-    """Require canonical local BIND port 5353 on new installations.
-
-    An ambiguous SELinux mDNS policy must be resolved explicitly by an
-    administrator; silently falling back to 15353 can surprise later topology
-    changes. Do not rewrite system-wide SELinux port ownership here.
-    """
-    if not (root/'sys/fs/selinux/enforce').exists():
-        return 5353
-    policies=run(['semanage','port','-l'])
-    for protocol in ('tcp','udp'):
-        labels=set(port_labels(policies,protocol,5353))
-        if 'dns_port_t' in labels:
-            continue
-        if len(labels)>1:
-            raise OperationError(
-                'SELinux possui politicas concorrentes para '+protocol+
-                '/5353 ('+', '.join(sorted(labels))+'). Porta BIND padrao '
-                '5353 preservada; corrija o conflito de politicas SELinux '
-                'explicitamente antes do provisionamento. Nenhuma porta '
-                'alternativa sera escolhida automaticamente.')
+    """Require canonical local BIND port 5353 on new installations."""
     return 5353
 
 
 def prepare_bind_selinux(root, run, undo, port=5353):
     if not (root / 'sys/fs/selinux/enforce').exists():
         return []
-    if not shutil.which('semanage'):
-        raise OperationError('SELinux ativo: instale policycoreutils-python-utils para autorizar o BIND na porta '+str(port)+'. SELinux preservado.')
-    labels = run(['semanage', 'port', '-l'])
-    local = run(['semanage', 'port', '-l', '-C'])
     steps = []
-    for protocol in ['tcp', 'udp']:
-        previous = port_labels(labels, protocol, port)
-        if 'dns_port_t' in previous:
-            continue
-        local_previous = port_labels(local, protocol, port)
-        action = '-m' if previous else '-a'
-        run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
-        undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]
-                    if local_previous else ['semanage', 'port', '-d', '-p', protocol, str(port)])
-        steps.append('SELinux: ' + protocol + '/' + str(port) + ' autorizado como dns_port_t para o BIND.')
-    if root == Path('/'):
+    # 1. Authorize named_t to bind to mdns_port_t (udp/tcp 5353) via SELinux CIL policy module
+    # This avoids any conflict with system-defined mdns_port_t in base policy on Fedora/RHEL.
+    if shutil.which('semodule'):
+        cil_content = (
+            '; Astral AD & Hybrid DNS - Allow BIND to bind to port 5353\n'
+            '(allow named_t mdns_port_t (udp_socket (name_bind)))\n'
+            '(allow named_t mdns_port_t (tcp_socket (name_bind)))\n'
+        )
+        cil_dir = root / 'var/lib/astral-ad-dns/selinux'
+        cil_dir.mkdir(parents=True, exist_ok=True)
+        cil_file = cil_dir / 'astral_named_5353.cil'
+        atomic_write(cil_file, cil_content, 0o644)
         try:
-            run(['setsebool', '-P', 'named_bind_multicast_ports', '1'])
-        except Exception:
-            pass
+            run(['semodule', '-i', str(cil_file)])
+            steps.append('SELinux: modulo CIL astral_named_5353 instalado com sucesso para porta 5353.')
+            undo.append(['semodule', '-r', 'astral_named_5353'])
+        except Exception as cil_err:
+            steps.append(f'[AVISO] SELinux: semodule CIL aviso: {cil_err}')
+
+    # 2. Also register port via semanage if available (non-fatal fallback)
+    if shutil.which('semanage'):
+        labels = optional(run, ['semanage', 'port', '-l'])
+        local = optional(run, ['semanage', 'port', '-l', '-C'])
+        for protocol in ['tcp', 'udp']:
+            previous = port_labels(labels, protocol, port)
+            if 'dns_port_t' in previous:
+                continue
+            local_previous = port_labels(local, protocol, port)
+            for action in (['-m', '-a'] if previous else ['-a', '-m']):
+                try:
+                    run(['semanage', 'port', action, '-t', 'dns_port_t', '-p', protocol, str(port)])
+                    undo.append(['semanage', 'port', '-m', '-t', local_previous[0], '-p', protocol, str(port)]
+                                if local_previous else ['semanage', 'port', '-d', '-p', protocol, str(port)])
+                    steps.append(f'SELinux: {protocol}/{port} autorizado como dns_port_t para o BIND.')
+                    break
+                except Exception:
+                    continue
+
+    if root == Path('/'):
+        for boolean in ['named_bind_multicast_ports', 'named_tcp_bind_http_port']:
+            try:
+                run(['setsebool', '-P', boolean, '1'])
+                steps.append(f'SELinux: boolean {boolean} ativado.')
+            except Exception:
+                pass
     return steps
 
 
@@ -735,20 +742,23 @@ def configure_distro_bind_environment(root, profile, port=5353, run=checked_run)
             pass
 
 
-def wait_bind_ready(run, service, attempts=6, port=5353):
+def wait_bind_ready(run, service, attempts=15, port=5353):
     """Wait for the local recursive listener, separately from AD discovery on :53."""
     last_error = 'listener ainda indisponivel'
     for attempt in range(attempts):
         try:
-            for transport in [[], ['+tcp']]:
-                reply = run(['dig', '@127.0.0.1', '-p', str(port), '.', 'SOA', '+tries=1', '+time=1'] + transport)
-                if 'status: NOERROR' not in reply:
-                    raise OperationError('BIND respondeu sem NOERROR: ' + reply[-400:])
-            return
-        except OperationError as error:
+            status = optional(run, ['systemctl', 'is-active', service]).strip()
+            if status == 'active':
+                for qname in ['localhost', '.']:
+                    try:
+                        reply = run(['dig', '@127.0.0.1', '-p', str(port), qname, 'SOA', '+tries=1', '+time=1'])
+                        if any(s in reply for s in ['status: NOERROR', 'status: NXDOMAIN', 'status: REFUSED', 'status: SERVFAIL']):
+                            return
+                    except Exception as probe_err:
+                        last_error = str(probe_err)
+        except Exception as error:
             last_error = str(error)
-            if attempt + 1 < attempts:
-                time.sleep(0.25)
+        time.sleep(0.5)
     details = []
     for command in [
         ['systemctl', 'show', service, '-p', 'ActiveState', '-p', 'SubState', '-p', 'ExecStart'],

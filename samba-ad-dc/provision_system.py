@@ -186,6 +186,11 @@ def configure_firewall(request, root, backup, run, steps):
                 run(['ufw','allow','in','proto',rule[rule.index('-p')+1],'to','any','port',rule[rule.index('--dport')+1]])
         steps.append('UFW ativo: portas necessarias autorizadas tambem na politica persistente existente.')
     # Persist only our idempotent insertions; do not flush tables or override policies at boot.
+    if (root / 'etc/sysconfig/iptables').exists() or (root / 'etc/sysconfig').is_dir():
+        try:
+            run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'])
+        except Exception:
+            pass
     atomic_write(root / 'etc/astral-ad-dns/provision-firewall.json',json.dumps(rules))
     atomic_write(root / 'usr/local/lib/astral-ad-dns/firewall-restore.py',RESTORE_SCRIPT,0o700)
     atomic_write(root / 'etc/systemd/system/astral-ad-firewall.service',
