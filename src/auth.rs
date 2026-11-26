@@ -864,7 +864,7 @@ pub async fn logout_handler() -> Response {
 }
 
 pub async fn providers_handler() -> Json<ApiResponse<serde_json::Value>> {
-    let _ad_configured = crate::system::is_ad_configured();
+    let ad_configured = crate::system::is_ad_configured();
     let recommended = if ad_configured { "ad" } else { "linux" };
 
     Json(ApiResponse {

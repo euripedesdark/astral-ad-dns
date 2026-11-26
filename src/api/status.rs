@@ -187,8 +187,10 @@ pub async fn get_status(State(config): State<Arc<AppConfig>>) -> Json<StatusResp
         let c_res = run_safe_cmd("samba-tool computer list", sudo);
         computers_count = c_res.stdout.lines().filter(|l| !l.trim().is_empty()).count();
 
-        // Avoid putting any administrative password in a subprocess command.
-        // DNS zone totals need an authenticated endpoint with secure credential handling.
+        let z_res = run_safe_cmd("ldbsearch -H /var/lib/samba/private/sam.ldb '(objectClass=dnsZone)' name 2>/dev/null | grep -c '^name:'", sudo);
+        if let Ok(c) = z_res.stdout.trim().parse::<usize>() {
+            zones_count = c;
+        }
     }
 
     let host_res = run_safe_cmd("hostname -f 2>/dev/null || hostname", sudo);
