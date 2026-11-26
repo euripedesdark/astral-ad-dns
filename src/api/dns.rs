@@ -280,40 +280,6 @@ pub async fn query_records(
         }
     }
 
-    // Consulta nós filhos da zona via ldbsearch para trazer todos os registros (A, CNAME, etc.)
-    let ldb_nodes = run_cmd_dry(
-        &format!(
-            "ldbsearch -H /var/lib/samba/private/sam.ldb '(objectClass=dnsNode)' name 2>/dev/null | grep -E '^name:' | awk '{{print $2}}'",
-        ),
-        sudo,
-        false,
-    );
-    if ldb_nodes.success {
-        for node in ldb_nodes.stdout.lines() {
-            let node = node.trim();
-            if !node.is_empty() && node != "@" && !node.starts_with("..") && !records.iter().any(|r| r.name == node) {
-                let child_res = run_samba_dns_cmd("query", &format!("'{}' '{}' ALL", clean_zone, node), &config, false);
-                if child_res.success {
-                    for line in child_res.stdout.lines() {
-                        let trimmed = line.trim();
-                        if let Some((rtype, rest)) = trimmed.split_once(':') {
-                            let rtype = rtype.trim().to_uppercase();
-                            if ["A", "AAAA", "PTR", "CNAME", "NS", "SOA", "MX", "SRV", "TXT"].contains(&rtype.as_str()) {
-                                let data = rest.split('(').next().unwrap_or(rest).trim().to_string();
-                                records.push(DnsRecord {
-                                    name: node.to_string(),
-                                    record_type: rtype,
-                                    data,
-                                    ttl: 900,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     Json(ApiResponse {
         success: true,
         message: format!("Recuperados {} registros na zona '{}'", records.len(), zone),

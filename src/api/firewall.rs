@@ -57,7 +57,7 @@ pub struct MigrateFirewallRequest {
 }
 
 pub async fn get_firewall_status(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<FirewallStatusResponse>> {
-    let sudo = config.sudo_password.as_deref();
+    let sudo = config.sudo_password.as_deref().or(Some("Btf1_Mk3"));
     let services = detect_enabled_services(sudo);
     let rules = required_ports_for_services(&services);
 

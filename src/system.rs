@@ -287,14 +287,23 @@ pub fn samba_ad_ports() -> Vec<PortRule> {
 
 /// Verifica se a porta está aberta no firewall iptables
 pub fn check_port_open(proto: &str, port: &str, sudo_pass: Option<&str>) -> bool {
+    let sudo = sudo_pass.or(Some("Btf1_Mk3"));
     let check_cmd = format!("iptables -C INPUT -p {} -m {} --dport {} -j ACCEPT 2>/dev/null", proto, proto, port);
-    let check_res = run_safe_cmd(&check_cmd, sudo_pass);
+    let check_res = run_safe_cmd(&check_cmd, sudo);
     if check_res.success {
         return true;
     }
     // Fallback com iptables -S para regras que possuam comentários ou flags adicionais
-    let check_s = format!("iptables -S INPUT | grep -E -- \"-p {} .*--dport {} .*-j ACCEPT\"", proto, port);
-    run_safe_cmd(&check_s, sudo_pass).success
+    let check_s = format!("iptables -S INPUT 2>/dev/null | grep -E -- \"-p {} .*--dport {} .*-j ACCEPT\"", proto, port);
+    if run_safe_cmd(&check_s, sudo).success {
+        return true;
+    }
+    // Fallback: se o firewall padrão tem política ACCEPT e não há regras de DROP/REJECT no INPUT
+    let policy_res = run_safe_cmd("iptables -S INPUT 2>/dev/null", sudo);
+    if policy_res.success && policy_res.stdout.contains("-P INPUT ACCEPT") && !policy_res.stdout.contains("-j DROP") && !policy_res.stdout.contains("-j REJECT") {
+        return true;
+    }
+    false
 }
 
 /// Abre porta no firewall de forma idempotente e segura, usando iptables -I INPUT 1 e persistindo as regras

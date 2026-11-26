@@ -89,6 +89,15 @@ function Application() {
   const [authError, setAuthError] = useState(null);
 
   const checkAuth = async () => {
+    if (typeof window !== "undefined" && (window.location.search.includes('logout') || window.location.search.includes('login'))) {
+      try {
+        localStorage.removeItem('astral_token');
+        await customFetch('/api/auth/logout', { method: 'POST' });
+      } catch (_) {}
+      setOperator(null);
+      setAuthChecking(false);
+      return;
+    }
     try {
       setAuthChecking(true);
       const res = await customFetch('/api/auth/me');
@@ -483,10 +492,11 @@ function Application() {
               </span>
               <button
                 onClick={handleLogout}
+                className="ml-2 flex items-center gap-1 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-200 px-2 py-0.5 rounded text-xs font-semibold transition cursor-pointer"
                 title={t.logout || 'Sair'}
-                className="ml-1 text-slate-400 hover:text-rose-400 transition cursor-pointer p-0.5"
               >
-                <LogOut className="w-3.5 h-3.5" />
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                <span>{t.logout || 'Sair'}</span>
               </button>
             </div>
           )}
