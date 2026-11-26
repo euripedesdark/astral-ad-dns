@@ -5,6 +5,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use crate::system::CommandResult;
 use crate::config::AppConfig;
 use crate::system::{run_cmd_dry, sanitize_arg};
 use crate::api::users::{ApiResponse, ActionQuery};
@@ -51,12 +52,71 @@ pub struct DeleteRecordRequest {
     pub dry_run: bool,
 }
 
-pub async fn list_zones(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<DnsZone>>> {
+pub fn run_samba_dns_cmd(subcmd: &str, args: &str, config: &AppConfig, dry_run: bool) -> CommandResult {
     let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
+    if dry_run {
+        return CommandResult {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+            code: 0,
+            dry_run: true,
+            command: format!("samba-tool dns {} 127.0.0.1 {}", subcmd, args),
+        };
+    }
+    // 1. Try local machine account credentials (-P) - standard on DC, works without password
+    let cmd_machine = if args.is_empty() {
+        format!("samba-tool dns {} 127.0.0.1 -P", subcmd)
+    } else {
+        format!("samba-tool dns {} 127.0.0.1 {} -P", subcmd, args)
+    };
+    let res_machine = run_cmd_dry(&cmd_machine, sudo, false);
+    if res_machine.success {
+        return res_machine;
+    }
 
-    let cmd = format!("samba-tool dns zonelist 127.0.0.1 -U administrator --password='{}'", admin_pass);
-    let res = run_cmd_dry(&cmd, sudo, false);
+    // 2. Try Kerberos ticket (-k yes)
+    let cmd_krb = if args.is_empty() {
+        format!("samba-tool dns {} 127.0.0.1 -k yes", subcmd)
+    } else {
+        format!("samba-tool dns {} 127.0.0.1 {} -k yes", subcmd, args)
+    };
+    let res_krb = run_cmd_dry(&cmd_krb, sudo, false);
+    if res_krb.success {
+        return res_krb;
+    }
+
+    // 3. Try with configured admin password
+    if let Some(pass) = &config.admin_password {
+        let cmd_pass = if args.is_empty() {
+            format!("samba-tool dns {} 127.0.0.1 -U administrator --password='{}'", subcmd, pass)
+        } else {
+            format!("samba-tool dns {} 127.0.0.1 {} -U administrator --password='{}'", subcmd, args, pass)
+        };
+        let res_pass = run_cmd_dry(&cmd_pass, sudo, false);
+        if res_pass.success {
+            return res_pass;
+        }
+    }
+
+    // 4. Fallback to default admin password
+    let default_pass = "Copa@@2026";
+    let cmd_default = if args.is_empty() {
+        format!("samba-tool dns {} 127.0.0.1 -U administrator --password='{}'", subcmd, default_pass)
+    } else {
+        format!("samba-tool dns {} 127.0.0.1 {} -U administrator --password='{}'", subcmd, args, default_pass)
+    };
+    let res_default = run_cmd_dry(&cmd_default, sudo, false);
+    if res_default.success {
+        return res_default;
+    }
+
+    // Return the machine error or default error with diagnostic info
+    res_machine
+}
+
+pub async fn list_zones(State(config): State<Arc<AppConfig>>) -> Json<ApiResponse<Vec<DnsZone>>> {
+    let res = run_samba_dns_cmd("zonelist", "", &config, false);
     if !res.success {
         return Json(ApiResponse {
             success: false,
@@ -123,15 +183,8 @@ pub async fn query_records(
     Path(zone): Path<String>,
     State(config): State<Arc<AppConfig>>,
 ) -> Json<ApiResponse<Vec<DnsRecord>>> {
-    let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
-
-    let cmd = format!(
-        "samba-tool dns query 127.0.0.1 '{}' @ ALL -U administrator --password='{}'",
-        sanitize_arg(&zone),
-        admin_pass
-    );
-    let res = run_cmd_dry(&cmd, sudo, false);
+    let clean_zone = sanitize_arg(&zone);
+    let res = run_samba_dns_cmd("query", &format!("'{}' @ ALL", clean_zone), &config, false);
     if !res.success {
         return Json(ApiResponse {
             success: false,
@@ -186,9 +239,6 @@ pub async fn create_zone(
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<CreateZoneRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
-    let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
-
     let zone = sanitize_arg(payload.zone_name.trim());
     if zone.is_empty() {
         return (
@@ -203,11 +253,7 @@ pub async fn create_zone(
         );
     }
 
-    let cmd = format!(
-        "samba-tool dns zonecreate 127.0.0.1 '{}' -U administrator --password='{}'",
-        zone, admin_pass
-    );
-    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
+    let res = run_samba_dns_cmd("zonecreate", &format!("'{}'", zone), &config, payload.dry_run);
 
     let evt_id = config.audit.record(
         "admin",
@@ -253,9 +299,6 @@ pub async fn delete_zone(
     Query(q): Query<ActionQuery>,
     State(config): State<Arc<AppConfig>>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
-    let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
-
     // TRAVA DE SEGURANÇA: Não permitir exclusão de zonas vitais de Active Directory
     if zone.starts_with("_msdcs.") || zone.eq_ignore_ascii_case("ForestDnsZones") || zone.eq_ignore_ascii_case("DomainDnsZones") {
         return (
@@ -270,12 +313,8 @@ pub async fn delete_zone(
         );
     }
 
-    let cmd = format!(
-        "samba-tool dns zonedel 127.0.0.1 '{}' -U administrator --password='{}'",
-        sanitize_arg(&zone),
-        admin_pass
-    );
-    let res = run_cmd_dry(&cmd, sudo, q.dry_run);
+    let clean_zone = sanitize_arg(&zone);
+    let res = run_samba_dns_cmd("zonedel", &format!("'{}'", clean_zone), &config, q.dry_run);
 
     let evt_id = config.audit.record(
         "admin",
@@ -321,9 +360,6 @@ pub async fn add_record(
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<AddRecordRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
-    let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
-
     let name = sanitize_arg(payload.name.trim());
     let rtype = sanitize_arg(payload.record_type.trim()).to_uppercase();
     let data = sanitize_arg(payload.data.trim());
@@ -341,15 +377,13 @@ pub async fn add_record(
         );
     }
 
-    let cmd = format!(
-        "samba-tool dns add 127.0.0.1 '{}' '{}' '{}' '{}' -U administrator --password='{}'",
-        sanitize_arg(&zone),
-        name,
-        rtype,
-        data,
-        admin_pass
+    let clean_zone = sanitize_arg(&zone);
+    let res = run_samba_dns_cmd(
+        "add",
+        &format!("'{}' '{}' '{}' '{}'", clean_zone, name, rtype, data),
+        &config,
+        payload.dry_run,
     );
-    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
 
     let evt_id = config.audit.record(
         "admin",
@@ -388,22 +422,18 @@ pub async fn add_record(
             };
 
             // Ensure reverse zone exists
-            let check_zone_cmd = format!("samba-tool dns zonelist 127.0.0.1 -U administrator --password='{}'", admin_pass);
-            let check_res = run_cmd_dry(&check_zone_cmd, sudo, false);
+            let check_res = run_samba_dns_cmd("zonelist", "", &config, false);
             if !check_res.stdout.contains(&rev_zone) {
-                let create_rev_cmd = format!(
-                    "samba-tool dns zonecreate 127.0.0.1 '{}' -U administrator --password='{}'",
-                    rev_zone, admin_pass
-                );
-                let _ = run_cmd_dry(&create_rev_cmd, sudo, false);
+                let _ = run_samba_dns_cmd("zonecreate", &format!("'{}'", rev_zone), &config, false);
             }
 
             // Add PTR record
-            let add_ptr_cmd = format!(
-                "samba-tool dns add 127.0.0.1 '{}' '{}' PTR '{}' -U administrator --password='{}'",
-                rev_zone, host_ip, fqdn, admin_pass
+            let ptr_res = run_samba_dns_cmd(
+                "add",
+                &format!("'{}' '{}' PTR '{}'", rev_zone, host_ip, fqdn),
+                &config,
+                false,
             );
-            let ptr_res = run_cmd_dry(&add_ptr_cmd, sudo, false);
             if ptr_res.success {
                 ptr_msg = format!(" + Registro reverso PTR criado em {}", rev_zone);
             }
@@ -431,18 +461,17 @@ pub async fn delete_record(
     State(config): State<Arc<AppConfig>>,
     Json(payload): Json<DeleteRecordRequest>,
 ) -> (StatusCode, Json<ApiResponse<()>>) {
-    let sudo = config.sudo_password.as_deref();
-    let admin_pass = config.admin_password.as_deref().unwrap_or("Copa@@2026");
+    let clean_zone = sanitize_arg(&zone);
+    let clean_name = sanitize_arg(&payload.name);
+    let clean_type = sanitize_arg(&payload.record_type);
+    let clean_data = sanitize_arg(&payload.data);
 
-    let cmd = format!(
-        "samba-tool dns delete 127.0.0.1 '{}' '{}' '{}' '{}' -U administrator --password='{}'",
-        sanitize_arg(&zone),
-        sanitize_arg(&payload.name),
-        sanitize_arg(&payload.record_type),
-        sanitize_arg(&payload.data),
-        admin_pass
+    let res = run_samba_dns_cmd(
+        "delete",
+        &format!("'{}' '{}' '{}' '{}'", clean_zone, clean_name, clean_type, clean_data),
+        &config,
+        payload.dry_run,
     );
-    let res = run_cmd_dry(&cmd, sudo, payload.dry_run);
 
     let evt_id = config.audit.record(
         "admin",

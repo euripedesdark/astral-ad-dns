@@ -830,8 +830,8 @@ def execute(request, root=Path('/'), run=checked_run, bind=configure_bind):
         steps.append('Papel ' + request['domain_role'] + ' ativado e verificacoes Samba concluidas.')
         if bind_error:
             steps.append('[AVISO] BIND solicitado nao foi concluido. Use Reaplicar configuracao pela interface; o ingresso foi preservado. ' + bind_error)
-        return {'success': not bool(bind_error), 'joined': True, 'configuration_pending': bool(bind_error),
-                'message': 'Configuracao BIND pendente; ingresso preservado.' if bind_error else 'Provisionamento concluido.',
+        return {'success': True, 'joined': True, 'configuration_pending': bool(bind_error),
+                'message': 'Provisionamento concluido com sucesso.' + (' Configuracao BIND recursivo pendente; Samba AD ativo em 127.0.0.1:53.' if bind_error else ''),
                 'steps_completed': steps, 'ca_port':manifest.get('ca_port'),'ca_url':manifest.get('ca_url'), 'backup_id': identifier, 'backup_path': str(backup), 'plan_only': False}
     except Exception as error:
         message = str(error)

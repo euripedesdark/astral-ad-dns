@@ -3922,7 +3922,7 @@ function WizardModal({ onClose, t, showToast }) {
       setExecuting(true); setStep(4);
       followProvisionJob(id).then(result => {
         setLastResult(result); setCompletedSteps(result.steps_completed || []);
-        if (!result.success) setErrorMsg(result.message || result.error);
+        if (!result.success && !result.configuration_pending) setErrorMsg(result.message || result.error);
       }).catch(error => setErrorMsg(error.message)).finally(() => setExecuting(false));
     }
   }, []);
@@ -3934,7 +3934,7 @@ function WizardModal({ onClose, t, showToast }) {
       try {
         const result = await followProvisionJob(pending);
         setLastResult(result); setCompletedSteps(result.steps_completed || []);
-        setErrorMsg(result.success ? null : result.message || result.error);
+        setErrorMsg((result.success || result.configuration_pending) ? null : result.message || result.error);
       } catch (error) { setErrorMsg(error.message); }
       finally { setExecuting(false); }
       return;
