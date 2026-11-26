@@ -347,7 +347,6 @@ def generate_distro_bind_config(family, forwarders, directory, port=5353, root=P
         crypto_file = root / 'etc/crypto-policies/back-ends/bind.config'
         crypto_inc = '    include "/etc/crypto-policies/back-ends/bind.config";\n' if crypto_file.exists() else ''
         hint_file = '/etc/named.ca' if (root / 'etc/named.ca').exists() else 'named.ca'
-        geoip_line = '    geoip-directory "/usr/share/GeoIP";\n' if (root / 'usr/share/GeoIP').is_dir() else ''
 
         lines = [
             '// Astral AD & Hybrid DNS - BIND 9 Configuration (Fedora / RHEL)',
@@ -375,8 +374,6 @@ def generate_distro_bind_config(family, forwarders, directory, port=5353, root=P
             '    minimal-responses yes;',
             '    managed-keys-directory "/var/named/dynamic";',
         ]
-        if geoip_line:
-            lines.append('    geoip-directory "/usr/share/GeoIP";')
         lines.extend([
             '    pid-file "/run/named/named.pid";',
             '    session-keyfile "/run/named/session.key";',
